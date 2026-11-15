@@ -35,20 +35,19 @@ class Settings:
         )
     )
     portal_host: str = field(
-        default_factory=lambda: os.environ.get(
-            "ACCOUNTS_HOST", "accounts.hilex.me"
-        )
+        default_factory=lambda: os.environ.get("ACCOUNTS_HOST", "accounts.hilex.me")
     )
     api_host: str = field(
-        default_factory=lambda: os.environ.get(
-            "GATEWAY_API_HOST", "api.hilex.me"
-        )
+        default_factory=lambda: os.environ.get("GATEWAY_API_HOST", "api.hilex.me")
     )
     accounts_worker_url: str = field(
         default_factory=lambda: os.environ.get("ACCOUNTS_WORKER_URL", "")
     )
     accounts_worker_secret: str = field(
         default_factory=lambda: os.environ.get("ACCOUNTS_WORKER_SECRET", ""), repr=False
+    )
+    edge_only: bool = field(
+        default_factory=lambda: os.environ.get("GATEWAY_EDGE_ONLY", "0") == "1"
     )
     bind_host: str = "127.0.0.1"
     public_port: int = 18900

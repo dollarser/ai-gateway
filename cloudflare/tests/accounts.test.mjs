@@ -3,12 +3,30 @@ import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import { Miniflare } from "miniflare";
 import { proxySpeech } from "../src/audio.mjs";
+import { edgeAPI, wavPcm } from "../src/edge.mjs";
 import { Store } from "../src/store.mjs";
 import { passwordHash, digest } from "../src/crypto.mjs";
 let mf, db, admin;
 let openaiMode = "json",
   providerCalls = 0;
+let originCalls = 0;
 async function provider(request) {
+  if (new URL(request.url).hostname === "api.hilex.me") {
+    originCalls++;
+    assert.equal(request.headers.get("X-Edge-Secret"), secret);
+    assert.equal(request.headers.get("Authorization"), null);
+    assert.equal(request.headers.get("Cookie"), null);
+    assert.match(request.headers.get("X-Edge-Lease"), /^[a-f0-9]{48}$/);
+    if (new URL(request.url).pathname === "/__codec/decode")
+      return new Response(testWav(1000), {
+        headers: { "Content-Type": "audio/wav" },
+      });
+    if (new URL(request.url).pathname === "/__codec/encode")
+      return new Response("ID3-test", {
+        headers: { "Content-Type": "audio/mpeg" },
+      });
+    return Response.json({ text: "local" });
+  }
   assert.equal(new URL(request.url).hostname, "api.openai.com");
   assert.equal(request.headers.get("Authorization"), "Bearer test-openai-key");
   if (new URL(request.url).pathname === "/v1/audio/transcriptions") {
@@ -100,6 +118,7 @@ before(async () => {
     bindings: {
       INTERNAL_SECRET: secret,
       OPENAI_API_KEY: "test-openai-key",
+      INFERENCE_CLIENT_IDS: JSON.stringify(["test-client-id"]),
       ACCOUNT_ORIGIN: "https://accounts.test",
     },
     outboundService: provider,
@@ -1267,4 +1286,173 @@ test("Realtime streaming emits PCM before settlement, and still settles the same
     .first();
   assert.equal(row.charged_units, 3);
   assert.equal(row.settled, 1);
+});
+
+async function apiCall(path, key, payload, headers = {}) {
+  const r = await mf.dispatchFetch("https://api.hilex.me" + path, {
+    method: payload === undefined ? "GET" : "POST",
+    headers: {
+      Authorization: "Bearer " + key,
+      "Content-Type": "application/json",
+      ...headers,
+    },
+    body: payload === undefined ? undefined : JSON.stringify(payload),
+  });
+  return { status: r.status, headers: r.headers, body: await r.json() };
+}
+test("edge API authenticates directly, discovers cloud models without origin and settles Luna once", async () => {
+  const { uid, key } = await lunaUser("edge-luna");
+  const origins = originCalls;
+  const models = await apiCall("/v1/models", key);
+  assert.equal(models.status, 200);
+  assert.equal(models.headers.get("X-Inference-Execution"), "edge");
+  assert.equal(models.body.data[0].id, "gpt-6-luna");
+  assert.equal(originCalls, origins);
+  const r = await apiCall("/v1/chat/completions", key, {
+    model: "gpt-6-luna",
+    messages: [{ role: "user", content: "hi" }],
+  });
+  assert.equal(r.status, 200);
+  assert.equal(originCalls, origins);
+  const rows = (
+    await db.prepare("SELECT * FROM requests WHERE user_id=?").bind(uid).all()
+  ).results;
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every((r) => r.ended));
+  assert.equal(rows.find((r) => r.model === "gpt-6-luna").prompt_tokens, 100);
+  assert.equal((await apiCall("/v1/models", "invalid")).status, 401);
+  assert.equal(
+    (
+      await mf.dispatchFetch("https://api.hilex.me/__codec/decode", {
+        method: "POST",
+        body: "raw",
+      })
+    ).status,
+    404,
+  );
+});
+test("edge ASR WAV skips origin; compressed inputs use only the protected codec", async () => {
+  const { key } = await audioUser("edge-asr", "asr");
+  const initial = originCalls;
+  async function run(bytes, name) {
+    const form = new FormData();
+    form.set("model", "gpt-transcribe");
+    form.set("file", new Blob([bytes]), name);
+    const req = new Request("https://api.hilex.me/v1/audio/transcriptions", {
+      method: "POST",
+      body: form,
+    });
+    const r = await mf.dispatchFetch(req.url, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + key,
+        "Content-Type": req.headers.get("Content-Type"),
+      },
+      body: await req.arrayBuffer(),
+    });
+    assert.equal(r.status, 200, await r.clone().text());
+    return r.json();
+  }
+  assert.equal((await run(testWav(1000), "audio.wav")).text, "hello");
+  assert.equal(originCalls, initial);
+  await run(new TextEncoder().encode("compressed fixture"), "audio.mp3");
+  assert.equal(originCalls, initial + 1);
+});
+test("edge forwards legacy local requests with server-only headers and prevents credential confusion", async () => {
+  const { key } = await audioUser("edge-local", "tts");
+  const r = await apiCall(
+    "/v1/audio/speech",
+    key,
+    { input: "legacy" },
+    {
+      "X-Inference-Provider": "local",
+      "X-Edge-Secret": "attacker",
+      Cookie: "sensitive",
+    },
+  );
+  assert.equal(r.status, 200);
+  assert.equal(r.body.text, "local");
+  assert.equal(
+    (await apiCall("/v1/audio/speech", key, { model: "tts-1", input: "hi" }))
+      .status,
+    422,
+  );
+  assert.equal(
+    (
+      await apiCall("/v1/models", key, undefined, {
+        "X-API-Key": "sk-acct-conflict",
+      })
+    ).status,
+    401,
+  );
+});
+test("edge PCM and WAV TTS stay independent of origin, compressed output uses one codec call", async () => {
+  const { uid, key } = await audioUser("edge-tts", "tts");
+  const original = globalThis.fetch;
+  const jobs = [];
+  globalThis.fetch = async (url, options) =>
+    String(url).includes("/v1/realtime?")
+      ? { webSocket: new MockRealtime() }
+      : provider(new Request(url, options));
+  try {
+    const env = {
+      DB: db,
+      OPENAI_API_KEY: "test-openai-key",
+      INTERNAL_SECRET: secret,
+    };
+    for (const [fmt, stream] of [
+      ["wav", false],
+      ["pcm", true],
+      ["mp3", false],
+    ]) {
+      const before = originCalls;
+      const r = await edgeAPI(
+        new Request("https://api.hilex.me/v1/audio/speech", {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer " + key,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "gpt-realtime-2.1-mini",
+            input: "hi",
+            response_format: fmt,
+            stream,
+          }),
+        }),
+        env,
+        {
+          waitUntil(p) {
+            jobs.push(p);
+          },
+        },
+      );
+      assert.equal(r.status, 200);
+      const bytes = new Uint8Array(await r.arrayBuffer());
+      if (fmt === "wav")
+        assert.equal(new TextDecoder().decode(bytes.slice(0, 4)), "RIFF");
+      assert.equal(originCalls, before + (fmt === "mp3" ? 1 : 0));
+    }
+    await Promise.all(jobs);
+    assert.equal(
+      (
+        await db
+          .prepare(
+            "SELECT sum(charged_units) n FROM audio_usage WHERE user_id=?",
+          )
+          .bind(uid)
+          .first()
+      ).n,
+      6,
+    );
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+test("WAV wrapper supplies verifiable 24kHz PCM duration", async () => {
+  const { wavDuration } = await import("../src/audio.mjs");
+  assert.equal(wavDuration(wavPcm(new Uint8Array(48000))), 1000);
+  const invalid = wavPcm(new Uint8Array(48000));
+  new DataView(invalid.buffer).setUint32(28, 1, true);
+  assert.throws(() => wavDuration(invalid));
 });

@@ -10,6 +10,7 @@ import {
   proxySpeech,
 } from "./audio.mjs";
 import { adminRoute } from "./admin.mjs";
+import { edgeAPI } from "./edge.mjs";
 const COOKIE = "__Host-ai_session";
 const json = (v, status = 200, headers = {}) =>
   Response.json(v, {
@@ -240,6 +241,8 @@ async function route(request, env, ctx) {
     p = url.pathname,
     method = request.method;
   const store = new Store(env.DB);
+  if (url.hostname === (env.API_HOST ?? "api.hilex.me"))
+    return edgeAPI(request, env, ctx);
   if (p.startsWith("/internal/")) return internal(request, env, store, p, ctx);
   if (p === "/healthz" && method === "GET") {
     await store.first("SELECT 1");

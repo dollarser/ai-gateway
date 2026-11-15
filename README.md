@@ -6,6 +6,8 @@
 
 ## 运维文档导航
 
+- [API 边缘直连与语音路径](docs/edge-api.md)
+
 - [路由诊断、额度核对、流式语音与自动运行](docs/gateway-reliability.md)
 
 - [管理员后台与用量管理](docs/admin-console.md)
@@ -28,7 +30,7 @@
 
 - 账号网页与账号 API：https://accounts.hilex.me（Worker `hilex-accounts`）
 - 账号数据库：D1 `hilex-accounts`
-- 模型 API：https://api.hilex.me（Cloudflare Tunnel → 本机 Python 网关）
+- 模型 API：https://api.hilex.me（Worker 边缘鉴权与云模型直连；仅自建模型和压缩编解码回源）
 
 本机网关使用 Worker 账号模式，SQLite 仅用于离线兼容与迁移。自建模型后端是否就绪需单独验证，后端不可达时请求可能返回 502。GPT-6 Luna 由 Worker 调用 OpenAI，不依赖本机模型进程；每账号默认每月 1000 万 tokens。
 
@@ -44,7 +46,7 @@ bash scripts/start.sh
 
 默认使用 Worker/D1；缺少配置不会自动退回旧 SQLite。setup 默认不创建本地账号或管理员。显式离线账号模式及迁移工具见 [本地开发](docs/local-development.md)。
 
-公网隧道只连接回环端口 18900；18901 保留本机推理入口。用户数据库、凭证和内部 Client ID 不进入 Git。
+Worker 在 API 域名前置，公网隧道只连接受边缘凭据保护的回环端口 18900；18901 保留本机推理入口。用户数据库、凭证和内部 Client ID 不进入 Git。
 
 ```bash
 .venv-accounts/bin/python -m tests.run
@@ -59,7 +61,7 @@ bash scripts/start.sh
 
 ## Cloudflare Worker + D1 账号部署
 
-`cloudflare/` 是独立 Worker 账号服务：账号网页、注册/登录、Cookie/CSRF、access/refresh token、管理员操作、API Key、权限和配额使用 D1。GPU 机器上的 Python API 网关保留原有模型协议处理和长连接，通过受内部密钥保护的 Worker 接口申请/结算请求额度。
+`cloudflare/` 是独立 Worker 账号服务：账号网页、注册/登录、Cookie/CSRF、access/refresh token、管理员操作、API Key、权限和配额使用 D1。公网 API 由 Worker 直接完成认证及云模型调用；GPU 机器上的 Python 源站仅负责受保护的自建模型、长连接和压缩音频编解码。
 
 部署步骤、迁移及回滚见 [Cloudflare 部署说明](docs/cloudflare.md)。启用方式：
 

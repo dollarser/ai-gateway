@@ -5,7 +5,11 @@ from fastapi.responses import JSONResponse
 
 
 async def security(request, call_next):
-    request.state.gateway_request_id = secrets.token_hex(16)
+    from gateway.edge_origin import edge_request_id
+
+    request.state.gateway_request_id = edge_request_id(
+        request.app, request.headers, request.scope
+    ) or secrets.token_hex(16)
     settings = request.app.state.settings
     PORTAL_HOST = settings.portal_host
     ORIGIN = "https://" + PORTAL_HOST
@@ -19,7 +23,9 @@ async def security(request, call_next):
     }:
         return JSONResponse({"detail": "该域名不再提供服务"}, status_code=404)
     if host == settings.api_host and not (
-        request.url.path.startswith("/v1/") or request.url.path == "/healthz"
+        request.url.path.startswith("/v1/")
+        or request.url.path == "/healthz"
+        or request.url.path.startswith("/__codec/")
     ):
         return JSONResponse(
             {"detail": f"账号和管理功能请使用 {PORTAL_HOST}"},

@@ -1,6 +1,6 @@
 # Worker / D1 部署与运维
 
-当前账号服务为 https://accounts.hilex.me，Worker 名为 `hilex-accounts`，D1 名为 `hilex-accounts`，绑定为 `DB`。API 网关仍在本机，地址 https://api.hilex.me。
+当前账号服务为 https://accounts.hilex.me，Worker 名为 `hilex-accounts`，D1 名为 `hilex-accounts`，绑定为 `DB`。API 地址 https://api.hilex.me 已由 Worker Route 接入，仅自建模型和压缩编解码经 Tunnel 回源，见 [边缘路径](edge-api.md)。
 
 ## 本次部署状态
 

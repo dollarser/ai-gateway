@@ -11,7 +11,7 @@
 
 ## 语音识别
 
-使用 multipart 表单，上传 `file`，设置 `model=gpt-transcribe`。支持 WAV、MP3、M4A、WebM 等 FFmpeg 可解码的音频。文件上限 21 MiB，单次最多 5 分钟，较长录音应切片。网关用受限本地 FFmpeg 解码成 16kHz 单声道 PCM WAV，Worker 再验证标准 WAV 的字节数和采样率，按向上取整的毫秒数计入额度，忽略客户端上报的时长。解码子进程最多 60 秒，禁止网络和文件协议输入。
+使用 multipart 表单，上传 `file`，设置 `model=gpt-transcribe`。支持 WAV、MP3、M4A、WebM 等 FFmpeg 可解码的音频。文件上限 21 MiB，单次最多 5 分钟，较长录音应切片。Worker 对标准 16-bit PCM WAV 校验实际帧数、字节数和采样率；其他格式才经私有本机 FFmpeg 解码为 16kHz 单声道 PCM WAV，按向上取整的毫秒数计入额度，忽略客户端上报的时长。解码子进程最多 60 秒，禁止网络和文件协议输入。
 
 可用字段：`file`、`model`、`language`、`languages[]`、`keywords[]`、`prompt`、`response_format`（json/text）、`stream`（true/false）。`languages` / `keywords` 也接受 JSON 数组字符串。流式响应必须选择 json，返回 transcript SSE 事件。识别额度以完整上传音频时长计算，不按检测出的讲话时长计算。
 
@@ -55,3 +55,5 @@ D1 `audio_usage` 按账号、日、模型用途汇总，识别单位为毫秒，
 ## 本次上线验证
 
 已通过公网 API 实际使用 Realtime 合成 WAV，再将生成音频交给 GPT-Transcribe 识别；核对 Worker 日账本与实际解码毫秒数及输入字符数一致，无残留预留。两个额度分别设为 0 后均返回 429，未产生新的上游调用账本。临时验证账号与关联数据已清理。
+
+当前音频直连与压缩格式的边界见 [边缘路径](edge-api.md)。

@@ -17,8 +17,10 @@
   ],
   "vars": {
     "ACCOUNT_ORIGIN": "https://accounts.hilex.me",
+    "API_HOST": "api.hilex.me",
+    "LOCAL_MODELS_ENABLED": "false",
   },
-  "routes": [{"pattern": "accounts.hilex.me", "custom_domain": true}],
+  "routes": [{"pattern": "accounts.hilex.me", "custom_domain": true}, {"pattern":"api.hilex.me/*", "zone_name":"hilex.me"}],
   "triggers": {
     "crons": ["*/15 * * * *"],
   },

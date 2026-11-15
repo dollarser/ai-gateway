@@ -76,6 +76,12 @@ def source_ip(scope, headers):
 
 
 def authorize_inference(app, headers, service, path, protocols=(), scope=None):
+    if getattr(
+        getattr(app.state, "settings", None), "edge_only", False
+    ) and not is_local_listener(scope or {}):
+        from gateway.edge_origin import edge_grant
+
+        return edge_grant(app, headers, scope)
     ip = source_ip(scope, headers)
     if ip:
         app.state.store.check_inference_auth(ip)

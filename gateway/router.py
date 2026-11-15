@@ -19,6 +19,7 @@ from gateway import audio as audio_proxy
 from gateway.usage import UsageTracker
 from gateway.catalog import discover_models, parse_output_modalities
 from gateway.tracking import safe_id
+from gateway.edge_origin import trusted_edge, edge_request_id
 
 router = APIRouter()
 from gateway.routes import UPSTREAMS, http_route, ws_service
@@ -29,6 +30,7 @@ logger = logging.getLogger("uvicorn.error")
 @router.api_route("/{path:path}", methods=["GET", "POST", "OPTIONS"])
 async def inference(path: str, request: Request):
     local = is_local_listener(request.scope)
+    edge = trusted_edge(request.app, request.headers, request.scope)
     path = "/" + path
     route = http_route(request.url.hostname, path, request.method, local)
     service = (
@@ -101,7 +103,7 @@ async def inference(path: str, request: Request):
             trace["failure_stage"] = None
         trace["upstream_response_id"] = tracker.response_id if tracker else None
         try:
-            if lease:
+            if lease and not edge:
                 await asyncio.to_thread(
                     request.app.state.store.finish,
                     lease,
@@ -322,7 +324,7 @@ async def inference(path: str, request: Request):
             selected = parse_output_modalities(values[0] if values else "text")
             luna, permissions = (
                 await openai_proxy.catalog(request.app, lease, include_services=True)
-                if not local
+                if not local and not edge
                 else ([], ["qwen"])
             )
             if "qwen" not in permissions:
@@ -518,7 +520,7 @@ async def websocket(ws: WebSocket, mode: str):
             # The transport may finish while a backend close is in flight.
             logger.debug("WebSocket transport already closed")
 
-    request_id = secrets.token_hex(16)
+    request_id = edge_request_id(ws.app, ws.headers, ws.scope) or secrets.token_hex(16)
     diagnostic = {
         "request_id": request_id,
         "protocol": "websocket",

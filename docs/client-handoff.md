@@ -55,3 +55,7 @@ POST `/v1/audio/speech`，JSON 包含 model、input、voice（默认 marin）和
 ## 新增错误与兼容要求
 
 云语音缺少/拼错 model、错误 Content-Type 返回 422，不能把 tts-1、whisper-1 或旧自建默认名称当作新云模型 ID。旧自建客户端显式发送 `X-Inference-Provider: local` 可保留原格式。WebSocket 握手错误现在区分 401/403/422/503，并提供 request_id；上游停机不再伪装为权限 403。完整行为见 [可靠性与诊断](gateway-reliability.md)。
+
+## 边缘直连更新
+
+API 域名和请求格式不变。云文本、PCM/WAV 合成、标准 PCM WAV 识别直接由 Worker 处理，不再经过本机网关。响应 X-Inference-Execution: edge 可确认入口。压缩输入识别和 MP3/Opus/FLAC 输出保留一次私有编解码回源，若源站停机可能失败；低延迟和源站独立性优先时，识别上传 16kHz 单声道 PCM WAV，合成选择 PCM 流。不要给客户端添加任何 X-Edge-* 内部头。详情见 [边缘路径](edge-api.md)。

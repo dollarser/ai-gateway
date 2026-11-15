@@ -100,28 +100,60 @@ export async function audioModels(store, env, lease) {
   }
 }
 export function wavDuration(bytes) {
+  if (bytes.length < 44) throw new Denied(422, "需要有效 PCM WAV");
   const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength),
     s = (a, b) => new TextDecoder().decode(bytes.subarray(a, b));
-  // The gateway fully decodes untrusted uploads; only its canonical WAV is accepted.
   if (
-    bytes.length < 46 ||
     s(0, 4) !== "RIFF" ||
     s(8, 12) !== "WAVE" ||
-    s(12, 16) !== "fmt " ||
-    v.getUint32(16, true) !== 16 ||
-    v.getUint16(20, true) !== 1 ||
-    v.getUint16(22, true) !== 1 ||
-    v.getUint32(24, true) !== 16000 ||
-    v.getUint32(28, true) !== 32000 ||
-    v.getUint16(32, true) !== 2 ||
-    v.getUint16(34, true) !== 16 ||
-    s(36, 40) !== "data" ||
-    v.getUint32(40, true) !== bytes.length - 44 ||
-    v.getUint32(4, true) !== bytes.length - 8 ||
-    (bytes.length - 44) % 2
+    v.getUint32(4, true) !== bytes.length - 8
   )
-    throw new Denied(422, "需要服务端标准化的单声道 16kHz PCM WAV");
-  const ms = Math.ceil((bytes.length - 44) / 32);
+    throw new Denied(422, "WAV 容器无效");
+  let at = 12,
+    rate = 0,
+    channels = 0,
+    align = 0,
+    size = -1,
+    formats = 0;
+  while (at + 8 <= bytes.length) {
+    const type = s(at, at + 4),
+      n = v.getUint32(at + 4, true);
+    if (at + 8 + n > bytes.length) throw new Denied(422, "WAV 长度无效");
+    if (type === "fmt ") {
+      formats++;
+      if (
+        n < 16 ||
+        v.getUint16(at + 8, true) !== 1 ||
+        v.getUint16(at + 22, true) !== 16
+      )
+        throw new Denied(422, "需要 16-bit PCM WAV");
+      channels = v.getUint16(at + 10, true);
+      rate = v.getUint32(at + 12, true);
+      align = v.getUint16(at + 20, true);
+      if (
+        ![1, 2].includes(channels) ||
+        rate < 8000 ||
+        rate > 48000 ||
+        align !== channels * 2 ||
+        v.getUint32(at + 16, true) !== rate * align
+      )
+        throw new Denied(422, "WAV 采样参数无效");
+    }
+    if (type === "data") {
+      if (size !== -1) throw new Denied(422, "不支持多个 WAV 音频块");
+      size = n;
+    }
+    at += 8 + n + (n % 2);
+  }
+  if (
+    at !== bytes.length ||
+    formats !== 1 ||
+    !rate ||
+    size <= 0 ||
+    size % align
+  )
+    throw new Denied(422, "WAV 数据块无效");
+  const ms = Math.ceil((size * 1000) / (rate * align));
   if (ms > 300000) throw new Denied(413, "单次识别最多 5 分钟");
   return ms;
 }
@@ -190,18 +222,27 @@ async function bounded(request, max) {
   }
   return all;
 }
-export async function proxyTranscription(request, env, store, ctx) {
+export async function proxyTranscription(
+  request,
+  env,
+  store,
+  ctx,
+  preparedForm = null,
+  measuredMs = null,
+) {
   if (!env.OPENAI_API_KEY) throw new Denied(503, "尚未配置 OpenAI 密钥");
-  const bytes = await bounded(request, 16 * 1024 * 1024);
-  let form;
-  try {
-    form = await new Request(request.url, {
-      method: "POST",
-      headers: { "Content-Type": request.headers.get("Content-Type") ?? "" },
-      body: bytes,
-    }).formData();
-  } catch {
-    throw new Denied(400, "无效音频表单");
+  let form = preparedForm;
+  if (!form) {
+    const bytes = await bounded(request, 16 * 1024 * 1024);
+    try {
+      form = await new Request(request.url, {
+        method: "POST",
+        headers: { "Content-Type": request.headers.get("Content-Type") ?? "" },
+        body: bytes,
+      }).formData();
+    } catch {
+      throw new Denied(400, "无效音频表单");
+    }
   }
   const allowed = [
     "file",
@@ -234,7 +275,8 @@ export async function proxyTranscription(request, env, store, ctx) {
     throw new Denied(422, "识别格式支持 json/text，stream 支持 true/false");
   if (stream === "true" && fmt !== "json")
     throw new Denied(422, "流式识别仅支持 JSON SSE");
-  const ms = wavDuration(new Uint8Array(await file.arrayBuffer()));
+  const ms =
+    measuredMs ?? wavDuration(new Uint8Array(await file.arrayBuffer()));
   const out = new FormData();
   out.set("file", file, "audio.wav");
   out.set("model", ASR_MODEL);
