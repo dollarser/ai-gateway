@@ -13,6 +13,31 @@ ASR_MODEL = "gpt-transcribe"
 TTS_MODEL = "gpt-realtime-2.1-mini"
 
 
+def select_audio(request, model, service):
+    trace = getattr(request.state, "inference_trace", {})
+    if isinstance(model, str):
+        trace["model"] = model[:128]
+    expected = ASR_MODEL if service == "asr" else TTS_MODEL
+    if model == expected:
+        trace["provider"] = "openai"
+        return True
+    trace["provider"] = "local"
+    if not request.app.state.settings.accounts_worker_url:
+        return False
+    provider = request.headers.get("x-inference-provider", "")
+    if provider not in {"", "local", "openai"}:
+        raise Denied(422, "X-Inference-Provider 应为 local 或 openai")
+    local_models = {"asr": {"funasr", "paraformer"}, "tts": {"cosyvoice", "cosyvoice3"}}
+    if provider == "local" or model in local_models[service]:
+        return False
+    trace["failure_stage"] = "validation"
+    trace["error_code"] = "invalid_audio_model"
+    raise Denied(
+        422,
+        f"请明确指定 model={expected} 调用云语音；旧自建接口请设置 X-Inference-Provider: local，不能用旧模型名自动调用 OpenAI",
+    )
+
+
 async def transcode(data, *, encode=False, output_format="wav"):
     if encode and output_format == "wav":
         output = io.BytesIO()
@@ -83,7 +108,11 @@ async def prepare_asr(request, body):
 
     clone = Request(request.scope, receive=receive)
     async with clone.form(max_files=1, max_fields=16) as form:
-        if form.get("model") != ASR_MODEL:
+        request.state.inference_trace = getattr(request.state, "inference_trace", {})
+        request.state.inference_trace["protocol"] = (
+            "sse" if form.get("stream") == "true" else "http"
+        )
+        if not select_audio(request, form.get("model"), "asr"):
             return None
         allowed = {
             "file",
@@ -138,11 +167,23 @@ async def prepare_tts(request, body, lease):
     try:
         payload = json.loads(body)
     except (ValueError, UnicodeDecodeError):
+        if request.app.state.settings.accounts_worker_url:
+            raise Denied(422, "语音合成需要 JSON 请求体和正确的 model")
         return None
-    if not isinstance(payload, dict) or payload.get("model") != TTS_MODEL:
+    if not isinstance(payload, dict):
+        raise Denied(422, "语音合成 JSON 必须为对象")
+    if not select_audio(request, payload.get("model"), "tts"):
         return None
     origin, headers = connection(request.app, lease)
-    fmt = payload.get("response_format", "mp3")
+    streaming = payload.get("stream", False)
+    if not isinstance(streaming, bool):
+        raise Denied(422, "stream 必须为布尔值")
+    getattr(request.state, "inference_trace", {})["protocol"] = (
+        "audio-stream" if streaming else "http"
+    )
+    fmt = payload.get("response_format", "pcm" if streaming else "mp3")
+    if streaming and fmt != "pcm":
+        raise Denied(422, "实时分块合成目前使用 stream=true,response_format=pcm")
     if fmt not in {"wav", "pcm", "mp3", "opus", "flac"}:
         raise Denied(422, "语音格式支持 wav、pcm、mp3、opus、flac")
     payload["response_format"] = "pcm"  # Worker output uses trusted 24-kHz mono PCM.
@@ -152,4 +193,4 @@ async def prepare_tts(request, body, lease):
         headers=headers,
         json=payload,
         timeout=210,
-    ), fmt
+    ), "stream-pcm" if streaming else fmt

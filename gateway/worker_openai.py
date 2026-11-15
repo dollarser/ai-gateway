@@ -28,9 +28,9 @@ def connection(app, lease):
     }
 
 
-async def catalog(app, lease):
+async def catalog(app, lease, include_services=False):
     if not app.state.settings.accounts_worker_url:
-        return []
+        return ([], ["qwen"]) if include_services else []
     origin, headers = connection(app, lease)
     try:
         response = await app.state.client.post(
@@ -47,7 +47,11 @@ async def catalog(app, lease):
             for item in data
         ):
             raise ValueError("Invalid Luna catalog")
-        return data
+        return (
+            (data, response.json().get("services", ["qwen"]))
+            if include_services
+            else data
+        )
     except (httpx.HTTPError, ValueError, KeyError, AttributeError) as exc:
         raise Denied(503, "OpenAI 模型配置暂时不可用") from exc
 

@@ -8,4 +8,4 @@ case "${1:-api}" in
 esac
 binary="${CLOUDFLARED_BIN:-$HOME/.local/bin/cloudflared}"
 if [[ ! -x "$binary" ]]; then binary=cloudflared; fi
-exec "$binary" tunnel --no-autoupdate --config "$config" run
+exec "$binary" tunnel --no-autoupdate --config "$config" --metrics "${CLOUDFLARED_METRICS_ADDR:-127.0.0.1:20241}" run

@@ -4,7 +4,7 @@
 
 1. 使用公网 base URL `https://api.hilex.me/v1`，不能使用 18901 本机免认证入口调用 OpenAI 模型。
 2. 账号登录后使用 Bearer access_token 和有效 `X-Client-ID`；API Key 只需 Bearer Key。不能把 Worker 内部密钥或 OpenAI 密钥放入客户端。
-3. 完整发现请求 `GET /v1/models?output_modalities=all`。默认列表只包含对话文本模型，不包含独立识别/合成模型。当前模型发现沿用 `qwen` 服务权限，只有 ASR/TTS 权限的 Key 可以直接指定语音模型调用，但不能用该 Key 调用模型发现。
+3. 完整发现请求 `GET /v1/models?output_modalities=all`。默认列表只包含对话文本模型，不包含独立识别/合成模型。模型列表按账号与 Key 的权限交集返回，只有 ASR/TTS 权限的 Key 也能发现自己的语音模型，不必增加 qwen 权限。
 4. 按 `architecture.output_modalities` 和 `endpoints`（如存在）区分用途：`text` 对话，`transcription` 识别，`audio` / `speech` 合成。不要把所有模型放进同一个聊天选择器，也不要硬编码只有 Qwen。
 5. 模型 ID 精确为 `gpt-6-luna`、`gpt-transcribe`、`gpt-realtime-2.1-mini`。Luna 的 Chat Completions 和 Responses 参数不同；语音模型不是聊天模型。
 6. 遇到 429 先展示服务端 `detail` 并遵守 Retry-After，不无限自动重试。遇到 401 尝试正规刷新或重新登录；403 展示权限/封禁/首次改密提示。网络断开后不要无条件重复提交同一份音频或文本。
@@ -23,7 +23,7 @@ POST `/v1/audio/transcriptions`，multipart 的 `model=gpt-transcribe`，`file` 
 
 POST `/v1/audio/speech`，JSON 包含 model、input、voice（默认 marin）和 response_format（默认 mp3）。输入每段 1–2000 Unicode 码点，长文本分段；JavaScript 用 `Array.from(text).length` 估算，不使用 UTF-16 length 或字节数。空格和标点也计入每日字符。
 
-当前支持 mp3、wav、pcm、opus、flac，speed=1。PCM 需要按 24kHz、16-bit、单声道播放。接口适配 OpenAI Realtime，但客户端收到的是生成完成后的二进制音频；不要把它当作原生 Realtime WebSocket，也不要假设已支持低延迟分块。
+当前支持 mp3、wav、pcm、opus、flac，speed=1。增加 `stream:true,response_format:"pcm"` 可以边生成边播放；其他格式默认保持非流式。PCM 需要按 24kHz、16-bit、单声道播放。非流式请求返回生成完成后的音频，PCM 流式请求则逐块返回。它们都不是原生 Realtime WebSocket。HTTP 分块可能不对齐 16-bit 样本，客户端需缓存拼接；流式中断不能只凭 HTTP 200 当成成功。
 
 ## 账号余额展示
 
@@ -51,3 +51,7 @@ POST `/v1/audio/speech`，JSON 包含 model、input、voice（默认 marin）和
 保存响应的 `X-Request-ID`，报错时向用户提供复制入口。IP 由服务端可信入口记录，客户端无需上报 IP；不要自行填写 CF-Connecting-IP、CF-Ray 或 X-Forwarded-For。若为浏览器 WebSocket，不能任意加请求头，继续沿用现有安全子协议鉴权，版本/设备信息需另行协商协议；不要把密钥或诊断字段塞进会被访问日志记录的 URL 查询参数。
 
 识别结果、待合成文本和原始音频不应写进常规客户端日志。设备 ID 只是诊断信息，不参与账号权限、额度或安全认证。
+
+## 新增错误与兼容要求
+
+云语音缺少/拼错 model、错误 Content-Type 返回 422，不能把 tts-1、whisper-1 或旧自建默认名称当作新云模型 ID。旧自建客户端显式发送 `X-Inference-Provider: local` 可保留原格式。WebSocket 握手错误现在区分 401/403/422/503，并提供 request_id；上游停机不再伪装为权限 403。完整行为见 [可靠性与诊断](gateway-reliability.md)。

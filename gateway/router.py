@@ -10,6 +10,7 @@ import httpx
 import websockets
 from fastapi import APIRouter, Request, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.exceptions import HTTPException
 from accounts.store import Denied
 from gateway.auth import authorize_inference, is_local_listener
 from gateway import llm as llm_protocol
@@ -30,7 +31,12 @@ async def inference(path: str, request: Request):
     local = is_local_listener(request.scope)
     path = "/" + path
     route = http_route(request.url.hostname, path, request.method, local)
-    service = route.service
+    service = (
+        "catalog"
+        if path == "/v1/models"
+        and hasattr(request.app.state.store, "acquire_with_metadata")
+        else route.service
+    )
     lease = None
     headers = {
         "User-Agent": "unified-ai-gateway/2.0",
@@ -49,7 +55,13 @@ async def inference(path: str, request: Request):
         request.state, "gateway_request_id", None
     ) or secrets.token_hex(16)
     headers["X-Request-ID"] = request_id
-    trace = {"request_id": request_id}
+    trace = {
+        "request_id": request_id,
+        "provider": "local",
+        "protocol": "http",
+        "failure_stage": "validation",
+    }
+    request.state.inference_trace = trace
     for name, field in [
         ("x-client-request-id", "client_request_id"),
         ("x-helix-turn-id", "helix_turn_id"),
@@ -84,6 +96,9 @@ async def inference(path: str, request: Request):
             return
         finished = True
         pt, ct, exact = tracker.result() if tracker else (0, 0, False)
+        trace["duration_ms"] = round((time.monotonic() - started) * 1000)
+        if status < 400:
+            trace["failure_stage"] = None
         trace["upstream_response_id"] = tracker.response_id if tracker else None
         try:
             if lease:
@@ -128,14 +143,32 @@ async def inference(path: str, request: Request):
         ).startswith("multipart/form-data"):
             request.state.audio_lease = lease
             audio_request = await audio_proxy.prepare_asr(request, body)
+        elif path == "/v1/audio/transcriptions":
+            if (
+                request.app.state.settings.accounts_worker_url
+                and request.headers.get("x-inference-provider") != "local"
+            ):
+                trace["error_code"] = "invalid_audio_content_type"
+                raise Denied(
+                    422,
+                    "语音识别需要 multipart/form-data，包含 model=gpt-transcribe 和 file 音频字段",
+                )
         elif path == "/v1/audio/speech":
             prepared = await audio_proxy.prepare_tts(request, body, lease)
             if prepared:
                 audio_request, audio_format = prepared
         if audio_request:
+            trace["failure_stage"] = "provider_request"
             upstream = await request.app.state.client.send(audio_request, stream=True)
             status = upstream.status_code
-            if audio_format and status == 200:
+            trace["upstream_status"] = int(
+                upstream.headers.get("x-upstream-status", status)
+            )
+            if status >= 400:
+                trace["error_code"] = (
+                    safe_id(upstream.headers.get("x-error-code")) or "provider_rejected"
+                )
+            if audio_format and audio_format != "stream-pcm" and status == 200:
                 pcm = await upstream.aread()
                 if len(pcm) > 16 * 1024 * 1024 or len(pcm) % 2:
                     raise Denied(502, "无效的上游音频")
@@ -176,6 +209,9 @@ async def inference(path: str, request: Request):
                     status = 499
                     raise
                 except (httpx.HTTPError, TimeoutError):
+                    trace.update(
+                        failure_stage="response_stream", error_code="stream_interrupted"
+                    )
                     status = 504
                     raise
                 finally:
@@ -195,6 +231,11 @@ async def inference(path: str, request: Request):
                     "Cache-Control": "no-store",
                     "X-Request-ID": request_id,
                     **({"Retry-After": "60"} if status == 429 else {}),
+                    **(
+                        {"X-Audio-Sample-Rate": "24000"}
+                        if audio_format == "stream-pcm"
+                        else {}
+                    ),
                 },
             )
         if service == "qwen" and path in {
@@ -212,6 +253,12 @@ async def inference(path: str, request: Request):
                 candidate.get("model") == openai_proxy.LUNA_MODEL
                 or path == "/v1/responses"
             ):
+                trace.update(
+                    model=candidate.get("model"),
+                    provider="openai",
+                    failure_stage="provider_request",
+                    protocol="sse" if candidate.get("stream") else "http",
+                )
                 # The Worker reserves and settles the budget; the gateway never
                 # receives OPENAI_API_KEY and never applies SGLang rewrites here.
                 upstream = await request.app.state.client.send(
@@ -219,6 +266,14 @@ async def inference(path: str, request: Request):
                     stream=True,
                 )
                 status = upstream.status_code
+                trace["upstream_status"] = int(
+                    upstream.headers.get("x-upstream-status", status)
+                )
+                if status >= 400:
+                    trace["error_code"] = (
+                        safe_id(upstream.headers.get("x-error-code"))
+                        or "provider_rejected"
+                    )
                 tracker = UsageTracker(
                     streaming=bool(candidate.get("stream")), input_characters=0
                 )
@@ -265,11 +320,20 @@ async def inference(path: str, request: Request):
             if len(values) > 1:
                 raise Denied(400, "output_modalities 请使用单个逗号分隔参数")
             selected = parse_output_modalities(values[0] if values else "text")
-            luna = await openai_proxy.catalog(request.app, lease) if not local else []
+            luna, permissions = (
+                await openai_proxy.catalog(request.app, lease, include_services=True)
+                if not local
+                else ([], ["qwen"])
+            )
+            if "qwen" not in permissions:
+                catalog, window = {"object": "list", "data": []}, 0
+            else:
+                catalog, window = None, 0
             try:
-                catalog, window = await discover_models(
-                    request.app.state.client, headers, selected
-                )
+                if catalog is None:
+                    catalog, window = await discover_models(
+                        request.app.state.client, headers, selected
+                    )
             except Denied:
                 if not luna:
                     raise
@@ -365,6 +429,7 @@ async def inference(path: str, request: Request):
             async with timeout(first_timeout):
                 return await request.app.state.client.send(req, stream=True)
 
+        trace["failure_stage"] = "upstream_connect"
         upstream = await send(body)
         if llm and upstream.status_code == 400:
             error = await upstream.aread()
@@ -375,6 +440,9 @@ async def inference(path: str, request: Request):
                 body = json.dumps(payload, ensure_ascii=False).encode()
                 upstream = await send(body)
         status = upstream.status_code
+        trace["upstream_status"] = status
+        if status >= 400:
+            trace["error_code"] = "upstream_rejected"
         outgoing = {
             k: v
             for k, v in upstream.headers.items()
@@ -412,9 +480,18 @@ async def inference(path: str, request: Request):
         transferred = True
         return StreamingResponse(stream(), status_code=status, headers=outgoing)
     except (httpx.HTTPError, TimeoutError):
+        trace["error_code"] = "upstream_unavailable"
         status = 502
         raise Denied(502, "上游服务暂时不可用")
+    except HTTPException as exc:
+        status = exc.status_code
+        trace.update(failure_stage="validation", error_code="invalid_request")
+        raise
     except Denied as exc:
+        trace.setdefault(
+            "error_code",
+            "invalid_request" if exc.status < 500 else "provider_unavailable",
+        )
         status = exc.status
         raise
     finally:
@@ -441,6 +518,33 @@ async def websocket(ws: WebSocket, mode: str):
             # The transport may finish while a backend close is in flight.
             logger.debug("WebSocket transport already closed")
 
+    request_id = secrets.token_hex(16)
+    diagnostic = {
+        "request_id": request_id,
+        "protocol": "websocket",
+        "provider": "local",
+        "failure_stage": "authentication",
+    }
+
+    async def deny(code, message, error):
+        diagnostic["error_code"] = error
+        if (
+            ws.application_state.name == "CONNECTING"
+            and "websocket.http.response" in ws.scope.get("extensions", {})
+        ):
+            await ws.send_denial_response(
+                JSONResponse(
+                    {"detail": message, "error_code": error, "request_id": request_id},
+                    status_code=code,
+                    headers={
+                        "X-Request-ID": request_id,
+                        **({"Retry-After": "30"} if code == 503 else {}),
+                    },
+                )
+            )
+        else:
+            await close(code=1008 if code in {401, 403} else 1013, reason=message[:100])
+
     lease = None
     status, size = 499, 0
     try:
@@ -459,11 +563,21 @@ async def websocket(ws: WebSocket, mode: str):
                 protocols,
                 scope=ws.scope,
             )
+        if getattr(ws, "query_params", {}).get("model", "").startswith("gpt-"):
+            diagnostic["failure_stage"] = "validation"
+            raise Denied(
+                422,
+                "云语音请使用 /v1/audio/transcriptions 或 /v1/audio/speech HTTP 接口",
+            )
+        diagnostic["failure_stage"] = "upstream_connect"
         upstream = UPSTREAMS[service].replace("http://", "ws://") + "/ws/" + mode
         async with websockets.connect(
             upstream, extra_headers=headers, max_size=16 * 1024 * 1024
         ) as backend:
-            await ws.accept(subprotocol="speech" if "speech" in protocols else None)
+            await ws.accept(
+                subprotocol="speech" if "speech" in protocols else None,
+                headers=[(b"x-request-id", request_id.encode())],
+            )
             status = 101
 
             async def upload():
@@ -523,13 +637,36 @@ async def websocket(ws: WebSocket, mode: str):
             pass
     except Denied as exc:
         status = exc.status
-        await close(code=1008)
+        await deny(
+            exc.status,
+            exc.detail,
+            "authentication_failed"
+            if exc.status == 401
+            else "permission_denied"
+            if exc.status == 403
+            else "invalid_protocol",
+        )
     except (TimeoutError, websockets.InvalidHandshake, OSError):
-        status = 502
+        status = 503
         try:
-            await close(code=1011)
+            await deny(
+                503,
+                "自建语音上游不可达；云语音请使用 HTTP 接口",
+                "upstream_unavailable",
+            )
         except RuntimeError:
             pass
     finally:
+        logger.info(
+            "websocket request_id=%s status=%s trace=%s",
+            request_id,
+            status,
+            json.dumps(diagnostic),
+        )
         if lease:
-            await asyncio.to_thread(ws.app.state.store.finish, lease, status, size)
+            if hasattr(ws.app.state.store, "acquire_with_metadata"):
+                await asyncio.to_thread(
+                    ws.app.state.store.finish, lease, status, size, trace=diagnostic
+                )
+            else:
+                await asyncio.to_thread(ws.app.state.store.finish, lease, status, size)

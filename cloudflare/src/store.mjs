@@ -342,7 +342,8 @@ export class Store {
     if (r.n >= 60) throw new Denied(429, "认证失败次数过多");
   }
   async acquire(raw, service, path, metadata = {}) {
-    if (!SERVICES.includes(service)) throw new Denied(400, "未知服务");
+    if (!SERVICES.includes(service) && service !== "catalog")
+      throw new Denied(400, "未知服务");
     let u,
       key = null,
       auth = "api_key";
@@ -357,6 +358,16 @@ export class Store {
       );
       if (!key) throw new Denied(401, "API Key 无效或已过期");
       u = await this.first("SELECT * FROM users WHERE id=?", key.user_id);
+    }
+    if (service === "catalog") {
+      if (path !== "/v1/models") throw new Denied(400, "目录凭证路径无效");
+      service =
+        ["qwen", "asr", "tts"].find(
+          (s) =>
+            u &&
+            JSON.parse(u.services).includes(s) &&
+            (!key || JSON.parse(key.services).includes(s)),
+        ) ?? "";
     }
     if (
       !u ||
@@ -418,6 +429,27 @@ export class Store {
   }
   async finish(b) {
     const t = b.trace ?? {};
+    const fields = [
+      "model",
+      "provider",
+      "protocol",
+      "failure_stage",
+      "error_code",
+    ];
+    const extra = fields.map((k) =>
+      typeof t[k] === "string" && /^[a-zA-Z0-9_.:/-]{1,128}$/.test(t[k])
+        ? t[k]
+        : null,
+    );
+    const numeric = (k) =>
+      Number.isSafeInteger(t[k]) && t[k] >= 0 ? t[k] : null;
+    await this.run(
+      "UPDATE requests SET model=?,provider=?,protocol=?,failure_stage=?,error_code=?,upstream_status=?,duration_ms=? WHERE id=? AND ended IS NULL",
+      ...extra,
+      numeric("upstream_status"),
+      numeric("duration_ms"),
+      b.lease,
+    );
     await this.run(
       "UPDATE requests SET ended=?,status=?,response_bytes=?,prompt_tokens=?,completion_tokens=?,request_id=?,client_request_id=?,helix_turn_id=?,helix_model_call_id=?,upstream_response_id=? WHERE id=? AND ended IS NULL",
       now(),

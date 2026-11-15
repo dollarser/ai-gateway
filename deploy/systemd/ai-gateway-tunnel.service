@@ -1,0 +1,19 @@
+[Unit]
+Description=AI Gateway Cloudflare Tunnel
+After=network-online.target ai-gateway.service
+Wants=network-online.target ai-gateway.service
+StartLimitIntervalSec=60
+StartLimitBurst=10
+[Service]
+Type=simple
+WorkingDirectory=%h/workspace/ai-gateway
+ExecStart=/bin/bash scripts/ops/serve-tunnel.sh api
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+[Install]
+WantedBy=default.target

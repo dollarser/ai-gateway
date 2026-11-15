@@ -23,6 +23,10 @@ export async function lunaUsage(store, uid) {
     model: LUNA_MODEL,
     month: period,
     timezone: "Asia/Shanghai",
+    resets_at: new Date(
+      Date.UTC(Number(period.slice(0, 4)), Number(period.slice(5, 7)), 1) -
+        8 * 3600000,
+    ).toISOString(),
     monthly_tokens: u.luna_monthly_tokens,
     used_tokens: r.n,
     reserved_tokens: r.reserved,
@@ -36,7 +40,7 @@ async function activeLease(store, lease) {
   if (typeof lease !== "string" || !lease || lease.length > 128)
     throw new Denied(422, "无效请求凭证");
   const r = await store.first(
-    "SELECT r.*,u.luna_monthly_tokens FROM requests r JOIN users u ON u.id=r.user_id WHERE r.id=? AND r.service='qwen' AND r.ended IS NULL AND r.started>unixepoch()-900 AND u.enabled=1 AND u.must_change=0 AND EXISTS(SELECT 1 FROM json_each(u.services) WHERE value='qwen')",
+    "SELECT r.*,u.luna_monthly_tokens FROM requests r JOIN users u ON u.id=r.user_id WHERE r.id=? AND (r.service='qwen' OR r.path='/v1/models') AND r.ended IS NULL AND r.started>unixepoch()-900 AND u.enabled=1 AND u.must_change=0 AND EXISTS(SELECT 1 FROM json_each(u.services) WHERE value='qwen')",
     lease,
   );
   if (!r) throw new Denied(403, "推理请求凭证已失效");
@@ -295,12 +299,15 @@ export async function proxyLuna(request, env, store, ctx, payload, responses) {
       /* Do not expose raw upstream errors or request content. */
     }
     await settle({ total: 0, input: 0, output: 0, cached: 0, writes: 0 });
-    throw new Denied(
+    const failure = new Denied(
       upstream.status === 429 ? 429 : upstream.status === 400 ? 400 : 502,
       upstream.status === 429
         ? "OpenAI 请求频率或账户余额受限"
         : "OpenAI 拒绝了请求，请检查模型权限或请求参数" + code,
     );
+    failure.upstream_status = upstream.status;
+    failure.code = "openai_chat_rejected";
+    throw failure;
   }
   if (!p.payload.stream) {
     let value;

@@ -1110,3 +1110,161 @@ test("admin unified defaults, user overview, IP metadata and atomic bulk ban/unb
     422,
   );
 });
+
+test("voice-only keys discover only their permitted cloud models", async () => {
+  const { uid, key } = await audioUser("catalog-asr-only", "asr");
+  await db
+    .prepare("UPDATE keys SET services='[\"asr\"]' WHERE user_id=?")
+    .bind(uid)
+    .run();
+  const grant = await internal("acquire", {
+    raw: key,
+    service: "catalog",
+    path: "/v1/models",
+  });
+  assert.equal(grant.status, 200);
+  const catalog = await internal("openai-models", { lease: grant.body.lease });
+  assert.equal(catalog.status, 200);
+  assert.deepEqual(catalog.body.services, ["asr"]);
+  assert.deepEqual(
+    catalog.body.data.map((m) => m.id),
+    ["gpt-transcribe"],
+  );
+});
+test("diagnostics persist safe metadata and request ID lookup is admin-only", async () => {
+  const { key } = await lunaUser("diagnostic-test");
+  const lease = await lunaLease(key);
+  await internal("finish", {
+    lease,
+    status: 422,
+    trace: {
+      request_id: "diagnostic-request",
+      model: "gpt-wrong",
+      provider: "local",
+      protocol: "http",
+      failure_stage: "validation",
+      error_code: "invalid_audio_model",
+      duration_ms: 12,
+    },
+  });
+  const rows = await call(
+    "/admin/requests?request_id=diagnostic-request",
+    undefined,
+    { access: admin },
+  );
+  assert.equal(rows.status, 200);
+  assert.equal(rows.body[0].failure_stage, "validation");
+  assert.equal(rows.body[0].duration_ms, 12);
+  assert.equal(rows.body[0].model, "gpt-wrong");
+  assert.equal(
+    (await call("/admin/requests?request_id=diagnostic-request")).status,
+    401,
+  );
+});
+test("quota reconciliation is audited, compare-and-set protected, bounded and idempotent", async () => {
+  const { uid, key } = await audioUser("quota-review", "tts");
+  const lease = await audioLease(key, "tts");
+  await assert.rejects(ttsCall(lease, "abc", "disconnect"));
+  await internal("finish", { lease, status: 502 });
+  const b = {
+    id: "quota-review-operation",
+    kind: "audio",
+    lease,
+    expected_units: 3,
+    units: 1,
+    reason: "verified provider test usage",
+  };
+  assert.equal(
+    (await call("/admin/quota-adjustments", b, { access: admin })).status,
+    409,
+  );
+  await db
+    .prepare("UPDATE requests SET ended=unixepoch()-120 WHERE id=?")
+    .bind(lease)
+    .run();
+  assert.equal(
+    (await call("/admin/quota-adjustments", b, { access: admin })).status,
+    200,
+  );
+  assert.equal(
+    (await call("/admin/quota-adjustments", b, { access: admin })).body
+      .replayed,
+    true,
+  );
+  assert.equal(
+    (
+      await call(
+        "/admin/quota-adjustments",
+        { ...b, units: 0 },
+        { access: admin },
+      )
+    ).status,
+    409,
+  );
+  assert.equal(
+    (
+      await call(
+        "/admin/quota-adjustments",
+        { ...b, id: "another-id" },
+        { access: admin },
+      )
+    ).status,
+    409,
+  );
+  const row = await db
+    .prepare("SELECT charged_units,settled FROM audio_usage WHERE lease=?")
+    .bind(lease)
+    .first();
+  assert.equal(row.charged_units, 1);
+  assert.equal(row.settled, 1);
+  const review = await call(
+    "/admin/quota-review?state=settled&user_id=" + uid,
+    undefined,
+    { access: admin },
+  );
+  assert.equal(review.body[0].lease, lease);
+  assert.equal(
+    (
+      await db
+        .prepare("SELECT count(*) n FROM quota_adjustments WHERE lease=?")
+        .bind(lease)
+        .first()
+    ).n,
+    1,
+  );
+});
+test("Realtime streaming emits PCM before settlement, and still settles the same character budget", async () => {
+  const { key } = await audioUser("tts-stream", "tts");
+  const lease = await audioLease(key, "tts");
+  const req = new Request("https://accounts.test/internal/openai/speech", {
+    method: "POST",
+    headers: { "X-Gateway-Lease": lease },
+    body: JSON.stringify({
+      model: "gpt-realtime-2.1-mini",
+      input: "你好🙂",
+      response_format: "pcm",
+      stream: true,
+    }),
+  });
+  const jobs = [];
+  const r = await proxySpeech(
+    req,
+    { OPENAI_API_KEY: "test-key" },
+    new Store(db),
+    async () => ({ webSocket: new MockRealtime() }),
+    {
+      waitUntil(p) {
+        jobs.push(p);
+      },
+    },
+  );
+  assert.equal(r.status, 200);
+  assert.equal((await r.arrayBuffer()).byteLength, 4);
+  await Promise.all(jobs);
+  const row = await db
+    .prepare("SELECT charged_units,settled FROM audio_usage WHERE lease=?")
+    .bind(lease)
+    .first();
+  assert.equal(row.charged_units, 3);
+  assert.equal(row.settled, 1);
+});

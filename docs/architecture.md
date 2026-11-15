@@ -21,4 +21,4 @@ API 网关负责模型发现、OpenAI 参数兼容、SSE、WebSocket 和用量�
 
 Worker 模式下 D1 保存凭证的 SHA256 摘要、scrypt 密码哈希、账号权限和请求占用；内部服务密钥只通过 Worker Secret 和网关环境变量配置。数据库请求占用采用条件 INSERT 和 SQL trigger 原子执行限额，不依赖某个 Worker 实例的内存锁。
 
-当前 Worker 为 hilex-accounts，D1 为 hilex-accounts。本机账号路由已关闭，旧账号隧道连接器已停止。源站 API 网关和 API 隧道当前运行，未配置开机自启。
+当前 Worker 为 hilex-accounts，D1 为 hilex-accounts。本机账号路由已关闭，旧账号隧道连接器已停止。源站 API 网关和 API 隧道由 systemd 用户服务管理并自动重启，linger 支持无人登录时随系统启动，见 [自动运行](gateway-reliability.md)。

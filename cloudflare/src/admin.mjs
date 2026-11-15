@@ -2,6 +2,7 @@ import { Denied, publicUser, day } from "./store.mjs";
 import { now } from "./crypto.mjs";
 import { budgetValue } from "./luna.mjs";
 import { AUDIO_FIELDS, audioQuotas, audioUsage } from "./audio.mjs";
+import { diagnosticsRoute } from "./diagnostics.mjs";
 export const QUOTA_FIELDS = [
   "rpm",
   "daily_requests",
@@ -58,6 +59,8 @@ const result = (v) =>
     },
   });
 export async function adminRoute(request, store, u, readBody) {
+  const diagnostic = await diagnosticsRoute(request, store, u, readBody);
+  if (diagnostic) return diagnostic;
   const url = new URL(request.url),
     p = url.pathname,
     method = request.method;

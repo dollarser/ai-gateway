@@ -33,6 +33,9 @@ export async function audioUsage(store, uid) {
   return {
     day: period,
     timezone: "Asia/Shanghai",
+    resets_at: new Date(
+      Date.parse(period + "T00:00:00+08:00") + 86400000,
+    ).toISOString(),
     asr: {
       model: ASR_MODEL,
       unit: "milliseconds",
@@ -276,10 +279,13 @@ export async function proxyTranscription(request, env, store, ctx) {
   if (!upstream.ok) {
     await upstream.body?.cancel();
     await settle(false);
-    throw new Denied(
+    const error = new Denied(
       upstream.status === 429 ? 429 : upstream.status === 400 ? 400 : 502,
       "OpenAI 拒绝识别请求，请检查模型权限或参数",
     );
+    error.upstream_status = upstream.status;
+    error.code = "openai_transcription_rejected";
+    throw error;
   }
   if (stream === "true") {
     if (fmt !== "json") {
@@ -356,7 +362,14 @@ export function speechPayload(b) {
     Array.isArray(b) ||
     Object.keys(b).some(
       (k) =>
-        !["model", "input", "voice", "response_format", "speed"].includes(k),
+        ![
+          "model",
+          "input",
+          "voice",
+          "response_format",
+          "speed",
+          "stream",
+        ].includes(k),
     ) ||
     b.model !== TTS_MODEL
   )
@@ -383,11 +396,19 @@ export function speechPayload(b) {
     ].includes(voice)
   )
     throw new Denied(422, "不支持此声音");
+  if (b.stream !== undefined && typeof b.stream !== "boolean")
+    throw new Denied(422, "stream 必须为布尔值");
   if (b.response_format !== "pcm" || (b.speed !== undefined && b.speed !== 1))
     throw new Denied(422, "内部合成仅接受 pcm，暂支持 speed=1");
   return { input: b.input, voice, characters: Array.from(b.input).length };
 }
-export async function synthesize(env, input, voice, transport = fetch) {
+export async function synthesize(
+  env,
+  input,
+  voice,
+  transport = fetch,
+  hooks = null,
+) {
   const upstream = await transport(
     "https://api.openai.com/v1/realtime?model=" + TTS_MODEL,
     {
@@ -400,7 +421,10 @@ export async function synthesize(env, input, voice, transport = fetch) {
   const ws = upstream.webSocket;
   if (!ws) {
     await upstream.body?.cancel();
-    throw new Denied(502, "OpenAI Realtime 连接被拒绝");
+    const error = new Denied(502, "OpenAI Realtime 连接被拒绝");
+    error.upstream_status = upstream.status;
+    error.code = "realtime_handshake_failed";
+    throw error;
   }
   let submitted = false;
   try {
@@ -424,7 +448,7 @@ export async function synthesize(env, input, voice, transport = fetch) {
           error.audioProduced = size > 0;
           reject(error);
         } else {
-          const pcm = new Uint8Array(size);
+          const pcm = new Uint8Array(hooks ? 0 : size);
           let at = 0;
           for (const c of chunks) {
             pcm.set(c, at);
@@ -488,7 +512,8 @@ export async function synthesize(env, input, voice, transport = fetch) {
             );
             size += value.length;
             if (size > 16 * 1024 * 1024) throw new Error("Audio too large");
-            chunks.push(value);
+            if (hooks) hooks.chunk(value);
+            else chunks.push(value);
           } else if (e.type === "response.done") {
             if (e.response?.status !== "completed" || !size || size % 2)
               end(new Denied(502, "语音生成未完成"));
@@ -515,7 +540,13 @@ export async function synthesize(env, input, voice, transport = fetch) {
     throw e;
   }
 }
-export async function proxySpeech(request, env, store, transport = fetch) {
+export async function proxySpeech(
+  request,
+  env,
+  store,
+  transport = fetch,
+  ctx = null,
+) {
   if (!env.OPENAI_API_KEY) throw new Denied(503, "尚未配置 OpenAI 密钥");
   let b;
   try {
@@ -531,6 +562,61 @@ export async function proxySpeech(request, env, store, transport = fetch) {
       "tts",
       p.characters,
     );
+  if (b.stream) {
+    if (!ctx) throw new Denied(503, "流式合成执行环境不可用");
+    let controller,
+      connected = true,
+      started = false,
+      readyResolve,
+      readyReject;
+    const ready = new Promise((resolve, reject) => {
+      readyResolve = resolve;
+      readyReject = reject;
+    });
+    const stream = new ReadableStream({
+      start(c) {
+        controller = c;
+      },
+      cancel() {
+        connected = false;
+      },
+    });
+    const task = (async () => {
+      try {
+        const { id } = await synthesize(env, p.input, p.voice, transport, {
+          chunk(value) {
+            if (!started) {
+              started = true;
+              readyResolve();
+            }
+            if (connected) controller.enqueue(value);
+          },
+        });
+        await settle(true, id);
+        if (connected) controller.close();
+      } catch (e) {
+        try {
+          if (!e.submitted || (e.definitive && !e.audioProduced))
+            await settle(false);
+        } catch {}
+        if (!started)
+          readyReject(
+            e instanceof Denied ? e : new Denied(502, "OpenAI 合成失败"),
+          );
+        else if (connected)
+          controller.error(new Error("OpenAI audio stream interrupted"));
+      }
+    })();
+    ctx.waitUntil(task);
+    await ready;
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "audio/pcm",
+        "Cache-Control": "no-store",
+        "X-Audio-Sample-Rate": "24000",
+      },
+    });
+  }
   try {
     const { pcm, id } = await synthesize(env, p.input, p.voice, transport);
     await settle(true, id);

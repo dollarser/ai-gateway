@@ -32,7 +32,7 @@ OpenAI 的该模型使用 Realtime WebSocket，而非旧 Speech API。网关保�
 
 单次输入 1–2000 个 Unicode 码点，包含空格和标点，中文、普通英文字母和大多数 emoji 各为一个，组合字符按实际码点计数。不是 UTF-8 字节数，也不是 JavaScript 字符串 length。每日 50 万字符指输入文本字符数，不是音频 token 或输出时长。
 
-默认声音 `marin`，声音白名单见服务端 `speechPayload`。格式支持 mp3（默认）、wav、pcm、opus、flac；PCM 为 24kHz、16-bit、单声道。当前仅支持 speed=1。服务端等待本次音频生成完成后返回二进制，暂不提供低延迟 TTS 分块或原生 Realtime 会话。模型是生成式语音模型，需遵循 OpenAI 的安全限制，不能保证任意文本逐字朗读。
+默认声音 `marin`，声音白名单见服务端 `speechPayload`。格式支持 mp3（默认）、wav、pcm、opus、flac；PCM 为 24kHz、16-bit、单声道。当前仅支持 speed=1。默认等待整段生成后返回；`stream:true,response_format:"pcm"` 支持边生成边返回，原生 Realtime 会话仍未开放。模型是生成式语音模型，需遵循 OpenAI 的安全限制，不能保证任意文本逐字朗读。
 
 原有 `/ws/asr`、`/ws/tts` 继续提供自建语音协议，不是这两个 OpenAI 模型的入口。客户端需要按所选模型切换到 HTTP，见 [客户端交接](client-handoff.md)。
 

@@ -146,14 +146,33 @@ async function internal(request, env, store, path, ctx) {
   if (path === "/internal/openai/transcriptions")
     return proxyTranscription(request, env, store, ctx);
   if (path === "/internal/openai/speech")
-    return proxySpeech(request, env, store);
+    return proxySpeech(request, env, store, fetch, ctx);
   const b = await body(request);
   if (path === "/internal/openai-models") {
     validate(b, ["lease"]);
     text(b.lease, 1, 128);
-    const luna = await lunaCatalog(store, env, b.lease);
+    const r = await store.first(
+      "SELECT r.*,u.services,u.enabled,u.must_change,k.services key_services,k.revoked,k.expires FROM requests r JOIN users u ON u.id=r.user_id LEFT JOIN keys k ON k.id=r.key_id WHERE r.id=? AND r.ended IS NULL AND r.path='/v1/models' AND r.started>unixepoch()-900",
+      b.lease,
+    );
+    if (
+      !r ||
+      !r.enabled ||
+      r.must_change ||
+      (r.key_id && (r.revoked || r.expires <= now()))
+    )
+      fail(403, "目录请求凭证已失效");
+    const permissions = SERVICES.filter(
+      (s) =>
+        JSON.parse(r.services).includes(s) &&
+        (!r.key_services || JSON.parse(r.key_services).includes(s)),
+    );
+    const luna = permissions.includes("qwen")
+      ? await lunaCatalog(store, env, b.lease)
+      : { data: [] };
     return json({
       data: [...luna.data, ...(await audioModels(store, env, b.lease))],
+      services: permissions,
     });
   }
   if (path === "/internal/luna-models") {
@@ -556,11 +575,15 @@ export default {
       return await route(request, env, ctx);
     } catch (e) {
       if (e instanceof Denied)
-        return json(
-          { detail: e.message },
-          e.status,
-          e.status === 429 ? { "Retry-After": "60" } : {},
-        );
+        return json({ detail: e.message }, e.status, {
+          ...(e.status === 429 ? { "Retry-After": "60" } : {}),
+          "X-Error-Code":
+            e.code ??
+            (e.status < 500 ? "request_rejected" : "provider_unavailable"),
+          ...(e.upstream_status
+            ? { "X-Upstream-Status": String(e.upstream_status) }
+            : {}),
+        });
       const message = String(e);
       if (/quota_/.test(message))
         return json({ detail: "账号请求或并发额度已用尽" }, 429, {

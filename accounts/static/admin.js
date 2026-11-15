@@ -401,5 +401,91 @@
       );
     }),
   );
+  $("request-search-form").addEventListener(
+    "submit",
+    run(async (e) => {
+      const rows = await api(
+        "/admin/requests?request_id=" +
+          encodeURIComponent(e.target.elements.request_id.value.trim()),
+      );
+      $("request-search-result").textContent = rows.length
+        ? JSON.stringify(rows, null, 2)
+        : "没有匹配记录（未通过认证的请求只记录于安全日志）";
+    }),
+  );
+  async function review() {
+    const f = $("quota-review-filter");
+    const params = new URLSearchParams({ state: f.elements.state.value });
+    if (f.elements.user_id.value)
+      params.set("user_id", f.elements.user_id.value);
+    const rows = await api("/admin/quota-review?" + params);
+    $("quota-review-list").replaceChildren();
+    for (const r of rows) {
+      const tr = document.createElement("tr");
+      cell(
+        tr,
+        r.username +
+          " / " +
+          (r.unit === "milliseconds"
+            ? "识别毫秒"
+            : r.unit === "characters"
+              ? "合成字符"
+              : "tokens"),
+      );
+      cell(tr, r.period);
+      cell(tr, r.settled ? "已结算" : "预留 / 待核对");
+      cell(tr, num(r.reserved_units) + " / " + num(r.charged_units));
+      cell(
+        tr,
+        (r.request_id || r.lease) + " / " + (r.response_id || "提供方 ID 未知"),
+      );
+      const td = document.createElement("td");
+      const button = action("核对实际用量", async () => {
+        const raw = prompt(
+          "填写实际扣量（Luna: tokens；识别: 毫秒；合成: Unicode 字符）",
+          String(r.charged_units),
+        );
+        if (raw === null) return;
+        const units = Number(raw);
+        if (!Number.isSafeInteger(units) || units < 0)
+          throw new Error("用量必须为非负整数");
+        const reason = prompt(
+          "填写核对依据及原因（至少五字符），不要包含密钥或原始音频文本",
+        );
+        if (reason === null) return;
+        if (
+          !confirm(
+            "将本条用量从 " +
+              r.charged_units +
+              " 改为 " +
+              units +
+              "？\n" +
+              reason,
+          )
+        )
+          return;
+        await api("/admin/quota-adjustments", "POST", {
+          id: crypto.randomUUID(),
+          kind: r.kind,
+          lease: r.lease,
+          expected_units: r.charged_units,
+          units,
+          reason,
+        });
+        await review();
+        message("用量核对已记录审计");
+      });
+      button.disabled = !r.ended || r.adjustable_after > Date.now() / 1000;
+      td.append(button);
+      tr.append(td);
+      $("quota-review-list").append(tr);
+    }
+    if (!rows.length) {
+      const tr = document.createElement("tr");
+      cell(tr, "暂无匹配账本").colSpan = 6;
+      $("quota-review-list").append(tr);
+    }
+  }
+  $("quota-review-filter").addEventListener("submit", run(review));
   window.adminUI = { load };
 })();

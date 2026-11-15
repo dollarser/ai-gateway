@@ -6,6 +6,8 @@
 
 ## 运维文档导航
 
+- [路由诊断、额度核对、流式语音与自动运行](docs/gateway-reliability.md)
+
 - [管理员后台与用量管理](docs/admin-console.md)
 - [OpenAI 语音与日额度](docs/audio-allowances.md)
 - [客户端交接](docs/client-handoff.md)

@@ -152,3 +152,61 @@ class AudioGatewayTests(unittest.TestCase):
                 )
 
         self.assertEqual(asyncio.run(run()).status_code, 403)
+
+    def test_worker_audio_requires_explicit_model_and_content_type(self):
+        calls = []
+
+        async def backend(request):
+            calls.append(str(request.url))
+            return httpx.Response(200, json={"text": "ok"})
+
+        self.configure(backend)
+        headers = {"Authorization": "Bearer " + self.key(["asr", "tts"])["key"]}
+        for body in [
+            {"input": "hi"},
+            {"model": "tts-1", "input": "hi"},
+            {"model": "gpt-realtime-2.1-min", "input": "hi"},
+        ]:
+            r = self.client.post(
+                "https://api.hilex.me/v1/audio/speech", headers=headers, json=body
+            )
+            self.assertEqual(r.status_code, 422)
+        r = self.client.post(
+            "https://api.hilex.me/v1/audio/transcriptions",
+            headers=headers,
+            json={"model": "gpt-transcribe"},
+        )
+        self.assertEqual(r.status_code, 422)
+        self.assertEqual(calls, [])
+        r = self.client.post(
+            "https://api.hilex.me/v1/audio/speech",
+            headers={**headers, "X-Inference-Provider": "local"},
+            json={"input": "legacy"},
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(calls), 1)
+
+    def test_streaming_speech_keeps_pcm_chunks(self):
+        async def backend(request):
+            payload = json.loads(request.content)
+            self.assertTrue(payload["stream"])
+            self.assertEqual(payload["response_format"], "pcm")
+            return httpx.Response(
+                200, content=b"\0\0" * 128, headers={"content-type": "audio/pcm"}
+            )
+
+        self.configure(backend)
+        headers = {"Authorization": "Bearer " + self.key(["tts"])["key"]}
+        r = self.client.post(
+            "https://api.hilex.me/v1/audio/speech",
+            headers=headers,
+            json={
+                "model": "gpt-realtime-2.1-mini",
+                "input": "hi",
+                "stream": True,
+                "response_format": "pcm",
+            },
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers["content-type"], "audio/pcm")
+        self.assertEqual(len(r.content), 256)

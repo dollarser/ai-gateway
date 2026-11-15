@@ -33,7 +33,7 @@ cloudflared tunnel --config deploy/cloudflared-api.yml ingress validate
 bash scripts/ops/serve-tunnel.sh api
 ```
 
-本机当前连接器已运行，不要重复启动。进程记录在 `.runtime/tunnel-processes.json`，日志在 `logs/tunnel-api.log`。本次没有配置开机自启。
+本机连接器由 `ai-gateway-tunnel.service` 管理，不要手动重复启动。使用 `systemctl --user status ai-gateway-tunnel.service` 和 `journalctl --user -u ai-gateway-tunnel.service` 查看状态与轮转日志。历史 `.runtime/tunnel-processes.json` 仅供迁移核对，当前自动启动说明见 [可靠性运维](gateway-reliability.md)。
 
 ## 仅在需要新建时
 

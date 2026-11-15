@@ -1,0 +1,8 @@
+[Unit]
+Description=Read-only AI Gateway deployment check
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspace/ai-gateway
+ExecStart=%h/workspace/ai-gateway/.venv-accounts/bin/python -m scripts.smoke.check_deployment
+UMask=0077
+NoNewPrivileges=true

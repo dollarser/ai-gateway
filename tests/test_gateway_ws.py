@@ -112,3 +112,30 @@ class GatewayCloseTests(unittest.TestCase):
         ):
             asyncio.run(web.websocket(Socket(), "asr"))
         self.assertEqual(len(finished), 1)
+
+
+class GatewayDenialTests(unittest.TestCase):
+    def test_asgi_denial_has_correct_http_status_and_structured_error(self):
+        # Load the shared fixture using its discovery import name.
+        import test_accounts
+
+        fixture = test_accounts.HTTPTests()
+        fixture.setUp()
+        try:
+            headers = {"Authorization": "Bearer " + fixture.key(["asr"])["key"]}
+            with patch.object(
+                web.websockets, "connect", side_effect=OSError("unavailable")
+            ):
+                from starlette.testclient import WebSocketDenialResponse
+
+                with self.assertRaises(WebSocketDenialResponse) as context:
+                    with fixture.client.websocket_connect(
+                        "wss://api.hilex.me/ws/asr", headers=headers
+                    ):
+                        pass
+                self.assertEqual(context.exception.status_code, 503)
+                self.assertEqual(
+                    context.exception.json()["error_code"], "upstream_unavailable"
+                )
+        finally:
+            fixture.tearDown()
