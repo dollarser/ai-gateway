@@ -27,11 +27,16 @@ class AudioDecodeTests(unittest.TestCase):
     def test_upload_is_decoded_and_duration_comes_from_actual_pcm(self):
         pcm = asyncio.run(transcode(wav_bytes()))
         self.assertEqual(len(pcm), 32000)
-        encoded = asyncio.run(
-            transcode(b"\0\0" * 24000, encode=True, output_format="mp3")
-        )
-        self.assertTrue(encoded)
-        decoded = asyncio.run(transcode(encoded))
+        from pathlib import Path
+
+        fixture = json.loads(
+            (
+                Path(__file__).parents[1] / "cloudflare/tests/audio-fixtures.json"
+            ).read_text()
+        )[0]
+        import base64
+
+        decoded = asyncio.run(transcode(base64.b64decode(fixture["base64"])))
         self.assertGreaterEqual(len(decoded), 32000)
         self.assertLess(len(decoded), 40000)
 
@@ -41,12 +46,6 @@ class AudioDecodeTests(unittest.TestCase):
         with self.assertRaises(Denied) as context:
             asyncio.run(transcode(wav_bytes(301)))
         self.assertEqual(context.exception.status, 413)
-
-    def test_wav_output_has_exact_header_sizes(self):
-        wav = asyncio.run(transcode(b"\0\0" * 24000, encode=True, output_format="wav"))
-        with wave.open(io.BytesIO(wav)) as w:
-            self.assertEqual(w.getnframes(), 24000)
-            self.assertEqual(w.getframerate(), 24000)
 
     def test_ip_is_taken_from_trusted_tunnel_and_client_metadata_is_bounded(self):
         scope = {"client": ("127.0.0.1", 1), "server": ("127.0.0.1", 18900)}
@@ -115,7 +114,7 @@ class AudioGatewayTests(unittest.TestCase):
         self.assertEqual(r.json()["text"], "hello")
         self.assertEqual(seen, ["/internal/openai/transcriptions"])
 
-    def test_tts_keeps_http_interface_and_encodes_audio(self):
+    def test_tts_defaults_to_raw_pcm_without_encoding(self):
         async def backend(request):
             self.assertEqual(request.url.path, "/internal/openai/speech")
             self.assertEqual(json.loads(request.content)["response_format"], "pcm")
@@ -130,16 +129,25 @@ class AudioGatewayTests(unittest.TestCase):
             json={
                 "model": "gpt-realtime-2.1-mini",
                 "input": "你好🙂",
-                "response_format": "wav",
             },
             headers=headers,
         )
         self.assertEqual(
             r.status_code, 200, r.text[:100] if r.status_code != 200 else ""
         )
-        with wave.open(io.BytesIO(r.content)) as w:
-            self.assertEqual(w.getnframes(), 24000)
-        self.assertEqual(r.headers["content-type"], "audio/wav")
+        self.assertEqual(r.content, b"\0\0" * 24000)
+        self.assertEqual(r.headers["content-type"], "audio/pcm")
+        for fmt in ("wav", "mp3", "opus", "flac"):
+            rejected = self.client.post(
+                "https://api.hilex.me/v1/audio/speech",
+                json={
+                    "model": "gpt-realtime-2.1-mini",
+                    "input": "hi",
+                    "response_format": fmt,
+                },
+                headers=headers,
+            )
+            self.assertEqual(rejected.status_code, 422)
 
     def test_cloud_audio_rejects_unauthenticated_local_listener(self):
         async def run():

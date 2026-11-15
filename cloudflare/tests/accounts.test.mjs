@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import { Miniflare } from "miniflare";
 import { proxySpeech } from "../src/audio.mjs";
-import { edgeAPI, wavPcm } from "../src/edge.mjs";
+import { edgeAPI } from "../src/edge.mjs";
 import { Store } from "../src/store.mjs";
 import { passwordHash, digest } from "../src/crypto.mjs";
 let mf, db, admin;
@@ -12,16 +12,6 @@ let openaiMode = "json",
 let originCalls = 0,
   lastProviderPayload,
   lastAudioName;
-function immutableCodec() {
-  const r = new Response("ID3-test", {
-    headers: { "Content-Type": "audio/mpeg" },
-  });
-  // Workers fetch responses have immutable headers, unlike new Response().
-  r.headers.set = () => {
-    throw new TypeError("immutable headers");
-  };
-  return r;
-}
 async function provider(request) {
   if (new URL(request.url).hostname === "api.hilex.me") {
     originCalls++;
@@ -33,12 +23,6 @@ async function provider(request) {
       return new Response(testWav(1000), {
         headers: { "Content-Type": "audio/wav" },
       });
-    if (
-      ["/__codec/encode", "/__codec/stream-encode"].includes(
-        new URL(request.url).pathname,
-      )
-    )
-      return immutableCodec();
     return Response.json({ text: "local" });
   }
   assert.equal(new URL(request.url).hostname, "api.openai.com");
@@ -1421,29 +1405,25 @@ test("edge forwards legacy local requests with server-only headers and prevents 
     401,
   );
 });
-test("edge PCM and WAV TTS stay independent of origin, compressed output uses one codec call", async () => {
+test("edge TTS defaults to PCM, supports streaming, rejects other formats before provider calls", async () => {
   const { uid, key } = await audioUser("edge-tts", "tts");
   const original = globalThis.fetch;
   const jobs = [];
-  globalThis.fetch = async (url, options) =>
-    String(url).includes("/v1/realtime?")
-      ? { webSocket: new MockRealtime() }
-      : provider(new Request(url, { ...options, duplex: "half" }));
+  let realtimeCalls = 0;
+  globalThis.fetch = async (url, options) => {
+    if (String(url).includes("/v1/realtime?")) {
+      realtimeCalls++;
+      return { webSocket: new MockRealtime() };
+    }
+    return provider(new Request(url, { ...options, duplex: "half" }));
+  };
   try {
     const env = {
       DB: db,
       OPENAI_API_KEY: "test-openai-key",
       INTERNAL_SECRET: secret,
     };
-    for (const [fmt, stream] of [
-      ["wav", false],
-      ["pcm", true],
-      ["mp3", false],
-      ["mp3", true],
-      ["opus", true],
-      ["flac", true],
-    ]) {
-      const before = originCalls;
+    async function run(body) {
       const r = await edgeAPI(
         new Request("https://api.hilex.me/v1/audio/speech", {
           method: "POST",
@@ -1454,8 +1434,7 @@ test("edge PCM and WAV TTS stay independent of origin, compressed output uses on
           body: JSON.stringify({
             model: "gpt-realtime-2.1-mini",
             input: "hi",
-            response_format: fmt,
-            stream,
+            ...body,
           }),
         }),
         env,
@@ -1465,37 +1444,57 @@ test("edge PCM and WAV TTS stay independent of origin, compressed output uses on
           },
         },
       );
-      assert.equal(r.status, 200);
-      const bytes = new Uint8Array(await r.arrayBuffer());
-      if (fmt === "wav")
-        assert.equal(new TextDecoder().decode(bytes.slice(0, 4)), "RIFF");
-      assert.equal(
-        originCalls,
-        before + (["mp3", "opus", "flac"].includes(fmt) ? 1 : 0),
-      );
+      return r;
     }
+    const before = originCalls;
+    for (const payload of [
+      {},
+      { response_format: "pcm" },
+      { response_format: "pcm", stream: true },
+    ]) {
+      const r = await run(payload);
+      assert.equal(r.status, 200);
+      assert.equal(r.headers.get("Content-Type"), "audio/pcm");
+      assert.equal(r.headers.get("X-Audio-Sample-Rate"), "24000");
+      assert.ok((await r.arrayBuffer()).byteLength > 0);
+    }
+    for (const fmt of ["mp3", "opus", "flac", "wav"])
+      for (const stream of [false, true]) {
+        const r = await run({ response_format: fmt, stream });
+        assert.equal(r.status, 422);
+        assert.equal((await r.json()).error_code, "unsupported_audio_format");
+      }
     await Promise.all(jobs);
+    assert.equal(originCalls, before);
+    assert.equal(realtimeCalls, 3);
     assert.equal(
       (
         await db
           .prepare(
-            "SELECT sum(charged_units) n FROM audio_usage WHERE user_id=?",
+            "SELECT sum(charged_units) n,count(*) requests FROM audio_usage WHERE user_id=?",
           )
           .bind(uid)
           .first()
       ).n,
-      12,
+      6,
     );
+    assert.equal(
+      (
+        await db
+          .prepare("SELECT count(*) n FROM audio_usage WHERE user_id=?")
+          .bind(uid)
+          .first()
+      ).n,
+      3,
+    );
+    const models = await apiCall("/v1/models?output_modalities=all", key);
+    const speech = models.body.data.find(
+      (m) => m.id === "gpt-realtime-2.1-mini",
+    );
+    assert.deepEqual(speech.audio.response_formats, ["pcm"]);
   } finally {
     globalThis.fetch = original;
   }
-});
-test("WAV wrapper supplies verifiable 24kHz PCM duration", async () => {
-  const { wavDuration } = await import("../src/audio.mjs");
-  assert.equal(wavDuration(wavPcm(new Uint8Array(48000))), 1000);
-  const invalid = wavPcm(new Uint8Array(48000));
-  new DataView(invalid.buffer).setUint32(28, 1, true);
-  assert.throws(() => wavDuration(invalid));
 });
 
 test("Edge Luna tools normalize arguments and retain safe provider diagnostics with zero charge", async () => {

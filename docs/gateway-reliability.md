@@ -26,7 +26,7 @@ API 为 GET `/admin/quota-review?state=pending&user_id=...`，POST `/admin/quota
 
 ## 流式合成
 
-TTS 新增 `stream:true,response_format:"pcm"`。服务端在收到第一段提供方音频后返回 HTTP 音频流，PCM 为 24kHz、16-bit、单声道。非流式 mp3/wav 等仍兼容。流式也支持 mp3/opus/flac，通过私有源站边收 PCM 边编码；WAV 仅非流式。协议和路径见 [边缘接口](edge-api.md)。
+TTS 新增 `stream:true,response_format:"pcm"`。服务端在收到第一段提供方音频后返回 HTTP 音频流，PCM 为 24kHz、16-bit、单声道。流式、非流式仅支持 PCM，缺省格式为 pcm；其他格式返回 422，由客户端负责封装或压缩。协议和路径见 [边缘接口](edge-api.md)。
 
 客户端按完整 16-bit 样本缓存/播放，HTTP 分块边界不保证对齐样本。先预缓冲少量音频再播放，网络错误应标为未完成，不能仅凭 HTTP 200 判断整段成功。开始流式响应后不能改变 HTTP 状态码；服务端中断流并记录失败诊断。断连或无最终完成事件时仍可能保留额度，不能依靠取消播放绕过扣费。原生 Realtime 会话暂未直接开放，避免绕过字符额度和服务权限。
 
@@ -52,3 +52,9 @@ GitHub Actions 的 Gateway checks 对 push/PR 运行 Python 和 Worker 测试，
 ## 本次验证
 
 通过 151 项 Python 测试、21 项 Worker 测试；在不含私有配置的源码副本中创建测试 Client ID 后也通过全套 Python 测试。浏览器验证请求诊断和额度核对操作。线上验证云语音精确模型校验、语音专用 Key 发现、WebSocket 503、PCM 首块返回与最终字符结算、带审计的幂等额度修正，临时账号与核对材料已清理。systemd 服务和定时器均启用，linger 生效，健康检查成功，隧道回环 metrics /ready 返回 200。
+
+## 下一步优化方向
+
+1. 流式取消：当前取消读取会停止向客户端排队，但上游 Realtime 生成仍可能继续到完成。应将取消信号传给上游并关闭会话，同时保留已经提交请求的保守扣额，避免取消免费绕过额度。
+2. 生产观测与通知：目前认证 timer 只做拒绝边界检查，结果在本机 journal。应基于实际 Worker 请求统计 5xx、P95 延迟、首音频耗时和未结算额度数量，设置通知渠道及阈值；不需要高频调用付费模型作为健康检查。
+3. 客户端 PCM 播放：记录首音频耗时、播放缓冲欠载和中途断流；支持取消播放和长文本分段，避免把 HTTP 200 当成完整成功。新客户端通过模型目录 audio.response_formats / sample_rate / channels / encoding 读取能力。

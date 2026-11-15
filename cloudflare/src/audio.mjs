@@ -96,6 +96,17 @@ export async function audioModels(store, env, lease) {
         modality: input.join("+") + "->" + output.join("+"),
       },
       endpoints: [path],
+      ...(id === TTS_MODEL
+        ? {
+            audio: {
+              response_formats: ["pcm"],
+              sample_rate: 24000,
+              channels: 1,
+              encoding: "pcm_s16le",
+              streaming: true,
+            },
+          }
+        : {}),
     };
   }
 }
@@ -440,8 +451,11 @@ export function speechPayload(b) {
     throw new Denied(422, "不支持此声音");
   if (b.stream !== undefined && typeof b.stream !== "boolean")
     throw new Denied(422, "stream 必须为布尔值");
-  if (b.response_format !== "pcm" || (b.speed !== undefined && b.speed !== 1))
-    throw new Denied(422, "内部合成仅接受 pcm，暂支持 speed=1");
+  if (
+    (b.response_format ?? "pcm") !== "pcm" ||
+    (b.speed !== undefined && b.speed !== 1)
+  )
+    throw new Denied(422, "云语音合成仅支持 pcm，暂支持 speed=1");
   return { input: b.input, voice, characters: Array.from(b.input).length };
 }
 export async function synthesize(

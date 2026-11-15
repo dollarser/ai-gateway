@@ -174,25 +174,13 @@ async def inference(path: str, request: Request):
                 pcm = await upstream.aread()
                 if len(pcm) > 16 * 1024 * 1024 or len(pcm) % 2:
                     raise Denied(502, "无效的上游音频")
-                result = (
-                    pcm
-                    if audio_format == "pcm"
-                    else await audio_proxy.transcode(
-                        pcm, encode=True, output_format=audio_format
-                    )
-                )
+                result = pcm
                 size = len(result)
                 from fastapi.responses import Response
 
                 return Response(
                     result,
-                    media_type={
-                        "pcm": "audio/pcm",
-                        "wav": "audio/wav",
-                        "mp3": "audio/mpeg",
-                        "opus": "audio/ogg",
-                        "flac": "audio/flac",
-                    }[audio_format],
+                    media_type="audio/pcm",
                     headers={
                         "Cache-Control": "no-store",
                         "X-Request-ID": request_id,

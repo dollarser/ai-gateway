@@ -1,4 +1,4 @@
-> 当前公网 API 已改为 [边缘直连](edge-api.md)，云文本及 PCM/WAV 语音不再绕行本机。
+> 当前公网 API 已改为 [边缘直连](edge-api.md)，云文本及 PCM 合成和支持的音频识别不再绕行本机。
 
 # 项目边界与部署架构
 
@@ -6,7 +6,7 @@
 账号用户 ── accounts.hilex.me ──> Cloudflare Worker ──> D1
 模型客户端 ─ api.hilex.me ──────> Cloudflare Worker ──> OpenAI
                                       │
-                                      └─> Tunnel ─> 私有本机源站 ─> 自建模型 / 压缩编解码
+                                      └─> Tunnel ─> 私有本机源站 ─> 自建模型 / 识别解码
 ```
 
 不启用 Worker 时，账号路由和 SQLite 在 API 网关进程内，保留原行为。生产环境中 Worker 统一执行网页、账号、API 认证、请求占用及模型额度结算。本机以 GATEWAY_EDGE_ONLY=1 接受受保护的边缘回源，不重复执行用户鉴权。

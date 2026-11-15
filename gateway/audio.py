@@ -38,15 +38,7 @@ def select_audio(request, model, service):
     )
 
 
-async def transcode(data, *, encode=False, output_format="wav"):
-    if encode and output_format == "wav":
-        output = io.BytesIO()
-        with wave.open(output, "wb") as wav:
-            wav.setnchannels(1)
-            wav.setsampwidth(2)
-            wav.setframerate(24000)
-            wav.writeframes(data)
-        return output.getvalue()
+async def transcode(data):
     import imageio_ffmpeg
 
     cmd = [
@@ -60,8 +52,6 @@ async def transcode(data, *, encode=False, output_format="wav"):
         "-protocol_whitelist",
         "pipe",
     ]
-    if encode:
-        cmd += ["-f", "s16le", "-ar", "24000", "-ac", "1"]
     cmd += [
         "-i",
         "pipe:0",
@@ -71,17 +61,11 @@ async def transcode(data, *, encode=False, output_format="wav"):
         "-ac",
         "1",
         "-ar",
-        "24000" if encode else "16000",
+        "16000",
         "-t",
         "301",
     ]
-    cmd += [
-        "-f",
-        {"mp3": "mp3", "opus": "ogg", "flac": "flac"}.get(output_format, output_format)
-        if encode
-        else "s16le",
-        "pipe:1",
-    ]
+    cmd += ["-f", "s16le", "pipe:1"]
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdin=asyncio.subprocess.PIPE,
@@ -97,7 +81,7 @@ async def transcode(data, *, encode=False, output_format="wav"):
         raise
     if proc.returncode or not out:
         raise Denied(400, "无法解码音频，请上传有效的 WAV、MP3、M4A 或 WebM 文件")
-    if not encode and len(out) > 300 * 32000:
+    if len(out) > 300 * 32000:
         raise Denied(413, "单次识别最多 5 分钟，请分段上传")
     return out
 
@@ -181,11 +165,12 @@ async def prepare_tts(request, body, lease):
     getattr(request.state, "inference_trace", {})["protocol"] = (
         "audio-stream" if streaming else "http"
     )
-    fmt = payload.get("response_format", "pcm" if streaming else "mp3")
-    if streaming and fmt != "pcm":
-        raise Denied(422, "实时分块合成目前使用 stream=true,response_format=pcm")
-    if fmt not in {"wav", "pcm", "mp3", "opus", "flac"}:
-        raise Denied(422, "语音格式支持 wav、pcm、mp3、opus、flac")
+    fmt = payload.get("response_format", "pcm")
+    if fmt != "pcm":
+        raise Denied(
+            422,
+            "云语音合成仅支持 response_format=pcm（24kHz、16-bit little-endian、单声道）",
+        )
     payload["response_format"] = "pcm"  # Worker output uses trusted 24-kHz mono PCM.
     return request.app.state.client.build_request(
         "POST",

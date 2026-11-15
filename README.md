@@ -30,7 +30,7 @@
 
 - 账号网页与账号 API：https://accounts.hilex.me（Worker `hilex-accounts`）
 - 账号数据库：D1 `hilex-accounts`
-- 模型 API：https://api.hilex.me（Worker 边缘鉴权与云模型直连；仅自建模型和压缩编解码回源）
+- 模型 API：https://api.hilex.me（Worker 边缘鉴权与云模型直连；仅自建模型和特殊识别输入的解码回源）
 
 本机网关使用 Worker 账号模式，SQLite 仅用于离线兼容与迁移。自建模型后端是否就绪需单独验证，后端不可达时请求可能返回 502。GPT-6 Luna 由 Worker 调用 OpenAI，不依赖本机模型进程；每账号默认每月 1000 万 tokens。
 
@@ -61,7 +61,7 @@ Worker 在 API 域名前置，公网隧道只连接受边缘凭据保护的回�
 
 ## Cloudflare Worker + D1 账号部署
 
-`cloudflare/` 是独立 Worker 账号服务：账号网页、注册/登录、Cookie/CSRF、access/refresh token、管理员操作、API Key、权限和配额使用 D1。公网 API 由 Worker 直接完成认证及云模型调用；GPU 机器上的 Python 源站仅负责受保护的自建模型、长连接和压缩音频编解码。
+`cloudflare/` 是独立 Worker 账号服务：账号网页、注册/登录、Cookie/CSRF、access/refresh token、管理员操作、API Key、权限和配额使用 D1。公网 API 由 Worker 直接完成认证及云模型调用；GPU 机器上的 Python 源站仅负责受保护的自建模型、长连接和特殊识别输入的音频解码。
 
 部署步骤、迁移及回滚见 [Cloudflare 部署说明](docs/cloudflare.md)。启用方式：
 

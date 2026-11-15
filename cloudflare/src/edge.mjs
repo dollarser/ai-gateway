@@ -145,9 +145,7 @@ async function origin(request, env, lease, id, body, operation = null) {
       redirect: "manual",
       signal: AbortSignal.timeout(
         operation
-          ? operation === "/__codec/stream-encode"
-            ? 210000
-            : 65000
+          ? 65000
           : new URL(request.url).pathname === "/v1/models"
             ? 1500
             : 900000,
@@ -156,31 +154,9 @@ async function origin(request, env, lease, id, body, operation = null) {
   } catch {
     throw new Denied(
       503,
-      "本机模型或编解码服务暂不可达；云文本和 PCM/WAV 服务可独立使用",
+      "本机模型或编解码服务暂不可达；云文本和 PCM 合成可独立使用",
     );
   }
-}
-export function wavPcm(pcm, rate = 24000) {
-  const bytes = new Uint8Array(pcm.length + 44),
-    v = new DataView(bytes.buffer);
-  for (const [at, s] of [
-    [0, "RIFF"],
-    [8, "WAVE"],
-    [12, "fmt "],
-    [36, "data"],
-  ])
-    bytes.set(new TextEncoder().encode(s), at);
-  v.setUint32(4, bytes.length - 8, true);
-  v.setUint32(16, 16, true);
-  v.setUint16(20, 1, true);
-  v.setUint16(22, 1, true);
-  v.setUint32(24, rate, true);
-  v.setUint32(28, rate * 2, true);
-  v.setUint16(32, 2, true);
-  v.setUint16(34, 16, true);
-  v.setUint32(40, pcm.length, true);
-  bytes.set(pcm, 44);
-  return bytes;
 }
 function internalRequest(request, lease, body, type = "application/json") {
   return new Request(request.url, {
@@ -622,15 +598,14 @@ export async function edgeAPI(request, env, ctx) {
             ctx,
             start,
           );
-        const fmt = payload.response_format ?? (payload.stream ? "pcm" : "mp3");
-        if (
-          !["pcm", "wav", "mp3", "opus", "flac"].includes(fmt) ||
-          (payload.stream && fmt === "wav")
-        )
-          throw new Denied(
+        if ((payload.response_format ?? "pcm") !== "pcm") {
+          const error = new Denied(
             422,
-            "流式合成支持 pcm/mp3/opus/flac；wav 使用非流式",
+            "云语音合成仅支持 response_format=pcm（24kHz、16-bit little-endian、单声道）；请由客户端封装或编码",
           );
+          error.code = "unsupported_audio_format";
+          throw error;
+        }
         trace.provider = "openai";
         trace.protocol = payload.stream ? "audio-stream" : "http";
         response = await proxySpeech(
@@ -644,39 +619,6 @@ export async function edgeAPI(request, env, ctx) {
           fetch,
           ctx,
         );
-        if (fmt !== "pcm" && response.ok) {
-          if (fmt === "wav")
-            response = new Response(
-              wavPcm(await readBytes(response, 16 * 1024 * 1024)),
-              { headers: { "Content-Type": "audio/wav" } },
-            );
-          else {
-            const codecRequest = new Request(request.url, {
-              headers: {
-                ...Object.fromEntries(request.headers),
-                "X-Codec-Format": fmt,
-                ...(payload.stream ? { "X-Codec-Stream": "1" } : {}),
-              },
-            });
-            trace.failure_stage = "codec_encode";
-            const source = payload.stream
-              ? response.body
-              : await readBytes(response, 16 * 1024 * 1024);
-            response = await origin(
-              codecRequest,
-              env,
-              lease,
-              id,
-              source,
-              payload.stream ? "/__codec/stream-encode" : "/__codec/encode",
-            );
-            response = new Response(response.body, response);
-            response.headers.set(
-              "X-Audio-Processing",
-              payload.stream ? "origin-stream-encode" : "origin-encode",
-            );
-          }
-        }
       } else if (payload.model === LUNA_MODEL) {
         trace.provider = "openai";
         trace.protocol = payload.stream ? "sse" : "http";
