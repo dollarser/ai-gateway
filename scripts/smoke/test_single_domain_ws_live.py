@@ -23,7 +23,7 @@ result = {}
 try:
     with httpx.Client(trust_env=False, timeout=60) as c:
         r = c.post(
-            "https://accounts.sunlingzhang.com/auth/login",
+            "https://accounts.hilex.me/auth/login",
             json={"username": username, "password": password},
         )
         r.raise_for_status()
@@ -45,7 +45,7 @@ try:
                 )
                 pcm = f.readframes(f.getnframes())
             async with websockets.connect(
-                "wss://api.sunlingzhang.com/ws/asr",
+                "wss://api.hilex.me/ws/asr",
                 extra_headers=headers,
                 open_timeout=30,
             ) as ws:
@@ -72,7 +72,7 @@ try:
                     "audio_bytes": len(pcm),
                 }
             async with websockets.connect(
-                "wss://api.sunlingzhang.com/ws/tts",
+                "wss://api.hilex.me/ws/tts",
                 extra_headers=headers,
                 open_timeout=30,
             ) as ws:
@@ -104,7 +104,7 @@ try:
 
         asyncio.run(asyncio.wait_for(check(), 120))
         r = c.post(
-            "https://accounts.sunlingzhang.com/auth/logout",
+            "https://accounts.hilex.me/auth/logout",
             json={"refresh_token": tokens["refresh_token"]},
         )
         r.raise_for_status()

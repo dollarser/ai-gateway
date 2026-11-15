@@ -36,7 +36,7 @@ class GatewayCloseTests(unittest.TestCase):
             finished = []
 
             class Socket:
-                url = SimpleNamespace(hostname="api.sunlingzhang.com")
+                url = SimpleNamespace(hostname="api.hilex.me")
                 scope = {}
                 headers = {}
                 app = SimpleNamespace(
@@ -85,7 +85,7 @@ class GatewayCloseTests(unittest.TestCase):
         finished = []
 
         class Socket:
-            url = SimpleNamespace(hostname="api.sunlingzhang.com")
+            url = SimpleNamespace(hostname="api.hilex.me")
             scope = {}
             headers = {}
             app = SimpleNamespace(

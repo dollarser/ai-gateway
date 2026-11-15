@@ -26,7 +26,7 @@ def main():
             user["id"], "retirement-smoke", ["qwen"], 1, actor=admin["id"]
         )
         with httpx.Client(trust_env=False, timeout=30) as client:
-            headers = {"Host": "api.sunlingzhang.com", "CF-Connecting-IP": ip}
+            headers = {"Host": "api.hilex.me", "CF-Connecting-IP": ip}
             for _ in range(60):
                 r = client.get("http://127.0.0.1:18900/v1/models", headers=headers)
                 assert r.status_code == 401

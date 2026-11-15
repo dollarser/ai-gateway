@@ -10,7 +10,13 @@
   "python_worker_http_integration": "PASS",
   "gateway_and_model_lint": "PASS",
   "shell_syntax": "PASS",
-  "cloud_deployed": false,
+  "cloud_deployed": true,
   "gpu_inference_started": false,
-  "original_snapshot": "/home/lingzhang/workspace/asr-tts"
+  "original_snapshot": "/home/lingzhang/workspace/asr-tts",
+  "deployment_domain": "hilex.me",
+  "account_url": "https://accounts.hilex.me",
+  "api_url": "https://api.hilex.me",
+  "d1_migration_verified": true,
+  "production_registration_login_verified": true,
+  "model_inference_started": false
 }

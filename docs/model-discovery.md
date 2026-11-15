@@ -15,7 +15,7 @@
 
 **与此前行为的变化：完整发现必须显式传 `output_modalities=all`。** 默认列表不再混入 Embedding。参数大小写敏感，不能重复提交；未知值、空项和 `all,text` 返回 400。
 
-公网入口为 `https://api.sunlingzhang.com/v1/models`。认证保持账号 Bearer access_token + X-Client-ID，或 API Key 单独使用。本机 `http://127.0.0.1:18901/v1/models` 免认证。LLM/Embedding 仍共用现有 `qwen` 授权与配额；能力发现不赋予额外权限。
+公网入口为 `https://api.hilex.me/v1/models`。认证保持账号 Bearer access_token + X-Client-ID，或 API Key 单独使用。本机 `http://127.0.0.1:18901/v1/models` 免认证。LLM/Embedding 仍共用现有 `qwen` 授权与配额；能力发现不赋予额外权限。
 
 ## 响应
 
@@ -64,7 +64,7 @@
 示例：
 
 ```bash
-curl 'https://api.sunlingzhang.com/v1/models?output_modalities=all' \
+curl 'https://api.hilex.me/v1/models?output_modalities=all' \
   -H "Authorization: Bearer $API_KEY"
 
 curl 'http://127.0.0.1:18901/v1/models?output_modalities=embeddings'

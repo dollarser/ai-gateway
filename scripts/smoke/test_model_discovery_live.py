@@ -27,7 +27,7 @@ def main():
             user["id"], "model-discovery-smoke", ["qwen"], 1, actor=admin["id"]
         )
         with httpx.Client(trust_env=False, timeout=30) as client:
-            url = "https://api.sunlingzhang.com/v1/models"
+            url = "https://api.hilex.me/v1/models"
             headers = {"X-API-Key": key}
             assert client.get(url + "?output_modalities=all").status_code == 401
             complete = client.get(url + "?output_modalities=all", headers=headers)
@@ -67,7 +67,7 @@ def main():
                 (m["id"], m["architecture"]) for m in models
             ]
             login = client.post(
-                "https://accounts.sunlingzhang.com/auth/login",
+                "https://accounts.hilex.me/auth/login",
                 json={"username": user["username"], "password": password},
             )
             login.raise_for_status()
@@ -83,7 +83,7 @@ def main():
                 == 200
             )
             client.post(
-                "https://accounts.sunlingzhang.com/auth/logout",
+                "https://accounts.hilex.me/auth/logout",
                 json={"refresh_token": tokens["refresh_token"]},
             ).raise_for_status()
             result = {

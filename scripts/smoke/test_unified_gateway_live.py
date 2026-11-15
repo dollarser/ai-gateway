@@ -14,8 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from accounts.store import Store
 
 ROOT = Path(__file__).resolve().parents[2]
-portal = "https://accounts.sunlingzhang.com"
-api = "https://api.sunlingzhang.com/v1"
+portal = "https://accounts.hilex.me"
+api = "https://api.hilex.me/v1"
 cid = json.loads((ROOT / "deploy/client_ids.json").read_text())[0]
 stamp = str(int(time.time()))
 username = f"unified-smoke-{stamp}@example.com"
@@ -120,7 +120,7 @@ try:
         results["api_key_only_embedding"] = True
         with (ROOT / "models/paraformer/example/asr_example.wav").open("rb") as f:
             r = c.post(
-                "https://api.sunlingzhang.com/v1/audio/transcriptions",
+                "https://api.hilex.me/v1/audio/transcriptions",
                 headers={"Authorization": "Bearer " + key},
                 files={"file": ("sample.wav", f, "audio/wav")},
             )
@@ -128,7 +128,7 @@ try:
         assert r.json().get("text")
         results["api_key_only_asr"] = True
         r = c.post(
-            "https://api.sunlingzhang.com/v1/audio/speech",
+            "https://api.hilex.me/v1/audio/speech",
             headers=key_header,
             json={"input": "你好。"},
         )
@@ -154,7 +154,7 @@ try:
         async def ws_ready():
             for url, headers in [
                 ("ws://127.0.0.1:18901/ws/asr", {}),
-                ("wss://api.sunlingzhang.com/ws/asr", key_header),
+                ("wss://api.hilex.me/ws/asr", key_header),
             ]:
                 async with websockets.connect(
                     url, extra_headers=headers, open_timeout=30
@@ -203,10 +203,10 @@ try:
             except httpx.ConnectError:
                 pass
         assert (
-            c.get("https://api.sunlingzhang.com/auth/registration-info").status_code
+            c.get("https://api.hilex.me/auth/registration-info").status_code
             == 404
         )
-        assert c.get("https://api.sunlingzhang.com/").status_code == 404
+        assert c.get("https://api.hilex.me/").status_code == 404
         results["removed_voice_hosts_and_api_account_routes_rejected"] = True
     (ROOT / "artifacts/single-domain-live.json").write_text(
         json.dumps(results, ensure_ascii=False, indent=2) + "\n"

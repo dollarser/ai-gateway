@@ -36,12 +36,12 @@ class Settings:
     )
     portal_host: str = field(
         default_factory=lambda: os.environ.get(
-            "ACCOUNTS_HOST", "accounts.sunlingzhang.com"
+            "ACCOUNTS_HOST", "accounts.hilex.me"
         )
     )
     api_host: str = field(
         default_factory=lambda: os.environ.get(
-            "GATEWAY_API_HOST", "api.sunlingzhang.com"
+            "GATEWAY_API_HOST", "api.hilex.me"
         )
     )
     accounts_worker_url: str = field(

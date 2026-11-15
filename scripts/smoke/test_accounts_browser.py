@@ -11,7 +11,7 @@ with sync_playwright() as p:
     browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
     page = browser.new_page(viewport={"width": 1280, "height": 960})
     page.on("pageerror", lambda error: errors.append(str(error)))
-    page.goto("https://accounts.sunlingzhang.com/", wait_until="networkidle")
+    page.goto("https://accounts.hilex.me/", wait_until="networkidle")
     page.locator("#login-form input[name=username]").fill(creds["username"])
     page.locator("#login-form input[name=password]").fill(creds["password"])
     page.locator("#login-form button").click()

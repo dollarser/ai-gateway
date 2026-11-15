@@ -15,7 +15,7 @@ with sync_playwright() as p:
     browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
     page = browser.new_page(viewport={"width": 1280, "height": 960})
     page.on("pageerror", lambda error: errors.append(str(error)))
-    page.goto("https://accounts.sunlingzhang.com/", wait_until="networkidle")
+    page.goto("https://accounts.hilex.me/", wait_until="networkidle")
     page.locator("#show-register").click()
     expect(page.locator("#register")).to_be_visible()
     expect(page.locator("#registration-quotas")).to_contain_text("默认额度")
@@ -44,15 +44,15 @@ with sync_playwright() as p:
     expect(page.locator("#account-access-summary")).to_contain_text("LLM")
     expect(page.locator("#account-access-summary")).to_contain_text("ASR")
     expect(page.locator("#account-access-summary")).to_contain_text("TTS")
-    me = page.request.get("https://accounts.sunlingzhang.com/account/me").json()
+    me = page.request.get("https://accounts.hilex.me/account/me").json()
     blocked = page.request.post(
-        "https://accounts.sunlingzhang.com/account/keys",
+        "https://accounts.hilex.me/account/keys",
         data={"name": "must-not-create", "services": ["asr"]},
         headers={"X-CSRF-Token": me["csrf"]},
     )
     assert blocked.status == 403
     assert (
-        page.request.get("https://accounts.sunlingzhang.com/account/keys").status == 403
+        page.request.get("https://accounts.hilex.me/account/keys").status == 403
     )
     page.screenshot(
         path=str(ROOT / "artifacts/login-token-portal.png"),

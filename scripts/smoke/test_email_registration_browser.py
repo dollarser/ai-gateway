@@ -15,7 +15,7 @@ with sync_playwright() as p:
     browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
     page = browser.new_page(viewport={"width": 1280, "height": 960})
     page.on("pageerror", lambda error: errors.append(str(error)))
-    page.goto("https://accounts.sunlingzhang.com/", wait_until="networkidle")
+    page.goto("https://accounts.hilex.me/", wait_until="networkidle")
     page.locator("#show-register").click()
     expect(page.locator("#register")).to_be_visible()
     expect(page.locator("#registration-quotas")).to_contain_text("默认额度")

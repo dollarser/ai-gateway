@@ -17,7 +17,7 @@ class UnifiedGatewayTests(unittest.TestCase):
 
     def test_api_key_header_alone_and_conflicting_credentials(self):
         key = self.key(["qwen"])["key"]
-        url = "https://api.sunlingzhang.com/v1/models"
+        url = "https://api.hilex.me/v1/models"
         for headers in [
             {"X-API-Key": key},
             {"Authorization": "Bearer " + key},
@@ -58,7 +58,7 @@ class UnifiedGatewayTests(unittest.TestCase):
                 self.assertEqual(
                     (
                         await c.get(
-                            "http://api.sunlingzhang.com:18900/v1/models",
+                            "http://api.hilex.me:18900/v1/models",
                             headers={
                                 "X-Forwarded-For": "127.0.0.1",
                                 "X-Forwarded-Port": "18901",
@@ -68,7 +68,7 @@ class UnifiedGatewayTests(unittest.TestCase):
                     401,
                 )
                 r = await c.get(
-                    "http://api.sunlingzhang.com:18900/v1/models",
+                    "http://api.hilex.me:18900/v1/models",
                     headers={"Host": "localhost:18901"},
                 )
                 self.assertNotEqual(r.status_code, 200)
@@ -136,7 +136,7 @@ class UnifiedGatewayTests(unittest.TestCase):
         self.app.state.client = mock
         try:
             r = self.client.post(
-                "https://api.sunlingzhang.com/v1/chat/completions",
+                "https://api.hilex.me/v1/chat/completions",
                 headers={
                     "Authorization": "Bearer " + self.tokens["access_token"],
                     "X-Client-ID": self.app.state.backend_id,
@@ -183,7 +183,7 @@ class UnifiedGatewayTests(unittest.TestCase):
         self.app.state.client = mock
         try:
             r = self.client.post(
-                "https://api.sunlingzhang.com/v1/chat/completions",
+                "https://api.hilex.me/v1/chat/completions",
                 headers={"X-API-Key": self.key(["qwen"])["key"]},
                 json={
                     "messages": [{"role": "user", "content": "hello"}],

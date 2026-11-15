@@ -10,8 +10,8 @@ from pathlib import Path
 import httpx
 
 ROOT = Path(__file__).resolve().parents[2]
-portal = "https://accounts.sunlingzhang.com"
-base = "https://api.sunlingzhang.com/v1"
+portal = "https://accounts.hilex.me"
+base = "https://api.hilex.me/v1"
 cid = json.loads((ROOT / "deploy/client_ids.json").read_text())[0]
 username = f"embedding-smoke-{int(time.time())}@example.com"
 password = secrets.token_urlsafe(24)

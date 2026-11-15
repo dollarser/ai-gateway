@@ -1,73 +1,94 @@
-# Cloudflare Worker / D1 账号服务
+# Worker / D1 部署与运维
 
-## 本地验证
+当前账号服务为 https://accounts.hilex.me，Worker 名为 `hilex-accounts`，D1 名为 `hilex-accounts`，绑定为 `DB`。API 网关仍在本机，地址 https://api.hilex.me。
 
-需要 Node.js 22+。Worker 代码在 `cloudflare/src`，D1 schema 在 `cloudflare/migrations`。静态账号页面复用本项目 `accounts/static`，无需 Python 服务提供网页。
+## 本次部署状态
+
+已创建 APAC 区域 D1、应用 schema、迁移 56 个账号、27 个 API Key 和 3,296 条请求记录，并发布 Worker 自定义域名。账号页面、注册登录和网关鉴权已验证。原密码哈希和密钥摘要保留，无需批量重设密码或密钥。
+
+本机网关通过私有环境变量连接 Worker，Worker 的 `INTERNAL_SECRET` 与网关 `ACCOUNTS_WORKER_SECRET` 一致。生产密钥只在 Worker Secrets、本机 `.env` 和私有运行目录中，不在 Git 内。不要用开发 `.dev.vars` 替换生产密钥。
+
+当前账号为 Workers Free，配置未设置自定义 `cpu_ms`（Free 不支持该字段）。本次实际注册、登录验证通过；若未来发生 CPU 超限，应根据指标调整实现或由账号持有人决定是否升级套餐，不自动产生套餐升级。
+
+## 登录与日常发布
+
+需要 Node.js 22+。`cloudflared` 的登录与 Wrangler 的 Worker/D1 授权相互独立。
 
 ```bash
-cd cloudflare
-# 本机本次安装的 Node.js 位置（已自有 Node 时可省略）：
+cd /home/lingzhang/workspace/ai-gateway/cloudflare
 export PATH="$HOME/.local/tools/node/bin:$PATH"
 npm ci
+npx wrangler login --device --browser=false
 npm test
-npm run db:local
-# 生成至少 32 字符的随机内部密钥，保存为 .dev.vars 中的 INTERNAL_SECRET。
-# .dev.vars 不进入版本控制。
-npm run dev
-```
-
-`npm test` 通过 Miniflare 使用真实本地 D1，覆盖密码兼容、登录/CSRF、刷新重放撤销、权限与并发配额。`npm run check` 只构建并验证部署包，不发布。
-
-## 建立云端环境
-
-```bash
-cd cloudflare
-npx wrangler login
-npx wrangler d1 create accounts
-```
-
-把返回的 database_id 写入 `wrangler.jsonc` 的 D1 binding，设置 `ACCOUNT_ORIGIN` 为账号域名（包含 https://）。配置该域名的 Worker Custom Domain。Python API 网关域名仍路由到 GPU/网关机器，不路由到账号 Worker。
-
-```bash
-npx wrangler secret put INTERNAL_SECRET
-npm run db:remote
-```
-
-数据库创建、域名绑定、远程导入和发布需在实际部署时执行。本次拆分没有创建或修改云端资源。
-
-## 从现有 SQLite 迁移
-
-先暂停账号管理写入及新推理请求，等待正在进行的请求结束。使用新建的空 D1 作为迁移目标；在迁移完成前，不让 Worker 接受真实用户流量。
-
-```bash
-# 在 ai-gateway 根目录执行；输出文件独占创建、权限 600，包含敏感凭证摘要。
-.venv-accounts/bin/python -m scripts.migrations.export_d1 \
-  --source accounts/data/accounts.db \
-  --output cloudflare/accounts.migration.sql
-cd cloudflare
-npx wrangler d1 execute accounts --remote --file accounts.migration.sql
 npm run deploy
 ```
 
-schema migration 先建表；导入文件保留现有用户 ID、密码哈希、API Key 摘要、登录凭证和用量。未结束的历史请求在快照导出中结算为 503。仅在导入期间重建请求配额 trigger，避免历史请求被当前额度阻止；导入必须在无流量的新库进行。不要将敏感导入文件提交到 Git。
+已登录且授权有效时可省略 login。修改账号静态页面、Worker 代码或绑定后用 deploy 更新；正常更新不要再次导入历史数据。
 
-新账号库没有管理员时，可在本地运行 `scripts/ops/accounts-admin.py bootstrap` 并启动一次本地账号服务以初始化管理员，再从该 SQLite 导出；不要向 Worker 配置中写明文初始密码。
-
-迁移前后核对 `users`、`keys`、`requests` 数量，并用一个实际账号验证登录、权限、密钥和用量。原 SQLite 和 `asr-tts` 快照保留以便回滚。切换后若要回滚，先处理 D1 新写入数据，不能直接启用已过期的旧快照。
-
-## 将 API 网关切到 D1
-
-```dotenv
-ACCOUNTS_WORKER_URL=https://accounts.example.com
-ACCOUNTS_WORKER_SECRET=<相同的 INTERNAL_SECRET>
+```bash
+npx wrangler whoami
+npx wrangler d1 migrations list DB --remote
+npm run db:remote
 ```
 
-内部密钥应至少 32 字符。设置后重启 API 网关；本地账号路由关闭，不再打开 SQLite。用户管理和登录改用 Worker 账号域名，模型 API 地址和客户端 access_token / API Key 协议保持不变。
+schema migration 仅对新迁移执行。D1 ID 和 `ACCOUNT_ORIGIN` 在 `wrangler.jsonc` 中；Worker 自定义域名也由其中 `routes` 管理。
 
-`/internal/*` 仅接受带内部 Bearer Secret 的 POST，不提供通用 SQL 或数据库代理。Worker 不代理模型请求，因此不改变已有大文件、SSE 和 WebSocket 的传输路径。D1 中超过 920 秒未结束的占用由定时任务结算；并发检查也忽略已过期占用，Worker 冷启动不会清空其他实例的活跃请求。
+## 首次在新环境创建
 
-## 官方参考
+当前数据库已存在，下列命令仅用于新环境：
 
-- [D1 prepared statements 与 batch](https://developers.cloudflare.com/d1/worker-api/d1-database/)
-- [D1 SQLite 数据导入](https://developers.cloudflare.com/d1/best-practices/import-export-data/)
-- [Worker 静态资源绑定](https://developers.cloudflare.com/workers/static-assets/binding/)
+```bash
+npx wrangler d1 create hilex-accounts --location apac --update-config=false
+```
+
+把新 ID 写入 `wrangler.jsonc`，保持 binding 为 `DB`，再运行 `npm run db:remote`。配置 `ACCOUNT_ORIGIN` 和自定义域名，然后设置内部密钥：
+
+```bash
+npx wrangler secret put INTERNAL_SECRET
+npm run deploy
+```
+
+内部密钥至少 32 字符。若用不同账号或域名，确认该域名属于对应账号；已有冲突 DNS 记录需先处理。API 域名的隧道路由另外配置，见 [隧道文档](tunnels.md)。
+
+## 从 SQLite 导入新空库
+
+暂停旧账号与 API 网关写入，等待请求结束。导出文件包含敏感凭证摘要，独占创建、权限 600，仅导入没有用户流量的新库：
+
+```bash
+cd /home/lingzhang/workspace/ai-gateway
+.venv-accounts/bin/python -m scripts.migrations.export_d1 \
+  --source accounts/data/accounts.db \
+  --output cloudflare/hilex-accounts.migration.sql
+cd cloudflare
+npx wrangler d1 execute DB --remote --file hilex-accounts.migration.sql
+```
+
+本次上述文件已存在且已导入，不重复执行。迁移保留用户 ID、scrypt 密码哈希、API Key、登录凭证和用量；快照中未完成的请求结算为 503。导入期间重建配额 trigger，避免历史请求被当前配额拦截。
+
+本机 SQLite 现只作为迁移前快照。运行 `scripts/ops/accounts-admin.py` 修改的是本地旧库，不会修改 D1；线上账号通过 Worker 管理界面操作。回滚必须先处理 D1 在切换后的新写入，不能直接恢复过期 SQLite。
+
+## 本机网关配置
+
+`.env` 中：
+
+```dotenv
+ACCOUNTS_HOST=accounts.hilex.me
+GATEWAY_API_HOST=api.hilex.me
+ACCOUNTS_WORKER_URL=https://accounts.hilex.me
+ACCOUNTS_WORKER_SECRET=<与 Worker INTERNAL_SECRET 相同的生产密钥>
+```
+
+重启网关后本地账号路由关闭，不再打开 SQLite。模型访问仍经 API 隧道；账号 Worker 不代理模型流量，HTTP/SSE/WebSocket 协议处理仍由 Python 网关负责。账号服务不可达时鉴权失败关闭，不降级到本地账号。
+
+## 验证与本地测试
+
+```bash
+curl https://accounts.hilex.me/healthz
+curl https://api.hilex.me/healthz
+npm test
+npm run check
+```
+
+账号应返回 `storage: d1`。`npm test` 使用隔离的本地 D1，不修改生产库；`npm run check` 仅构建。模型后端目前未启动，带有效凭证的模型请求可能返回 502，不代表账号鉴权失败。
+
+[官方 D1 API](https://developers.cloudflare.com/d1/worker-api/d1-database/) · [导入与导出](https://developers.cloudflare.com/d1/best-practices/import-export-data/) · [Worker 自定义域名](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)

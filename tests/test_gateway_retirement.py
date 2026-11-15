@@ -93,7 +93,7 @@ class CorrelationTests(unittest.TestCase):
     def test_success_and_denial_have_server_request_ids_and_persist_safe_metadata(self):
         key = self.key(["qwen"])["key"]
         response = self.client.get(
-            "https://api.sunlingzhang.com/v1/models",
+            "https://api.hilex.me/v1/models",
             headers={
                 "Authorization": "Bearer " + key,
                 "X-Request-ID": "client-request-1",
@@ -108,7 +108,7 @@ class CorrelationTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(row["client_request_id"], "client-request-1")
         self.assertEqual(row["helix_turn_id"], "turn-1")
-        denied = self.client.get("https://api.sunlingzhang.com/v1/models")
+        denied = self.client.get("https://api.hilex.me/v1/models")
         self.assertEqual(denied.status_code, 401)
         self.assertTrue(denied.headers["x-request-id"])
 

@@ -129,7 +129,7 @@ class CatalogHTTPTests(unittest.TestCase):
             ("?output_modalities=rerank", []),
         ]:
             r = self.client.get(
-                "https://api.sunlingzhang.com/v1/models" + suffix,
+                "https://api.hilex.me/v1/models" + suffix,
                 headers={"X-API-Key": key},
             )
             self.assertEqual(r.status_code, 200, r.text)
@@ -144,7 +144,7 @@ class CatalogHTTPTests(unittest.TestCase):
             "?output_modalities=text&output_modalities=embeddings",
         ]:
             r = self.client.get(
-                "https://api.sunlingzhang.com/v1/models" + suffix,
+                "https://api.hilex.me/v1/models" + suffix,
                 headers={"X-API-Key": key},
             )
             self.assertEqual(r.status_code, 400)
@@ -161,7 +161,7 @@ class CatalogHTTPTests(unittest.TestCase):
         self.app.state.client = mock
         try:
             response = self.client.get(
-                "https://api.sunlingzhang.com/v1/models?output_modalities=all",
+                "https://api.hilex.me/v1/models?output_modalities=all",
                 headers={"X-API-Key": key},
             )
             self.assertEqual(response.status_code, 502)

@@ -19,7 +19,7 @@ class SingleDomainTests(unittest.TestCase):
         for host in [
             "asr.sunlingzhang.com",
             "tts.sunlingzhang.com",
-            "accounts.sunlingzhang.com",
+            "accounts.hilex.me",
         ]:
             r = self.client.post(
                 "https://" + host + "/v1/audio/transcriptions", headers=headers
@@ -35,7 +35,7 @@ class SingleDomainTests(unittest.TestCase):
             "/openapi.json",
         ]:
             self.assertEqual(
-                self.client.get("https://api.sunlingzhang.com" + path).status_code,
+                self.client.get("https://api.hilex.me" + path).status_code,
                 404,
                 path,
             )
@@ -44,7 +44,7 @@ class SingleDomainTests(unittest.TestCase):
         headers = {"X-API-Key": self.key(["qwen"])["key"]}
         self.assertEqual(
             self.client.post(
-                "https://api.sunlingzhang.com/v1/embeddings",
+                "https://api.hilex.me/v1/embeddings",
                 json={"input": "test"},
                 headers=headers,
             ).status_code,
@@ -52,13 +52,13 @@ class SingleDomainTests(unittest.TestCase):
         )
         self.assertEqual(
             self.client.post(
-                "https://api.sunlingzhang.com/v1/audio/transcriptions", headers=headers
+                "https://api.hilex.me/v1/audio/transcriptions", headers=headers
             ).status_code,
             403,
         )
         self.assertEqual(
             self.client.post(
-                "https://api.sunlingzhang.com/v1/audio/speech",
+                "https://api.hilex.me/v1/audio/speech",
                 json={"input": "test"},
                 headers=headers,
             ).status_code,
@@ -68,21 +68,21 @@ class SingleDomainTests(unittest.TestCase):
     def test_only_supported_routes_are_exposed(self):
         self.assertEqual(
             http_route(
-                "api.sunlingzhang.com", "/v1/audio/transcriptions", "POST"
+                "api.hilex.me", "/v1/audio/transcriptions", "POST"
             ).service,
             "asr",
         )
         self.assertEqual(
-            http_route("api.sunlingzhang.com", "/v1/audio/speech", "POST").service,
+            http_route("api.hilex.me", "/v1/audio/speech", "POST").service,
             "tts",
         )
         self.assertEqual(
-            http_route("api.sunlingzhang.com", "/v1/embeddings", "POST").service, "qwen"
+            http_route("api.hilex.me", "/v1/embeddings", "POST").service, "qwen"
         )
-        self.assertEqual(ws_service("api.sunlingzhang.com", "/ws/tts"), "tts")
+        self.assertEqual(ws_service("api.hilex.me", "/ws/tts"), "tts")
         with self.assertRaises(Denied):
             http_route(
-                "api.sunlingzhang.com", "/v1/audio/transcriptions/vibevoice", "POST"
+                "api.hilex.me", "/v1/audio/transcriptions/vibevoice", "POST"
             )
         self.assertEqual(
             http_route(
@@ -92,6 +92,6 @@ class SingleDomainTests(unittest.TestCase):
         )
         for path in ["/v1/rerank", "/v1/score", "/flush_cache", "/v1/audio/unknown"]:
             with self.assertRaises(Denied):
-                http_route("api.sunlingzhang.com", path, "POST")
+                http_route("api.hilex.me", path, "POST")
         with self.assertRaises(Denied):
             ws_service("tts.sunlingzhang.com", "/ws/tts")

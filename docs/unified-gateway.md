@@ -10,7 +10,7 @@ Cloudflare Tunnel → 127.0.0.1:18900（强制认证）
               TTS 18768 / VibeVoice 18769
 ```
 
-VibeVoice 仅通过本机入口使用，不对公网开放；其他推理统一使用 `api.sunlingzhang.com`。旧 ASR/TTS DNS 记录已删除，权威查询返回 NXDOMAIN，缓存未过期时可能暂时仍返回旧地址并收到 404。
+VibeVoice 仅通过本机入口使用，不对公网开放；其他推理统一使用 `api.hilex.me`。旧 ASR/TTS DNS 记录已删除，权威查询返回 NXDOMAIN，缓存未过期时可能暂时仍返回旧地址并收到 404。
 
 两个入口均只绑定回环；Cloudflare 配置只指向 18900。不能按来源 IP 是 127.0.0.1 就放行，因为 cloudflared 自身也从本机连接。实际 TCP 监听端口为 18901 且 TCP 对端为 loopback 才允许本地推理免认证。关闭代理请求头对 ASGI server/client 信息的改写。伪造 Host、X-Forwarded-For 或 X-Forwarded-Port 不能将 18900 变成本地入口。
 

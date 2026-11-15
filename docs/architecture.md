@@ -1,8 +1,8 @@
 # 项目边界与部署架构
 
 ```text
-账号用户 ──HTTPS──> Cloudflare accounts Worker ──D1
-模型客户端 ──HTTPS/WSS──> API 网关 ──HTTP/WS──> model-serving
+账号用户 ──HTTPS accounts.hilex.me──> Cloudflare accounts Worker ──D1
+模型客户端 ──HTTPS/WSS api.hilex.me──> API 网关 ──HTTP/WS──> model-serving
                              │
                              └──HTTPS /internal/*──> accounts Worker
 ```
@@ -16,3 +16,5 @@ API 网关负责模型发现、OpenAI 参数兼容、SSE、WebSocket 和用量�
 现有 `deploy/client_ids.json` 已独立复制到两个项目，默认仍匹配。若单独轮换模型服务 ID，同时更新网关的 `GATEWAY_BACKEND_CLIENT_ID`。前者不能由客户端传入的 Authorization 或 Client ID 覆盖。
 
 Worker 模式下 D1 保存凭证的 SHA256 摘要、scrypt 密码哈希、账号权限和请求占用；内部服务密钥只通过 Worker Secret 和网关环境变量配置。数据库请求占用采用条件 INSERT 和 SQL trigger 原子执行限额，不依赖某个 Worker 实例的内存锁。
+
+当前 Worker 为 hilex-accounts，D1 为 hilex-accounts。本机账号路由已关闭，旧账号隧道连接器已停止。源站 API 网关和 API 隧道当前运行，未配置开机自启。

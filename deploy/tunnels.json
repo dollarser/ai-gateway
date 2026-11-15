@@ -2,15 +2,8 @@
   {
     "name": "ai-gateway-api",
     "id": "d79096c0-61c1-4317-8878-2ed3b79f0417",
-    "hostname": "api.sunlingzhang.com",
+    "hostname": "api.hilex.me",
     "config": "deploy/cloudflared-api.yml",
-    "origin": "http://127.0.0.1:18900"
-  },
-  {
-    "name": "ai-gateway-accounts",
-    "id": "4aa254d5-8737-422c-9913-36ae20c3a41b",
-    "hostname": "accounts.sunlingzhang.com",
-    "config": "deploy/cloudflared.yml",
     "origin": "http://127.0.0.1:18900"
   }
 ]

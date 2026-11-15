@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:local": "wrangler d1 migrations apply accounts --local",
-    "db:remote": "wrangler d1 migrations apply accounts --remote",
+    "db:local": "wrangler d1 migrations apply DB --local",
+    "db:remote": "wrangler d1 migrations apply DB --remote",
     "check": "wrangler deploy --dry-run",
     "test": "wrangler deploy --dry-run --outdir .test-build && node --test tests/*.test.mjs"
   },

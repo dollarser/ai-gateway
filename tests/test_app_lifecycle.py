@@ -13,7 +13,7 @@ class LifecycleTests(unittest.TestCase):
     def test_health_exposes_no_backend_details_on_either_host(self):
         app = create_app()
         client = TestClient(app)
-        for host in ["accounts.sunlingzhang.com", "api.sunlingzhang.com"]:
+        for host in ["accounts.hilex.me", "api.hilex.me"]:
             response = client.get("https://" + host + "/healthz")
             self.assertEqual(response.status_code, 200)
             self.assertEqual(set(response.json()), {"ready", "service", "auth_modes"})

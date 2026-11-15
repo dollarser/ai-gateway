@@ -2,6 +2,6 @@ tunnel: d79096c0-61c1-4317-8878-2ed3b79f0417
 credentials-file: /home/lingzhang/.cloudflared/d79096c0-61c1-4317-8878-2ed3b79f0417.json
 protocol: http2
 ingress:
-  - hostname: api.sunlingzhang.com
+  - hostname: api.hilex.me
     service: http://127.0.0.1:18900
   - service: http_status:404

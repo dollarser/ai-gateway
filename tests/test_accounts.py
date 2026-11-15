@@ -351,7 +351,7 @@ class HTTPTests(unittest.TestCase):
         (Path(self.tmp.name) / "bootstrap-admin.json").write_text(
             json.dumps({"username": "admin", "password": "long-password-123"})
         )
-        self.client = TestClient(self.app, base_url="https://accounts.sunlingzhang.com")
+        self.client = TestClient(self.app, base_url="https://accounts.hilex.me")
         self.client.__enter__()
         self.db = self.app.state.store
         self.original_client = self.app.state.client
@@ -424,7 +424,7 @@ class HTTPTests(unittest.TestCase):
             ]:
                 r = self.client.request(
                     method,
-                    "https://" + host + ".sunlingzhang.com" + path,
+                    "https://" + host + ".hilex.me" + path,
                     headers=headers,
                 )
                 self.assertEqual(r.status_code, 401, (host, r.status_code))
@@ -438,13 +438,13 @@ class HTTPTests(unittest.TestCase):
         ]:
             r = self.client.request(
                 method,
-                "https://" + host + ".sunlingzhang.com" + path,
+                "https://" + host + ".hilex.me" + path,
                 headers={"Authorization": "Bearer " + token, "X-Client-ID": cid},
             )
             self.assertEqual(r.status_code, 200)
 
     def test_embedding_uses_qwen_auth_quota_and_private_backend(self):
-        url = "https://api.sunlingzhang.com/v1/embeddings"
+        url = "https://api.hilex.me/v1/embeddings"
         token = self.tokens["access_token"]
         cid = self.app.state.backend_id
         payload = {"model": "Qwen/Qwen3-Embedding-0.6B", "input": "example"}
@@ -488,7 +488,7 @@ class HTTPTests(unittest.TestCase):
             self.assertEqual(rows[0]["service"], "qwen")
             self.assertEqual(rows[0]["path"], "/v1/embeddings")
             catalog = self.client.get(
-                "https://api.sunlingzhang.com/v1/models?output_modalities=all",
+                "https://api.hilex.me/v1/models?output_modalities=all",
                 headers=headers,
             ).json()
             self.assertEqual(
@@ -507,7 +507,7 @@ class HTTPTests(unittest.TestCase):
             self.app.state.client = self.mock
 
     def test_vibevoice_is_not_public_even_with_valid_credentials(self):
-        url = "https://api.sunlingzhang.com/v1/audio/transcriptions/vibevoice"
+        url = "https://api.hilex.me/v1/audio/transcriptions/vibevoice"
         token = self.tokens["access_token"]
         cid = self.app.state.backend_id
         for headers in [
@@ -522,7 +522,7 @@ class HTTPTests(unittest.TestCase):
 
     def test_administrator_key_does_not_require_client_id(self):
         key = self.key(["qwen"])["key"]
-        url = "https://api.sunlingzhang.com/v1/models"
+        url = "https://api.hilex.me/v1/models"
         self.assertEqual(
             self.client.get(
                 url, headers={"Authorization": "Bearer " + key}
@@ -587,7 +587,7 @@ class HTTPTests(unittest.TestCase):
             ("api", "/v1/audio/speech", "POST"),
         ]:
             r = self.client.request(
-                method, "https://" + host + ".sunlingzhang.com" + path, headers=auth
+                method, "https://" + host + ".hilex.me" + path, headers=auth
             )
             self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(
@@ -659,14 +659,14 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.client.get("/account/me", headers=auth).status_code, 401)
         self.assertEqual(
             self.client.get(
-                "https://api.sunlingzhang.com/v1/models", headers=auth
+                "https://api.hilex.me/v1/models", headers=auth
             ).status_code,
             401,
         )
         auth["Authorization"] = "Bearer ai-at-invalid"
         self.assertEqual(
             self.client.get(
-                "https://api.sunlingzhang.com/v1/models", headers=auth
+                "https://api.hilex.me/v1/models", headers=auth
             ).status_code,
             401,
         )
@@ -690,7 +690,7 @@ class HTTPTests(unittest.TestCase):
         key = r.json()
         self.assertEqual(
             self.client.post(
-                "https://api.sunlingzhang.com/v1/audio/transcriptions",
+                "https://api.hilex.me/v1/audio/transcriptions",
                 headers={
                     "Authorization": "Bearer " + key["key"],
                     "X-Client-ID": self.app.state.backend_id,
@@ -700,7 +700,7 @@ class HTTPTests(unittest.TestCase):
         )
         self.assertEqual(
             self.client.get(
-                "https://api.sunlingzhang.com/v1/models",
+                "https://api.hilex.me/v1/models",
                 headers={
                     "Authorization": "Bearer " + key["key"],
                     "X-Client-ID": self.app.state.backend_id,
@@ -716,7 +716,7 @@ class HTTPTests(unittest.TestCase):
         )
         self.assertEqual(
             self.client.post(
-                "https://api.sunlingzhang.com/v1/audio/transcriptions",
+                "https://api.hilex.me/v1/audio/transcriptions",
                 headers={
                     "Authorization": "Bearer " + key["key"],
                     "X-Client-ID": self.app.state.backend_id,
@@ -772,7 +772,7 @@ class HTTPTests(unittest.TestCase):
         ]:
             r = self.client.request(
                 method,
-                "https://" + host + ".sunlingzhang.com" + path,
+                "https://" + host + ".hilex.me" + path,
                 headers={
                     "Authorization": "Bearer " + key["key"],
                     "X-Client-ID": self.app.state.backend_id,
@@ -960,7 +960,7 @@ class HTTPTests(unittest.TestCase):
 
     def test_proxy_scope_forwarding_usage_and_revocation(self):
         key = self.key()
-        url = "https://api.sunlingzhang.com/v1/audio/transcriptions"
+        url = "https://api.hilex.me/v1/audio/transcriptions"
         r = self.client.post(
             url,
             content=b"audio",
@@ -975,7 +975,7 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(usage["requests"][0]["status"], 200)
         self.assertGreater(usage["requests"][0]["response_bytes"], 0)
         r = self.client.post(
-            "https://api.sunlingzhang.com/v1/audio/speech",
+            "https://api.hilex.me/v1/audio/speech",
             json={},
             headers={
                 "Authorization": "Bearer " + key["key"],
@@ -997,7 +997,7 @@ class HTTPTests(unittest.TestCase):
 
     def test_unknown_key_cannot_downgrade_to_clientid(self):
         r = self.client.post(
-            "https://api.sunlingzhang.com/v1/audio/transcriptions",
+            "https://api.hilex.me/v1/audio/transcriptions",
             headers={
                 "Authorization": "Bearer sk-acct-invalid",
                 "X-Client-ID": self.app.state.backend_id,
@@ -1008,7 +1008,7 @@ class HTTPTests(unittest.TestCase):
     def test_only_inference_paths_exposed(self):
         key = self.key(["qwen"])
         r = self.client.post(
-            "https://api.sunlingzhang.com/flush_cache",
+            "https://api.hilex.me/flush_cache",
             headers={
                 "Authorization": "Bearer " + key["key"],
                 "X-Client-ID": self.app.state.backend_id,
@@ -1016,7 +1016,7 @@ class HTTPTests(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 404)
         r = self.client.get(
-            "https://api.sunlingzhang.com/v1/models",
+            "https://api.hilex.me/v1/models",
             headers={
                 "Authorization": "Bearer " + key["key"],
                 "X-Client-ID": self.app.state.backend_id,

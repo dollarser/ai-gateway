@@ -4,6 +4,14 @@
 
 模型推理独立位于 `../model-serving`。两者通过 HTTP/WebSocket 连接，不导入对方的 Python 包，也不共享账号数据库。
 
+## 当前线上部署
+
+- 账号网页与账号 API：https://accounts.hilex.me（Worker `hilex-accounts`）
+- 账号数据库：D1 `hilex-accounts`
+- 模型 API：https://api.hilex.me（Cloudflare Tunnel → 本机 Python 网关）
+
+本机网关已使用 Worker 账号模式，SQLite 仅保留为迁移前快照。模型后端尚未启动，已授权的模型请求可能返回 502。
+
 ## 本地账号部署
 
 ```bash
@@ -23,7 +31,7 @@ bash scripts/start.sh
 
 ## Cloudflare Tunnel
 
-安装、登录授权、新建/重建、DNS、运行和验证见 [隧道运维文档](docs/tunnels.md)。当前 API 和账号入口的隧道配置统一保存在本项目 `deploy/`，连接器凭证留在 `~/.cloudflared/`。
+安装、登录授权、新建/重建、DNS、运行和验证见 [隧道运维文档](docs/tunnels.md)。当前仅 API 入口使用隧道，配置为 `deploy/cloudflared-api.yml`；账号域名由 Worker 直接提供服务。连接器凭证留在 `~/.cloudflared/`。
 
 ## Cloudflare Worker + D1 账号部署
 
@@ -32,7 +40,7 @@ bash scripts/start.sh
 部署步骤、迁移及回滚见 [Cloudflare 部署说明](docs/cloudflare.md)。启用方式：
 
 ```dotenv
-ACCOUNTS_WORKER_URL=https://accounts.example.com
+ACCOUNTS_WORKER_URL=https://accounts.hilex.me
 ACCOUNTS_WORKER_SECRET=<与 Worker 的 INTERNAL_SECRET 相同>
 ```
 

@@ -1,19 +1,19 @@
 # 统一 AI 服务客户端接入文档
 
-> 2026-10-28：全部模型推理统一使用 api.sunlingzhang.com；旧 ASR/TTS 域名已停用。客户端配置和 WebSocket 迁移步骤见 [单域名迁移文档](client-migration-single-api.md)。
+> 2026-10-28：全部模型推理统一使用 api.hilex.me；旧 ASR/TTS 域名已停用。客户端配置和 WebSocket 迁移步骤见 [单域名迁移文档](client-migration-single-api.md)。
 当前推荐流程是 **邮箱注册 → 账号登录 → 自动使用登录凭证调用 LLM、ASR、TTS**。Android 用户不需要创建、复制或手动配置 API Key。模型调用必须同时带登录凭证和应用 Client ID；Client ID 由应用配置，沿用现有 Qwen3.8 的白名单值，不需终端用户填写。API Key 暂时保留给管理员管理的服务端或脚本集成。
 
 ## 1. 服务地址
 
 | 用途 | 地址 |
 |---|---|
-| 注册、登录和账号管理 | https://accounts.sunlingzhang.com/ |
-| LLM API Base URL | `https://api.sunlingzhang.com/v1` |
-| ASR 文件识别 | `https://api.sunlingzhang.com/v1/audio/transcriptions` |
-| TTS 文字合成 | `https://api.sunlingzhang.com/v1/audio/speech` |
-| ASR WebSocket | `wss://api.sunlingzhang.com/ws/asr` |
-| TTS WebSocket | `wss://api.sunlingzhang.com/ws/tts` |
-| ASR / TTS 在线接口文档 | https://api.sunlingzhang.com/docs · https://api.sunlingzhang.com/docs |
+| 注册、登录和账号管理 | https://accounts.hilex.me/ |
+| LLM API Base URL | `https://api.hilex.me/v1` |
+| ASR 文件识别 | `https://api.hilex.me/v1/audio/transcriptions` |
+| TTS 文字合成 | `https://api.hilex.me/v1/audio/speech` |
+| ASR WebSocket | `wss://api.hilex.me/ws/asr` |
+| TTS WebSocket | `wss://api.hilex.me/ws/tts` |
+| ASR / TTS 在线接口文档 | https://api.hilex.me/docs · https://api.hilex.me/docs |
 
 全部公网调用使用 HTTPS / WSS。ASR 和 TTS 只支持本文列出的字段，不等同于完整 OpenAI Audio API。
 
@@ -54,14 +54,14 @@ X-Client-ID: <client_id>
 当前注册默认值可公开查询：
 
 ```bash
-curl https://accounts.sunlingzhang.com/auth/registration-info
+curl https://accounts.hilex.me/auth/registration-info
 ```
 
 本人当前额度以登录后的 `GET /account/me` 为准。
 
 ## 4. 注册、登录、刷新和退出 API
 
-以下接口位于 `https://accounts.sunlingzhang.com`。
+以下接口位于 `https://accounts.hilex.me`。
 
 | 接口 | 用途 | 认证 |
 |---|---|---|
@@ -163,7 +163,7 @@ import getpass
 import os
 import httpx
 
-base = "https://accounts.sunlingzhang.com"
+base = "https://accounts.hilex.me"
 client_id = os.environ["AI_CLIENT_ID"]  # 应用配置，由服务管理者提供
 email = input("邮箱：").strip()
 password = getpass.getpass("密码：")
@@ -178,7 +178,7 @@ with httpx.Client(headers={"User-Agent": "my-ai-client/1.0"}, timeout=30) as cli
         raise RuntimeError("先修改初始密码，再重新登录")
     access_token = login["access_token"]
     refresh_token = login["refresh_token"]
-    models = client.get("https://api.sunlingzhang.com/v1/models", headers={
+    models = client.get("https://api.hilex.me/v1/models", headers={
         "Authorization": "Bearer " + access_token, "X-Client-ID": client_id,
     })
     if models.status_code == 401:
@@ -186,7 +186,7 @@ with httpx.Client(headers={"User-Agent": "my-ai-client/1.0"}, timeout=30) as cli
         renewed.raise_for_status()
         tokens = renewed.json()
         access_token, refresh_token = tokens["access_token"], tokens["refresh_token"]
-        models = client.get("https://api.sunlingzhang.com/v1/models", headers={
+        models = client.get("https://api.hilex.me/v1/models", headers={
             "Authorization": "Bearer " + access_token, "X-Client-ID": client_id,
         })
     models.raise_for_status()
@@ -203,14 +203,14 @@ with httpx.Client(headers={"User-Agent": "my-ai-client/1.0"}, timeout=30) as cli
 模型列表（默认仅文本输出；完整发现使用 `?output_modalities=all`，用途读取 `architecture.output_modalities`，详见 [模型发现](model-discovery.md)）：
 
 ```bash
-curl https://api.sunlingzhang.com/v1/models \
+curl https://api.hilex.me/v1/models \
   -H "Authorization: Bearer $AI_ACCESS_TOKEN" -H "X-Client-ID: $AI_CLIENT_ID"
 ```
 
 普通回答：
 
 ```bash
-curl https://api.sunlingzhang.com/v1/chat/completions \
+curl https://api.hilex.me/v1/chat/completions \
   -H "Authorization: Bearer $AI_ACCESS_TOKEN" -H "X-Client-ID: $AI_CLIENT_ID" \
   -H 'Content-Type: application/json' \
   -d '{"model":"Qwen3.8-27B","messages":[{"role":"user","content":"你好"}],"max_tokens":256,"reasoning_effort":"low","stream":false}'
@@ -219,7 +219,7 @@ curl https://api.sunlingzhang.com/v1/chat/completions \
 SSE 流式输出：
 
 ```bash
-curl -N https://api.sunlingzhang.com/v1/chat/completions \
+curl -N https://api.hilex.me/v1/chat/completions \
   -H "Authorization: Bearer $AI_ACCESS_TOKEN" -H "X-Client-ID: $AI_CLIENT_ID" \
   -H 'Content-Type: application/json' \
   -d '{"model":"Qwen3.8-27B","messages":[{"role":"user","content":"介绍一下语音识别"}],"max_tokens":512,"reasoning_effort":"low","stream":true}'
@@ -230,7 +230,7 @@ curl -N https://api.sunlingzhang.com/v1/chat/completions \
 ## 6. ASR：音频文件上传
 
 ```bash
-curl --fail-with-body https://api.sunlingzhang.com/v1/audio/transcriptions \
+curl --fail-with-body https://api.hilex.me/v1/audio/transcriptions \
   -H "Authorization: Bearer $AI_ACCESS_TOKEN" -H "X-Client-ID: $AI_CLIENT_ID" \
   -F 'file=@audio.wav'
 ```
@@ -250,7 +250,7 @@ curl --fail-with-body https://api.sunlingzhang.com/v1/audio/transcriptions \
 ## 7. TTS：文字转 WAV
 
 ```bash
-curl --fail-with-body https://api.sunlingzhang.com/v1/audio/speech \
+curl --fail-with-body https://api.hilex.me/v1/audio/speech \
   -H "Authorization: Bearer $AI_ACCESS_TOKEN" -H "X-Client-ID: $AI_CLIENT_ID" \
   -H 'Content-Type: application/json' \
   -d '{"input":"你好，这是语音合成测试。"}' \
@@ -271,7 +271,7 @@ Android 和其他非浏览器客户端必须同时发送 `Authorization: Bearer 
 
 ```javascript
 const socket = new WebSocket(
-  "wss://api.sunlingzhang.com/ws/tts",
+  "wss://api.hilex.me/ws/tts",
   ["speech", "access-token." + accessToken, "client-id." + clientId]
 );
 socket.binaryType = "arraybuffer";
@@ -337,7 +337,7 @@ async def main():
     headers = {"Authorization": "Bearer " + os.environ["AI_ACCESS_TOKEN"],
                "X-Client-ID": os.environ["AI_CLIENT_ID"]}
     async with websockets.connect(
-        "wss://api.sunlingzhang.com/ws/tts",
+        "wss://api.hilex.me/ws/tts",
         extra_headers=headers,
         user_agent_header="my-ai-client/1.0",
         max_size=16 * 1024 * 1024,
@@ -385,10 +385,10 @@ asyncio.run(main())
 
 ```bash
 AI_ACCESS_TOKEN="$AI_ACCESS_TOKEN" .venv-asr/bin/python scripts/clients/client.py asr \
-  models/paraformer/example/asr_example.wav --url wss://api.sunlingzhang.com/ws/asr
+  models/paraformer/example/asr_example.wav --url wss://api.hilex.me/ws/asr
 
 AI_ACCESS_TOKEN="$AI_ACCESS_TOKEN" .venv-tts/bin/python scripts/clients/client.py tts \
-  artifacts/demo.txt --url wss://api.sunlingzhang.com/ws/tts --output speech.wav
+  artifacts/demo.txt --url wss://api.hilex.me/ws/tts --output speech.wav
 ```
 
 ## 9. 错误处理和重试

@@ -1,5 +1,5 @@
 {
-  "name": "waylens-accounts",
+  "name": "hilex-accounts",
   "main": "src/worker.mjs",
   "compatibility_date": "2026-07-01",
   "assets": {
@@ -10,17 +10,15 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "accounts",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_name": "hilex-accounts",
+      "database_id": "d5fc96e2-d7d6-4d87-a2a9-24bd5d3d0e4f",
       "migrations_dir": "migrations",
     },
   ],
   "vars": {
-    "ACCOUNT_ORIGIN": "https://accounts.sunlingzhang.com",
+    "ACCOUNT_ORIGIN": "https://accounts.hilex.me",
   },
-  "limits": {
-    "cpu_ms": 1000,
-  },
+  "routes": [{"pattern": "accounts.hilex.me", "custom_domain": true}],
   "triggers": {
     "crons": ["*/15 * * * *"],
   },

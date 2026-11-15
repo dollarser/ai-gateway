@@ -5,33 +5,33 @@
 本次为直接切换，不保留旧 ASR/TTS 域名、不做重定向。VibeVoice 仅本机使用，不提供公网接口，也不属于本次客户端公网迁移。客户端应删除独立的 ASR/TTS 服务地址，只保留：
 
 ```text
-ACCOUNT_BASE_URL = https://accounts.sunlingzhang.com
-INFERENCE_BASE_URL = https://api.sunlingzhang.com/v1
-SPEECH_WS_BASE_URL = wss://api.sunlingzhang.com
+ACCOUNT_BASE_URL = https://accounts.hilex.me
+INFERENCE_BASE_URL = https://api.hilex.me/v1
+SPEECH_WS_BASE_URL = wss://api.hilex.me
 ```
 
 OpenAI 类 SDK 的 base_url 使用包含 `/v1` 的第二项，调用具体方法时不要再次拼 `/v1`；WebSocket 使用第三项后拼 `/ws/asr` 或 `/ws/tts`。账号登录、注册和刷新依旧使用 ACCOUNT_BASE_URL，不能改为 api 域名。
 
 | 功能 | 新的完整地址 | 方法／类型 |
 |---|---|---|
-| 完整模型列表（LLM／Embedding） | `https://api.sunlingzhang.com/v1/models?output_modalities=all` | GET |
-| LLM 对话 | `https://api.sunlingzhang.com/v1/chat/completions` | POST JSON，可 SSE |
-| LLM 文本补全 | `https://api.sunlingzhang.com/v1/completions` | POST JSON |
-| Embedding | `https://api.sunlingzhang.com/v1/embeddings` | POST JSON |
-| Paraformer 文件 ASR | `https://api.sunlingzhang.com/v1/audio/transcriptions` | POST multipart |
-| TTS 文件 | `https://api.sunlingzhang.com/v1/audio/speech` | POST JSON，返回 WAV |
-| 实时 ASR | `wss://api.sunlingzhang.com/ws/asr` | WebSocket |
-| 双流 TTS | `wss://api.sunlingzhang.com/ws/tts` | WebSocket |
-| 网关健康 | `https://api.sunlingzhang.com/healthz` | GET，无需认证 |
+| 完整模型列表（LLM／Embedding） | `https://api.hilex.me/v1/models?output_modalities=all` | GET |
+| LLM 对话 | `https://api.hilex.me/v1/chat/completions` | POST JSON，可 SSE |
+| LLM 文本补全 | `https://api.hilex.me/v1/completions` | POST JSON |
+| Embedding | `https://api.hilex.me/v1/embeddings` | POST JSON |
+| Paraformer 文件 ASR | `https://api.hilex.me/v1/audio/transcriptions` | POST multipart |
+| TTS 文件 | `https://api.hilex.me/v1/audio/speech` | POST JSON，返回 WAV |
+| 实时 ASR | `wss://api.hilex.me/ws/asr` | WebSocket |
+| 双流 TTS | `wss://api.hilex.me/ws/tts` | WebSocket |
+| 网关健康 | `https://api.hilex.me/healthz` | GET，无需认证 |
 
 旧地址对照：
 
 | 删除的旧地址 | 替换为 |
 |---|---|
-| `https://asr.sunlingzhang.com/v1/audio/transcriptions` | `https://api.sunlingzhang.com/v1/audio/transcriptions` |
-| `https://tts.sunlingzhang.com/v1/audio/speech` | `https://api.sunlingzhang.com/v1/audio/speech` |
-| `wss://asr.sunlingzhang.com/ws/asr` | `wss://api.sunlingzhang.com/ws/asr` |
-| `wss://tts.sunlingzhang.com/ws/tts` | `wss://api.sunlingzhang.com/ws/tts` |
+| `https://asr.sunlingzhang.com/v1/audio/transcriptions` | `https://api.hilex.me/v1/audio/transcriptions` |
+| `https://tts.sunlingzhang.com/v1/audio/speech` | `https://api.hilex.me/v1/audio/speech` |
+| `wss://asr.sunlingzhang.com/ws/asr` | `wss://api.hilex.me/ws/asr` |
+| `wss://tts.sunlingzhang.com/ws/tts` | `wss://api.hilex.me/ws/tts` |
 
 旧域名的 DNS 记录已删除；权威 DNS 返回 NXDOMAIN。缓存未过期时仍可能解析到旧 Cloudflare 地址并返回 404。不应将旧域名作为 fallback。`api` 域名不提供登录页面、`/auth/*`、`/account/*`、`/admin/*`、静态页面、Swagger 或文档下载；`/v1/rerank`、`/v1/score` 等没有部署后端的接口不开放。健康接口只证明网关运行，不证明每个模型随时可用。
 
@@ -71,16 +71,16 @@ X-API-Key: <API_KEY>
 ## 账号流程不变
 
 ```text
-POST https://accounts.sunlingzhang.com/auth/register
+POST https://accounts.hilex.me/auth/register
   {"email":"user@example.com","password":"至少6字符"}
 
-POST https://accounts.sunlingzhang.com/auth/login
+POST https://accounts.hilex.me/auth/login
   {"username":"user@example.com","password":"密码"}
 
-POST https://accounts.sunlingzhang.com/auth/refresh
+POST https://accounts.hilex.me/auth/refresh
   {"refresh_token":"登录返回的 refresh_token"}
 
-POST https://accounts.sunlingzhang.com/auth/logout
+POST https://accounts.hilex.me/auth/logout
   {"refresh_token":"当前 refresh_token"}
 ```
 
@@ -93,18 +93,18 @@ POST https://accounts.sunlingzhang.com/auth/logout
 账号模式下，以下请求都使用相同的两个认证头：
 
 ```bash
-curl https://api.sunlingzhang.com/v1/embeddings \
+curl https://api.hilex.me/v1/embeddings \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H "X-Client-ID: $CLIENT_ID" \
   -H 'Content-Type: application/json' \
   -d '{"model":"Qwen/Qwen3-Embedding-0.6B","input":"课程知识整理","dimensions":1024}'
 
-curl https://api.sunlingzhang.com/v1/audio/transcriptions \
+curl https://api.hilex.me/v1/audio/transcriptions \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H "X-Client-ID: $CLIENT_ID" \
   -F 'file=@sample.wav'
 
-curl https://api.sunlingzhang.com/v1/audio/speech \
+curl https://api.hilex.me/v1/audio/speech \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H "X-Client-ID: $CLIENT_ID" \
   -H 'Content-Type: application/json' \
@@ -125,7 +125,7 @@ API Key 模式替换认证头为 `-H "X-API-Key: $API_KEY"` 即可，不带用�
 安卓等原生客户端可在握手中直接设置 HTTP 认证头。浏览器 WebSocket 无法设置任意请求头时，账号模式使用子协议：
 
 ```javascript
-const ws = new WebSocket("wss://api.sunlingzhang.com/ws/asr", [
+const ws = new WebSocket("wss://api.hilex.me/ws/asr", [
   "speech", "access-token." + accessToken, "client-id." + clientId
 ]);
 ```
@@ -141,7 +141,7 @@ API Key 模式可使用 `['speech', 'api-key.' + apiKey]`，无需 client-id 子
 
 ### TTS
 
-1. 连接 `wss://api.sunlingzhang.com/ws/tts`，等待 ready；播放参数采用 ready 给出的 sample_rate、s16le 和 channels。
+1. 连接 `wss://api.hilex.me/ws/tts`，等待 ready；播放参数采用 ready 给出的 sample_rate、s16le 和 channels。
 2. 增量发送 `{"type":"text","text":"一段文字"}`，每条最多 2000 字符，会话合计最多 20000。
 3. 接收二进制裸 PCM16 帧并按顺序播放，不包含 WAV 头；文本发送完成后只发送一次 `{"type":"end"}`。
 4. 等待音频输出完成及 `{"type":"done"}`。text 输入和音频输出可以并行进行。

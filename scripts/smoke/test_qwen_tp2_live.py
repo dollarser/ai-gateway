@@ -70,7 +70,7 @@ async def validate(key):
             }
             started = time.monotonic()
             response = await client.post(
-                "https://api.sunlingzhang.com/v1/chat/completions",
+                "https://api.hilex.me/v1/chat/completions",
                 headers=headers,
                 json=payload,
             )
