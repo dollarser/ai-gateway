@@ -36,14 +36,14 @@ TTS 新增 `stream:true,response_format:"pcm"`。服务端在收到第一段提�
 bash scripts/ops/install-user-services.sh
 loginctl enable-linger "$USER"
 # 先停止旧手工进程，再启动，以免端口冲突或重复连接。
-systemctl --user start ai-gateway.service ai-gateway-tunnel.service ai-gateway-health.timer
+systemctl --user start ai-gateway.service ai-gateway-tunnel.service ai-gateway-auth-check.timer
 systemctl --user status ai-gateway.service ai-gateway-tunnel.service
 journalctl --user -u ai-gateway.service -u ai-gateway-tunnel.service --since '10 minutes ago'
 ```
 
 单位使用 `%h/workspace/ai-gateway`，迁移目录时同步调整单位。网关和隧道均自动重启，linger 使用户服务在无人登录时也能随系统启动。网关优雅停止最多 930 秒，避免强杀正在结算的请求。代码更新后运行 `systemctl --user restart ai-gateway.service`，隧道配置变化才重启 tunnel。
 
-日志交给 journald，由系统日志策略自动轮转；不再持续写旧手工进程的 logs/gateway.log。健康 timer 每五分钟执行只读检查，失败记录在 `ai-gateway-health.service` 的 journal，不自动创建用户、修改额度或升级套餐。它检查网关/账号/认证边界，不代表所有模型供应商都能推理；提供方推理需要另行受控测试。
+日志交给 journald，由系统日志策略自动轮转；不再持续写旧手工进程的 logs/gateway.log。认证 timer 每五分钟运行 `check_deployment --auth-only`，仅验证匿名访问模型目录、账号资料和 Worker 内部接口均返回 401，不探测 /healthz 或调用模型。结果记录在 `ai-gateway-auth-check.service` 的 journal；预期 401 标记为 PASS，其他响应或网络失败使检查失败。它验证拒绝边界，不代表真实账号登录、模型推理或所有服务依赖均正常。手动完整部署检查仍可运行不带 --auth-only 的命令。认证拒绝保留 INFO 日志和原有失败计数，不通过请求头跳过或弱化认证。
 
 ## 持续验证
 

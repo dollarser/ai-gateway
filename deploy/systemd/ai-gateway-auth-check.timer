@@ -1,5 +1,5 @@
 [Unit]
-Description=Periodically check AI Gateway availability
+Description=Periodically verify AI Gateway authentication
 [Timer]
 OnBootSec=2min
 OnUnitActiveSec=5min

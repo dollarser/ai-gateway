@@ -18,7 +18,8 @@ def create_app(config: Settings = settings) -> FastAPI:
 
     @app.exception_handler(Denied)
     async def denied(request, exc):
-        logging.getLogger("uvicorn.error").warning(
+        logging.getLogger("uvicorn.error").log(
+            logging.INFO if exc.status == 401 else logging.WARNING,
             "gateway_denied request_id=%s path=%s status=%d",
             getattr(request.state, "gateway_request_id", ""),
             request.url.path,

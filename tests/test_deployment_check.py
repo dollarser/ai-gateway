@@ -50,3 +50,41 @@ class ReadOnlyDeploymentTests(unittest.TestCase):
     def test_remote_plaintext_origins_are_rejected(self):
         with self.client() as client, self.assertRaises(ValueError):
             check(client, "http://accounts.test", "https://api.test")
+
+
+class AuthenticationOnlyTests(unittest.TestCase):
+    def test_only_rejection_boundaries_are_probed(self):
+        from scripts.smoke.check_deployment import check_authentication
+
+        seen = []
+
+        def handle(request):
+            seen.append((request.method, request.url.path))
+            self.assertNotEqual(request.url.path, "/healthz")
+            return httpx.Response(401)
+
+        with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+            result = check_authentication(
+                client, "https://accounts.test", "https://api.test"
+            )
+        self.assertEqual(
+            seen,
+            [
+                ("GET", "/v1/models"),
+                ("GET", "/account/me"),
+                ("POST", "/internal/check-auth"),
+            ],
+        )
+        self.assertTrue(all("PASS" in value for value in result.values()))
+
+    def test_non_401_is_a_failure_even_if_it_is_a_server_error(self):
+        from scripts.smoke.check_deployment import check_authentication
+
+        for code in [200, 302, 403, 500, 503]:
+            with httpx.Client(
+                transport=httpx.MockTransport(lambda request: httpx.Response(code))
+            ) as client:
+                with self.assertRaisesRegex(RuntimeError, "expected HTTP 401"):
+                    check_authentication(
+                        client, "https://accounts.test", "https://api.test"
+                    )

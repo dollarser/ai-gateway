@@ -22,6 +22,32 @@ def origin(value):
     return value.rstrip("/")
 
 
+def check_authentication(client, accounts_url, api_url):
+    """Check rejection boundaries only; never accesses health or model backends."""
+    accounts_url, api_url = origin(accounts_url), origin(api_url)
+    probes = [
+        ("model_authentication", "GET", api_url + "/v1/models", None),
+        ("account_authentication", "GET", accounts_url + "/account/me", None),
+        (
+            "internal_authentication",
+            "POST",
+            accounts_url + "/internal/check-auth",
+            {"ip": "192.0.2.1"},
+        ),
+    ]
+    result = {}
+    for name, method, url, payload in probes:
+        response = client.request(
+            method, url, **({"json": payload} if payload is not None else {})
+        )
+        if response.status_code != 401:
+            raise RuntimeError(
+                f"{name}: expected HTTP 401, received HTTP {response.status_code}"
+            )
+        result[name] = "PASS (expected HTTP 401)"
+    return result
+
+
 def check(client, accounts_url, api_url, api_key=None):
     accounts_url, api_url = origin(accounts_url), origin(api_url)
     accounts = client.get(accounts_url + "/healthz")
@@ -73,13 +99,32 @@ def main():
         action="store_true",
         help="Also require AI_API_KEY and working model backends",
     )
+    parser.add_argument(
+        "--auth-only",
+        action="store_true",
+        help="Only verify anonymous requests are rejected; skip health and model backend checks",
+    )
     args = parser.parse_args()
+    if args.auth_only and args.require_models:
+        parser.error("--auth-only cannot be combined with --require-models")
     key = os.environ.get("AI_API_KEY") if args.require_models else None
     if args.require_models and not key:
         parser.error("Set AI_API_KEY in the environment, never on the command line")
     try:
-        with httpx.Client(timeout=15, trust_env=False) as client:
-            result = check(client, args.accounts_url, args.api_url, key)
+        with httpx.Client(
+            timeout=15,
+            trust_env=False,
+            headers={
+                "User-Agent": "ai-gateway-auth-check/1.0"
+                if args.auth_only
+                else "ai-gateway-deployment-check/1.0"
+            },
+        ) as client:
+            result = (
+                check_authentication(client, args.accounts_url, args.api_url)
+                if args.auth_only
+                else check(client, args.accounts_url, args.api_url, key)
+            )
     except (httpx.HTTPError, RuntimeError, ValueError) as exc:
         raise SystemExit(str(exc))
     for name, status in result.items():
