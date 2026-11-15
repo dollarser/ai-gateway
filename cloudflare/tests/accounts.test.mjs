@@ -1,9 +1,57 @@
 import { before, after, test } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { Miniflare } from "miniflare";
 import { passwordHash, digest } from "../src/crypto.mjs";
 let mf, db, admin;
+let openaiMode = "json",
+  providerCalls = 0;
+async function provider(request) {
+  assert.equal(new URL(request.url).hostname, "api.openai.com");
+  assert.equal(request.headers.get("Authorization"), "Bearer test-openai-key");
+  const p = await request.json();
+  assert.equal(p.model, "gpt-6-luna");
+  assert.equal(p.service_tier, "default");
+  assert.equal(p.store, false);
+  assert.equal(p.max_tokens, undefined);
+  providerCalls++;
+  if (openaiMode === "reject")
+    return new Response("private upstream error", { status: 401 });
+  if (openaiMode === "unknown") return new Response("invalid-json");
+  const usage = {
+    prompt_tokens: 100,
+    completion_tokens: 20,
+    prompt_tokens_details: { cached_tokens: 40 },
+  };
+  if (p.stream) {
+    const responseMode = new URL(request.url).pathname === "/v1/responses";
+    const event = responseMode
+      ? {
+          type: "response.completed",
+          response: {
+            id: "resp-test",
+            usage: {
+              input_tokens: 100,
+              output_tokens: 20,
+              input_tokens_details: { cached_tokens: 40 },
+            },
+          },
+        }
+      : { id: "chat-test", choices: [], usage };
+    const value =
+      openaiMode === "truncated"
+        ? 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+        : "data: " + JSON.stringify(event) + "\n\ndata: [DONE]\n\n";
+    return new Response(value, {
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  }
+  return Response.json({
+    id: "chat-test",
+    choices: [{ message: { role: "assistant", content: "hello" } }],
+    usage,
+  });
+}
 const secret = "test-internal-secret-".repeat(3);
 async function call(path, body, options = {}) {
   const {
@@ -36,23 +84,29 @@ before(async () => {
     d1Databases: ["DB"],
     bindings: {
       INTERNAL_SECRET: secret,
+      OPENAI_API_KEY: "test-openai-key",
       ACCOUNT_ORIGIN: "https://accounts.test",
     },
+    outboundService: provider,
     serviceBindings: {
       ASSETS: async () => new Response("<html>portal</html>"),
     },
   });
   db = await mf.getD1Database("DB");
-  let schema = await readFile("migrations/0001_accounts.sql", "utf8");
-  const [ddl, ...triggers] = schema.split(/(?=CREATE TRIGGER)/);
-  for (const s of [
-    ...ddl
-      .replace(/^--.*$/gm, "")
-      .split(";")
-      .filter((s) => s.trim()),
-    ...triggers,
-  ])
-    await db.prepare(s).run();
+  for (const file of (await readdir("migrations"))
+    .filter((f) => f.endsWith(".sql"))
+    .sort()) {
+    let schema = await readFile("migrations/" + file, "utf8");
+    const [ddl, ...triggers] = schema.split(/(?=CREATE TRIGGER)/);
+    for (const s of [
+      ...ddl
+        .replace(/^--.*$/gm, "")
+        .split(";")
+        .filter((s) => s.trim()),
+      ...triggers,
+    ])
+      await db.prepare(s).run();
+  }
   await db
     .prepare(
       "INSERT INTO users(username,password,role,services,rpm,daily_requests,concurrency,must_change,created) VALUES(?,?,?,?,?,?,?,?,?)",
@@ -390,4 +444,314 @@ test("invalid account services and key expiry cannot corrupt stored permissions"
   );
   const after = await call("/account/me", undefined, { access: admin });
   assert.deepEqual(after.body.user.services, me.body.user.services);
+});
+
+async function lunaUser(name, monthly = 10000000) {
+  const uid = (
+    await db
+      .prepare(
+        "INSERT INTO users(username,password,role,services,rpm,daily_requests,concurrency,must_change,created,luna_monthly_tokens) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id",
+      )
+      .bind(
+        name,
+        "unused",
+        "user",
+        '["qwen"]',
+        0,
+        0,
+        8,
+        0,
+        Date.now() / 1000,
+        monthly,
+      )
+      .first()
+  ).id;
+  const key = "sk-acct-" + name;
+  await db
+    .prepare(
+      "INSERT INTO keys(user_id,name,hash,prefix,services,expires,created) VALUES(?,?,?,?,?,?,?)",
+    )
+    .bind(
+      uid,
+      name,
+      await digest(key),
+      "test-prefix",
+      '["qwen"]',
+      Date.now() / 1000 + 86400,
+      Date.now() / 1000,
+    )
+    .run();
+  return { uid, key };
+}
+async function lunaLease(key, path = "/v1/chat/completions") {
+  const r = await internal("acquire", { raw: key, service: "qwen", path });
+  assert.equal(r.status, 200);
+  return r.body.lease;
+}
+function lunaCall(lease, payload = {}, responses = false) {
+  return call(
+    "/internal/openai/" + (responses ? "responses" : "chat-completions"),
+    {
+      model: "gpt-6-luna",
+      ...(responses
+        ? { input: "hi" }
+        : { messages: [{ role: "user", content: "hi" }] }),
+      ...payload,
+    },
+    { access: secret, headers: { "X-Gateway-Lease": lease } },
+  );
+}
+test("Luna uses provider usage, shares account budget, refuses lease replay and never leaks upstream errors", async () => {
+  const { uid, key } = await lunaUser("luna-json");
+  const lease = await lunaLease(key);
+  assert.equal(
+    (await internal("luna-models", { lease })).body.data[0].id,
+    "gpt-6-luna",
+  );
+  openaiMode = "json";
+  let r = await lunaCall(lease);
+  assert.equal(r.status, 200);
+  const row = await db
+    .prepare("SELECT * FROM luna_usage WHERE lease=?")
+    .bind(lease)
+    .first();
+  assert.equal(row.charged_tokens, 120);
+  assert.equal(row.settled, 1);
+  assert.equal((await lunaCall(lease)).status, 409);
+  assert.equal(
+    (
+      await db
+        .prepare("SELECT luna_monthly_tokens FROM users WHERE id=?")
+        .bind(uid)
+        .first()
+    ).luna_monthly_tokens,
+    10000000,
+  );
+  openaiMode = "reject";
+  const rejected = await lunaLease(key);
+  r = await lunaCall(rejected);
+  assert.equal(r.status, 502);
+  assert.doesNotMatch(
+    JSON.stringify(r.body),
+    /private upstream|test-openai-key/,
+  );
+  assert.equal(
+    (
+      await db
+        .prepare("SELECT charged_tokens FROM luna_usage WHERE lease=?")
+        .bind(rejected)
+        .first()
+    ).charged_tokens,
+    0,
+  );
+  openaiMode = "json";
+});
+test("Luna reservations are atomic across keys and access tokens, zero disables, prior months do not spend this month", async () => {
+  const { uid, key } = await lunaUser("luna-budget", 6000);
+  openaiMode = "unknown";
+  const secondKey = "sk-acct-luna-second-key";
+  await db
+    .prepare(
+      "INSERT INTO keys(user_id,name,hash,prefix,services,expires,created) VALUES(?,?,?,?,?,?,?)",
+    )
+    .bind(
+      uid,
+      "second",
+      await digest(secondKey),
+      "test-prefix",
+      '["qwen"]',
+      Date.now() / 1000 + 86400,
+      Date.now() / 1000,
+    )
+    .run();
+  const family = "luna-test-family",
+    access = "ai-at-luna-budget-test";
+  await db
+    .prepare("INSERT INTO auth_families VALUES(?,?,?,0)")
+    .bind(family, uid, Date.now() / 1000 + 86400)
+    .run();
+  await db
+    .prepare("INSERT INTO access_tokens VALUES(?,?,?)")
+    .bind(await digest(access), family, Date.now() / 1000 + 86400)
+    .run();
+  const a = await lunaLease(secondKey),
+    b = await lunaLease(access);
+  const results = await Promise.all([
+    lunaCall(a, { max_completion_tokens: 1 }),
+    lunaCall(b, { max_completion_tokens: 1 }),
+  ]);
+  assert.deepEqual(results.map((r) => r.status).sort(), [429, 502]);
+  await db
+    .prepare("UPDATE luna_usage SET month='2000-01' WHERE user_id=?")
+    .bind(uid)
+    .run();
+  assert.equal(
+    (await lunaCall(await lunaLease(key), { max_completion_tokens: 1 })).status,
+    502,
+  );
+  await db
+    .prepare("UPDATE users SET luna_monthly_tokens=0 WHERE id=?")
+    .bind(uid)
+    .run();
+  assert.equal(
+    (await lunaCall(await lunaLease(key), { max_completion_tokens: 1 })).status,
+    429,
+  );
+  openaiMode = "json";
+});
+test("Luna blocks bypass fields, non-text input and wrong service leases before calling provider", async () => {
+  const { key } = await lunaUser("luna-validation");
+  const lease = await lunaLease(key),
+    before = providerCalls;
+  for (const p of [
+    { model: "gpt-6-astra" },
+    { n: 20 },
+    { service_tier: "priority" },
+    { max_completion_tokens: 0 },
+    { tools: [{ type: "web_search" }] },
+    {
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image_url",
+              image_url: { url: "https://example.com/img" },
+            },
+          ],
+        },
+      ],
+    },
+  ])
+    assert.ok([400, 422].includes((await lunaCall(lease, p)).status));
+  assert.equal((await lunaCall("nonexistent")).status, 403);
+  const wrong = await lunaLease(key, "/v1/models");
+  assert.equal((await lunaCall(wrong)).status, 403);
+  assert.equal(providerCalls, before);
+  // Chat tool-call IDs link client-side function results, not stored provider state.
+  const valid = await lunaCall(lease, {
+    reasoning_effort: "none",
+    messages: [
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_client",
+            type: "function",
+            function: { name: "weather", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call_client", content: "sunny" },
+    ],
+  });
+  assert.equal(valid.status, 200);
+});
+test("Luna streams settle authoritative usage for Chat and Responses; truncated streams retain budget", async () => {
+  const { key } = await lunaUser("luna-stream");
+  for (const responses of [false, true]) {
+    const lease = await lunaLease(
+      key,
+      responses ? "/v1/responses" : "/v1/chat/completions",
+    );
+    const r = await mf.dispatchFetch(
+      "https://accounts.test/internal/openai/" +
+        (responses ? "responses" : "chat-completions"),
+      {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + secret,
+          "Content-Type": "application/json",
+          "X-Gateway-Lease": lease,
+        },
+        body: JSON.stringify({
+          model: "gpt-6-luna",
+          ...(responses
+            ? { input: "hi" }
+            : { messages: [{ role: "user", content: "hi" }] }),
+          stream: true,
+        }),
+      },
+    );
+    assert.equal(r.status, 200);
+    assert.match(await r.text(), /data:/);
+    assert.equal(
+      (
+        await db
+          .prepare(
+            "SELECT charged_tokens,settled FROM luna_usage WHERE lease=?",
+          )
+          .bind(lease)
+          .first()
+      ).charged_tokens,
+      120,
+    );
+  }
+  openaiMode = "truncated";
+  const lease = await lunaLease(key);
+  const r = await mf.dispatchFetch(
+    "https://accounts.test/internal/openai/chat-completions",
+    {
+      method: "POST",
+      headers: { Authorization: "Bearer " + secret, "X-Gateway-Lease": lease },
+      body: JSON.stringify({
+        model: "gpt-6-luna",
+        messages: [{ role: "user", content: "hi" }],
+        stream: true,
+      }),
+    },
+  );
+  await r.text();
+  const row = await db
+    .prepare("SELECT * FROM luna_usage WHERE lease=?")
+    .bind(lease)
+    .first();
+  assert.equal(row.settled, 0);
+  assert.equal(row.charged_tokens, row.reserved_tokens);
+  openaiMode = "json";
+});
+test("Luna budgets can only be changed by admins and new account defaults are applied", async () => {
+  const me = await call("/account/me", undefined, { access: admin });
+  assert.equal(
+    (
+      await call(
+        "/admin/users/" + me.body.user.id,
+        { luna_monthly_tokens: -1 },
+        { method: "PATCH", access: admin },
+      )
+    ).status,
+    422,
+  );
+  assert.equal(
+    (
+      await call(
+        "/admin/luna-defaults",
+        { monthly_tokens: 2500000 },
+        { method: "PATCH", access: admin },
+      )
+    ).status,
+    200,
+  );
+  const r = await call(
+    "/admin/users",
+    { username: "luna-default" },
+    { access: admin },
+  );
+  assert.equal(r.body.user.luna_monthly_tokens, 2500000);
+  assert.equal(
+    (
+      await call(
+        "/admin/users/" + r.body.user.id,
+        { luna_monthly_tokens: 250000 },
+        { method: "PATCH", access: admin },
+      )
+    ).body.luna_monthly_tokens,
+    250000,
+  );
+  const balance = await call("/account/luna-usage", undefined, {
+    access: admin,
+  });
+  assert.equal(balance.status, 200);
+  assert.equal(balance.body.monthly_tokens, 10000000);
 });

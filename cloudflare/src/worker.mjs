@@ -1,5 +1,6 @@
 import { Store, Denied, SERVICES, publicUser } from "./store.mjs";
 import { digest, equal, now, token, passwordHash } from "./crypto.mjs";
+import { budgetValue, lunaUsage, lunaCatalog, proxyLuna } from "./luna.mjs";
 const COOKIE = "__Host-ai_session";
 const json = (v, status = 200, headers = {}) =>
   Response.json(v, {
@@ -55,8 +56,8 @@ function quotas(b, defaults = false) {
       fail(422, "额度字段无效");
   return b;
 }
-async function body(request) {
-  if (Number(request.headers.get("Content-Length") || 0) > 16384)
+async function body(request, limit = 16384) {
+  if (Number(request.headers.get("Content-Length") || 0) > limit)
     fail(413, "请求体过大");
   const reader = request.body?.getReader();
   let n = 0;
@@ -66,7 +67,7 @@ async function body(request) {
       const { done, value } = await reader.read();
       if (done) break;
       n += value.length;
-      if (n > 16384) {
+      if (n > limit) {
         await reader.cancel();
         fail(413, "请求体过大");
       }
@@ -112,14 +113,32 @@ async function userSession(request, store, admin = false) {
     fail(403, "需要管理员权限；首次登录请先修改密码");
   return u;
 }
-async function internal(request, env, store, path) {
+async function internal(request, env, store, path, ctx) {
   if (
     request.method !== "POST" ||
     !env.INTERNAL_SECRET ||
     !equal(bearer(request), env.INTERNAL_SECRET)
   )
     fail(401, "内部服务认证失败");
+  if (
+    [
+      "/internal/openai/chat-completions",
+      "/internal/openai/responses",
+    ].includes(path)
+  )
+    return proxyLuna(
+      request,
+      env,
+      store,
+      ctx,
+      await body(request, 4 * 1024 * 1024),
+      path.endsWith("/responses"),
+    );
   const b = await body(request);
+  if (path === "/internal/luna-models") {
+    validate(b, ["lease"]);
+    return json(await lunaCatalog(store, env, text(b.lease, 1, 128)));
+  }
   if (path === "/internal/acquire") {
     validate(b, ["raw", "service", "path"]);
     text(b.raw, 1, 256);
@@ -164,12 +183,12 @@ async function internal(request, env, store, path) {
   }
   fail(404, "未知内部接口");
 }
-async function route(request, env) {
+async function route(request, env, ctx) {
   const url = new URL(request.url),
     p = url.pathname,
     method = request.method;
   const store = new Store(env.DB);
-  if (p.startsWith("/internal/")) return internal(request, env, store, p);
+  if (p.startsWith("/internal/")) return internal(request, env, store, p, ctx);
   if (p === "/healthz" && method === "GET") {
     await store.first("SELECT 1");
     return json({ ready: true, service: "accounts", storage: "d1" });
@@ -279,12 +298,53 @@ async function route(request, env) {
     );
     return json({ ok: true, message: "密码已修改，请重新登录" });
   }
+  if (p === "/account/luna-usage" && method === "GET")
+    return json(await lunaUsage(store, u.id));
+  if (p === "/admin/luna-defaults") {
+    if (method === "GET")
+      return json(
+        JSON.parse(
+          (
+            await store.first(
+              "SELECT value FROM settings WHERE name='luna_defaults'",
+            )
+          ).value,
+        ),
+      );
+    if (method === "PATCH") {
+      const b = validate(await body(request), ["monthly_tokens"]);
+      budgetValue(b.monthly_tokens);
+      await store.db.batch([
+        store.stmt(
+          "UPDATE settings SET value=? WHERE name='luna_defaults'",
+          JSON.stringify(b),
+        ),
+        store.stmt(
+          "INSERT INTO audit(actor,action,target,ts) VALUES(?,?,?,?)",
+          u.id,
+          "update_luna_defaults",
+          JSON.stringify(b),
+          now(),
+        ),
+      ]);
+      return json(b);
+    }
+  }
   if (p === "/account/usage" && method === "GET")
     return json(await store.usage(u.id));
   if (p === "/admin/usage" && method === "GET") {
     const uid = url.searchParams.get("user_id");
     if (uid !== null && !/^[1-9]\d*$/.test(uid)) fail(422, "用户 ID 无效");
-    return json(await store.usage(uid ? Number(uid) : null));
+    const usage = await store.usage(uid ? Number(uid) : null);
+    if (uid) {
+      const target = await store.first(
+        "SELECT id FROM users WHERE id=?",
+        Number(uid),
+      );
+      if (!target) fail(404, "账号不存在");
+      usage.luna = await lunaUsage(store, Number(uid));
+    }
+    return json(usage);
   }
   if (p === "/admin/audit" && method === "GET")
     return json(
@@ -318,6 +378,7 @@ async function route(request, env) {
     const b = quotas(
       validate(await body(request), [
         "username",
+        "luna_monthly_tokens",
         "services",
         "rpm",
         "daily_requests",
@@ -330,6 +391,7 @@ async function route(request, env) {
       services(b.services);
       if (!b.services.length) fail(422, "至少一个服务");
     }
+    if (b.luna_monthly_tokens !== undefined) budgetValue(b.luna_monthly_tokens);
     const temporary_password = token();
     const user = await store.createUser(b.username, temporary_password, {
       ...b,
@@ -366,6 +428,7 @@ async function route(request, env) {
       const b = quotas(
         validate(await body(request), [
           "enabled",
+          "luna_monthly_tokens",
           "services",
           "rpm",
           "daily_requests",
@@ -375,6 +438,9 @@ async function route(request, env) {
       if (b.services !== undefined) services(b.services);
       if (b.enabled !== undefined && typeof b.enabled !== "boolean")
         fail(422, "enabled 必须为布尔值");
+      if (b.luna_monthly_tokens !== undefined) {
+        b.luna_monthly_tokens = budgetValue(b.luna_monthly_tokens);
+      }
       const keys = Object.keys(b);
       if (!keys.length) fail(422, "没有更新字段");
       const values = keys.map((k) =>
@@ -397,7 +463,14 @@ async function route(request, env) {
           store.stmt("UPDATE auth_families SET revoked=1 WHERE user_id=?", uid),
         );
       await store.db.batch(statements);
-      await store.audit(u.id, "update_user", uid);
+      await store.audit(
+        u.id,
+        "update_user",
+        String(uid) +
+          (b.luna_monthly_tokens !== undefined
+            ? ":luna_monthly_tokens=" + b.luna_monthly_tokens
+            : ""),
+      );
       return json(
         publicUser(await store.first("SELECT * FROM users WHERE id=?", uid)),
       );
@@ -430,9 +503,9 @@ async function route(request, env) {
   fail(404, "接口不存在");
 }
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
-      return await route(request, env);
+      return await route(request, env, ctx);
     } catch (e) {
       if (e instanceof Denied)
         return json(

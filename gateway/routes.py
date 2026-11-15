@@ -19,6 +19,7 @@ class Route:
 
 
 HTTP_ROUTES = {
+    "/v1/responses": Route("qwen", ""),
     "/v1/models": Route("qwen", UPSTREAMS["qwen"] + "/v1/models", "GET"),
     **{
         path: Route(deployment.service, deployment.upstream + path)

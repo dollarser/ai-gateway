@@ -21,6 +21,10 @@ class UsageTracker:
     def accept(self, obj):
         if not isinstance(obj, dict):
             return
+        if isinstance(obj.get("response"), dict):
+            if obj.get("type") == "response.completed":
+                self.accept(obj["response"])
+            return
         self.response_id = self.response_id or safe_id(obj.get("id"))
         usage = obj.get("usage")
         if isinstance(usage, dict) and (
@@ -28,6 +32,14 @@ class UsageTracker:
         ):
             self.prompt, self.completion, _ = usage_from_response(obj)
             self.exact = True
+        if (
+            isinstance(usage, dict)
+            and "input_tokens" in usage
+            and "output_tokens" in usage
+        ):
+            pt, ct = usage["input_tokens"], usage["output_tokens"]
+            if type(pt) is int and type(ct) is int and pt >= 0 and ct >= 0:
+                self.prompt, self.completion, self.exact = pt, ct, True
         choices = obj.get("choices")
         if not isinstance(choices, list):
             return

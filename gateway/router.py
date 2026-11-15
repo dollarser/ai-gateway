@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from accounts.store import Denied
 from gateway.auth import authorize_inference, is_local_listener
 from gateway import llm as llm_protocol
+from gateway import worker_openai as openai_proxy
 from gateway.usage import UsageTracker
 from gateway.catalog import discover_models, parse_output_modalities
 from gateway.tracking import safe_id
@@ -119,14 +120,85 @@ async def inference(path: str, request: Request):
                 body.extend(block)
                 if len(body) > cap:
                     raise Denied(413, "请求体超过服务限制")
+        if service == "qwen" and path in {
+            "/v1/chat/completions",
+            "/v1/completions",
+            "/v1/responses",
+        }:
+            try:
+                candidate = json.loads(body)
+            except (ValueError, UnicodeDecodeError):
+                raise Denied(400, "无效的 JSON 请求")
+            if not isinstance(candidate, dict):
+                raise Denied(400, "JSON 请求必须为对象")
+            if (
+                candidate.get("model") == openai_proxy.LUNA_MODEL
+                or path == "/v1/responses"
+            ):
+                # The Worker reserves and settles the budget; the gateway never
+                # receives OPENAI_API_KEY and never applies SGLang rewrites here.
+                upstream = await request.app.state.client.send(
+                    openai_proxy.proxy_request(request.app, lease, path, candidate),
+                    stream=True,
+                )
+                status = upstream.status_code
+                tracker = UsageTracker(
+                    streaming=bool(candidate.get("stream")), input_characters=0
+                )
+
+                async def openai_stream():
+                    nonlocal size, status
+                    try:
+                        async with timeout(890):
+                            async for chunk in upstream.aiter_bytes():
+                                size += len(chunk)
+                                tracker.feed(chunk)
+                                yield chunk
+                    except asyncio.CancelledError:
+                        status = 499
+                        raise
+                    except (TimeoutError, httpx.HTTPError):
+                        status = 504
+                        raise
+                    finally:
+                        try:
+                            await upstream.aclose()
+                        finally:
+                            await finish()
+
+                transferred = True
+                return StreamingResponse(
+                    openai_stream(),
+                    status_code=status,
+                    headers={
+                        "Content-Type": upstream.headers.get(
+                            "content-type", "application/json"
+                        ),
+                        "Cache-Control": "no-store",
+                        "X-Request-ID": request_id,
+                        **(
+                            {"Retry-After": upstream.headers["retry-after"]}
+                            if "retry-after" in upstream.headers
+                            else {}
+                        ),
+                    },
+                )
         if path == "/v1/models":
             values = request.query_params.getlist("output_modalities")
             if len(values) > 1:
                 raise Denied(400, "output_modalities 请使用单个逗号分隔参数")
             selected = parse_output_modalities(values[0] if values else "text")
-            catalog, window = await discover_models(
-                request.app.state.client, headers, selected
-            )
+            luna = await openai_proxy.catalog(request.app, lease) if not local else []
+            try:
+                catalog, window = await discover_models(
+                    request.app.state.client, headers, selected
+                )
+            except Denied:
+                if not luna:
+                    raise
+                catalog, window = {"object": "list", "data": []}, 0
+            if selected is None or "text" in selected:
+                catalog["data"].extend(luna)
             request.app.state.llm_model_max_len = window
             status = 200
             response = JSONResponse(catalog, headers={"X-Request-ID": request_id})

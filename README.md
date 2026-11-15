@@ -6,6 +6,8 @@
 
 ## 运维文档导航
 
+- [GPT-6 Luna：每账号每月 1000 万 tokens](docs/luna-allowance.md)
+
 - [项目与生产一致性维护](docs/maintenance-audit.md)
 - [与旧 sglang-gateway 的功能关系](docs/sglang-gateway-relationship.md)
 
@@ -21,7 +23,7 @@
 - 账号数据库：D1 `hilex-accounts`
 - 模型 API：https://api.hilex.me（Cloudflare Tunnel → 本机 Python 网关）
 
-本机网关使用 Worker 账号模式，SQLite 仅用于离线兼容与迁移。模型后端是否就绪需单独验证；后端不可达时，已授权请求可能返回 502。
+本机网关使用 Worker 账号模式，SQLite 仅用于离线兼容与迁移。自建模型后端是否就绪需单独验证，后端不可达时请求可能返回 502。GPT-6 Luna 由 Worker 调用 OpenAI，不依赖本机模型进程；每账号默认每月 1000 万 tokens。
 
 ## 部署 API 网关
 

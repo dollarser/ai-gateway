@@ -11,7 +11,11 @@ export const day = () =>
 export function publicUser(r) {
   if (!r) return null;
   const { password, csrf, family, ...u } = r;
-  return { ...u, services: JSON.parse(r.services) };
+  return {
+    ...u,
+    luna_monthly_tokens: r.luna_monthly_tokens ?? 0,
+    services: JSON.parse(r.services),
+  };
 }
 export class Store {
   constructor(db) {
@@ -59,10 +63,18 @@ export class Store {
       email: null,
       ...options,
     };
+    const lunaDefaults = JSON.parse(
+      (
+        await this.first(
+          "SELECT value FROM settings WHERE name='luna_defaults'",
+        )
+      ).value,
+    );
+    const lunaLimit = o.luna_monthly_tokens ?? lunaDefaults.monthly_tokens;
     let row;
     try {
       row = await this.stmt(
-        "INSERT INTO users(username,password,role,services,rpm,daily_requests,concurrency,must_change,created,email) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING *",
+        "INSERT INTO users(username,password,role,services,rpm,daily_requests,concurrency,must_change,created,email,luna_monthly_tokens) VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING *",
         username.toLowerCase(),
         encoded,
         o.role,
@@ -73,6 +85,7 @@ export class Store {
         Number(o.must_change),
         now(),
         o.email,
+        lunaLimit,
       ).first();
     } catch (e) {
       if (String(e).includes("UNIQUE")) throw new Denied(409, "账号已存在");
