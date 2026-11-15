@@ -36,15 +36,32 @@ class RemoteStore:
     def call(self, operation, **body):
         try:
             response = self.client.post("/internal/" + operation, json=body)
+            result = response.json()
+            if not isinstance(result, dict):
+                raise ValueError("Invalid account service response")
             if response.status_code >= 400:
-                detail = response.json().get("detail", "账号服务暂时不可用")
+                detail = result.get("detail", "账号服务暂时不可用")
+                if not isinstance(detail, str):
+                    detail = "账号服务暂时不可用"
                 raise Denied(
                     response.status_code
                     if response.status_code in {400, 401, 403, 404, 409, 422, 429}
                     else 503,
                     detail,
                 )
-            return response.json()
+            if operation == "acquire":
+                value = result.get("lease")
+                if not isinstance(value, str) or not value or len(value) > 128:
+                    raise ValueError("Missing account lease")
+            elif operation == "token-remaining":
+                if "remaining" not in result:
+                    raise ValueError("Missing token allowance")
+                value = result["remaining"]
+                if value is not None and (type(value) is not int or value < 0):
+                    raise ValueError("Invalid token allowance")
+            elif result.get("ok") is not True:
+                raise ValueError("Missing account service acknowledgment")
+            return result
         except (httpx.HTTPError, ValueError) as exc:
             raise Denied(503, "账号服务暂时不可用") from exc
 

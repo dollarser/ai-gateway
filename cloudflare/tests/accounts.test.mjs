@@ -350,3 +350,44 @@ test("daily quota is shared across keys and zero RPM remains unlimited", async (
     429,
   );
 });
+
+test("invalid account services and key expiry cannot corrupt stored permissions", async () => {
+  const me = await call("/account/me", undefined, { access: admin });
+  const uid = me.body.user.id;
+  const before = (await db.prepare("SELECT count(*) AS n FROM users").first())
+    .n;
+  for (const value of [null, false, [], "asr"]) {
+    const result = await call(
+      "/admin/users",
+      { username: "invalid-services", services: value },
+      { access: admin },
+    );
+    assert.equal(result.status, 422);
+  }
+  assert.equal(
+    (await db.prepare("SELECT count(*) AS n FROM users").first()).n,
+    before,
+  );
+  assert.equal(
+    (
+      await call(
+        "/admin/users/" + uid,
+        { services: null },
+        { method: "PATCH", access: admin },
+      )
+    ).status,
+    422,
+  );
+  assert.equal(
+    (
+      await call(
+        "/account/keys",
+        { name: "invalid", services: ["asr"], days: null },
+        { access: admin },
+      )
+    ).status,
+    422,
+  );
+  const after = await call("/account/me", undefined, { access: admin });
+  assert.deepEqual(after.body.user.services, me.body.user.services);
+});

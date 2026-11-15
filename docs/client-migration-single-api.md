@@ -33,7 +33,7 @@ OpenAI 类 SDK 的 base_url 使用包含 `/v1` 的第二项，调用具体方法
 | `wss://asr.sunlingzhang.com/ws/asr` | `wss://api.hilex.me/ws/asr` |
 | `wss://tts.sunlingzhang.com/ws/tts` | `wss://api.hilex.me/ws/tts` |
 
-旧域名的 DNS 记录已删除；权威 DNS 返回 NXDOMAIN。缓存未过期时仍可能解析到旧 Cloudflare 地址并返回 404。不应将旧域名作为 fallback。`api` 域名不提供登录页面、`/auth/*`、`/account/*`、`/admin/*`、静态页面、Swagger 或文档下载；`/v1/rerank`、`/v1/score` 等没有部署后端的接口不开放。健康接口只证明网关运行，不证明每个模型随时可用。
+旧域名不再作为受支持的服务入口；不对当前 DNS 状态作保证。不应将旧域名作为 fallback。`api` 域名不提供登录页面、`/auth/*`、`/account/*`、`/admin/*`、静态页面、Swagger 或文档下载；`/v1/rerank`、`/v1/score` 等没有部署后端的接口不开放。健康接口只证明网关运行，不证明每个模型随时可用。
 
 ## 认证：账号与 API Key 二选一
 
@@ -171,7 +171,7 @@ WS 忙时关闭码 1013，协议错误／认证失败可能为 1008 或握手被
 - 验证 ASR 最后一次 flush、累计文本不重复追加、TTS 裸 PCM 播放和 busy 1013。
 - 确认旧域名不可用，不依赖重定向；本地免鉴权仅使用 `http://127.0.0.1:18901`，不把“服务器连接来自本机”作为公网免认证依据。
 
-补充文档：[统一网关运维](unified-gateway.md)、[账号接入细节](client-integration.md)、[Embedding](qwen3-embedding.md)、[VibeVoice](vibevoice-asr.md)。本文件只保存在本机 docs，不提供网页下载。
+补充文档：[统一网关运维](unified-gateway.md)、[账号接入细节](client-integration.md)；模型部署细节见独立 model-serving 项目。文档随本仓库版本管理，API 域名不提供文档下载。
 
 ## 模型发现更新（2026-10-30）
 

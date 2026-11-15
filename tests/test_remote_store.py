@@ -62,3 +62,49 @@ class WorkerStoreTests(unittest.TestCase):
     def test_plain_http_remote_origins_are_rejected(self):
         with self.assertRaises(ValueError):
             RemoteStore("http://accounts.example.com", "x" * 40)
+
+    def test_malformed_success_cannot_grant_an_untracked_request(self):
+        for payload in [[], {}, {"lease": None}, {"lease": ""}]:
+            with self.subTest(payload=payload):
+                store = RemoteStore(
+                    "https://accounts.example.com",
+                    "x" * 40,
+                    transport=httpx.MockTransport(
+                        lambda request: httpx.Response(200, json=payload)
+                    ),
+                )
+                with self.assertRaises(Denied) as error:
+                    store.acquire("key", "asr", "/")
+                self.assertEqual(error.exception.status, 503)
+                store.close()
+
+    def test_malformed_token_allowance_is_not_treated_as_unlimited(self):
+        for payload in [
+            {},
+            {"remaining": -1},
+            {"remaining": True},
+            {"remaining": "10"},
+        ]:
+            with self.subTest(payload=payload):
+                store = RemoteStore(
+                    "https://accounts.example.com",
+                    "x" * 40,
+                    transport=httpx.MockTransport(
+                        lambda request: httpx.Response(200, json=payload)
+                    ),
+                )
+                with self.assertRaises(Denied) as error:
+                    store.token_remaining("lease")
+                self.assertEqual(error.exception.status, 503)
+                store.close()
+
+    def test_missing_usage_acknowledgment_is_an_account_service_error(self):
+        store = RemoteStore(
+            "https://accounts.example.com",
+            "x" * 40,
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})),
+        )
+        with self.assertRaises(Denied) as error:
+            store.finish("lease", 200)
+        self.assertEqual(error.exception.status, 503)
+        store.close()

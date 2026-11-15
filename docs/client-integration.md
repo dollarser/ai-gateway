@@ -381,15 +381,20 @@ async def main():
 asyncio.run(main())
 ```
 
-本仓库还提供文件客户端，可同时验证 ASR 和 TTS：
+本仓库的文件客户端需要安装可选依赖，默认连接公网网关；不需要模型运行环境或模型目录：
 
 ```bash
-AI_ACCESS_TOKEN="$AI_ACCESS_TOKEN" .venv-asr/bin/python scripts/clients/client.py asr \
-  models/paraformer/example/asr_example.wav --url wss://api.hilex.me/ws/asr
+.venv-accounts/bin/python -m pip install -e '.[clients]'
+# input.wav 为自行准备的 16kHz 单声道 WAV。
+# 登录令牌方式还需设置 SPEECH_CLIENT_ID；API Key 方式无需 Client ID。
+AI_ACCESS_TOKEN="$AI_ACCESS_TOKEN" SPEECH_CLIENT_ID="$AI_CLIENT_ID" \
+  .venv-accounts/bin/python -m scripts.clients.client asr input.wav
 
-AI_ACCESS_TOKEN="$AI_ACCESS_TOKEN" .venv-tts/bin/python scripts/clients/client.py tts \
-  artifacts/demo.txt --url wss://api.hilex.me/ws/tts --output speech.wav
+AI_API_KEY="$AI_API_KEY" .venv-accounts/bin/python -m scripts.clients.client \
+  tts demo.txt --output speech.wav
 ```
+
+模型环境和示例模型数据由独立的 model-serving 项目管理。
 
 ## 9. 错误处理和重试
 
@@ -470,4 +475,4 @@ Key 调用只需 `Authorization: Bearer sk-acct-...` 或 `X-API-Key: sk-acct-...
 
 ## VibeVoice-ASR：仅本机
 
-VibeVoice 不对外提供服务。公网 `/v1/audio/transcriptions/vibevoice` 即使携带有效账号或 API Key 也返回 404。仅本机使用 `http://127.0.0.1:18769/v1/audio/transcriptions`，无需认证；大文件限制和模型策略见 [VibeVoice 部署文档](vibevoice-asr.md)。
+VibeVoice 不对外提供服务。公网 `/v1/audio/transcriptions/vibevoice` 即使携带有效账号或 API Key 也返回 404。仅本机使用 `http://127.0.0.1:18769/v1/audio/transcriptions`，无需认证；大文件限制和模型策略见独立 model-serving 项目的 README。

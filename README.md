@@ -6,6 +6,9 @@
 
 ## 运维文档导航
 
+- [项目与生产一致性维护](docs/maintenance-audit.md)
+- [与旧 sglang-gateway 的功能关系](docs/sglang-gateway-relationship.md)
+
 - [部署、授权与运维经验](docs/operations-lessons.md)
 - [Worker / D1 部署流程](docs/cloudflare.md)
 - [Cloudflare Tunnel 运维](docs/tunnels.md)
@@ -18,24 +21,28 @@
 - 账号数据库：D1 `hilex-accounts`
 - 模型 API：https://api.hilex.me（Cloudflare Tunnel → 本机 Python 网关）
 
-本机网关已使用 Worker 账号模式，SQLite 仅保留为迁移前快照。模型后端尚未启动，已授权的模型请求可能返回 502。
+本机网关使用 Worker 账号模式，SQLite 仅用于离线兼容与迁移。模型后端是否就绪需单独验证；后端不可达时，已授权请求可能返回 502。
 
-## 本地账号部署
+## 部署 API 网关
 
 ```bash
 bash scripts/setup/setup.sh
-cp .env.example .env
-# 在 .env 中配置各 *_UPSTREAM_URL；默认连接同机 model-serving 的原端口。
+# 首次部署才创建 .env，不覆盖已有生产配置。
+if [ ! -f .env ]; then cp .env.example .env; fi
+# 填写与 Worker INTERNAL_SECRET 相同的 ACCOUNTS_WORKER_SECRET。
 bash scripts/start.sh
 ```
 
-网关只监听回环地址：18900 为需认证的隧道入口，18901 保留原来的本机免鉴权入口。公网隧道只应转发 18900。账号域名和 API 域名分别由 `ACCOUNTS_HOST`、`GATEWAY_API_HOST` 配置。
+默认使用 Worker/D1；缺少配置不会自动退回旧 SQLite。setup 默认不创建本地账号或管理员。显式离线账号模式及迁移工具见 [本地开发](docs/local-development.md)。
 
-已复制现有账号数据库和部署凭证。`accounts/data/`、`deploy/client_ids.json`、`deploy/private/` 不进入版本控制。新安装会生成初始管理员凭证文件，文件只保存在本机。
+公网隧道只连接回环端口 18900；18901 保留本机推理入口。用户数据库、凭证和内部 Client ID 不进入 Git。
 
 ```bash
 .venv-accounts/bin/python -m tests.run
+.venv-accounts/bin/python -m scripts.smoke.check_deployment
 ```
+
+部署检查不创建测试账号。它验证账号 D1 健康、网关、未授权拒绝和内部接口保护；显式传 `--require-models` 才使用环境变量中的 API Key 检查模型后端。
 
 ## Cloudflare Tunnel
 

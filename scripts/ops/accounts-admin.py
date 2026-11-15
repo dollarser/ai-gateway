@@ -16,10 +16,19 @@ parser = argparse.ArgumentParser()
 parser.add_argument("command", choices=["bootstrap", "create-user", "disable-user"])
 parser.add_argument("--username", default="admin")
 parser.add_argument("--output", type=Path)
+parser.add_argument(
+    "--local-only",
+    action="store_true",
+    help="Confirm this command only changes local SQLite, never production D1",
+)
 args = parser.parse_args()
+if not args.local_only:
+    parser.error(
+        "This command does not manage production D1; pass --local-only explicitly for local SQLite"
+    )
 os.umask(0o077)
-data = ROOT / "accounts/data"
-data.mkdir(exist_ok=True, mode=0o700)
+data = Path(os.environ.get("ACCOUNTS_DATA", ROOT / "accounts/data"))
+data.mkdir(parents=True, exist_ok=True, mode=0o700)
 if args.command == "bootstrap":
     path = data / "bootstrap-admin.json"
     if path.exists():

@@ -64,6 +64,6 @@ curl -i https://api.hilex.me/v1/models
 
 账号健康应包含 `storage: d1`；API 未带凭证应返回 401。已授权请求返回 502 时还需检查模型后端是否启动。Python urllib 的默认 User-Agent 可能触发 Cloudflare 1010，此时检查边缘安全规则，不能误判为隧道掉线。
 
-旧 `ai-gateway-accounts` 连接器已停止，本机不再使用账号隧道；旧资源记录在 `deploy/legacy-tunnels.json`。此前 sunlingzhang.com 两条隧道重建操作见 [历史记录](tunnels-legacy-20261115.md)。
+账号由 Worker 直接提供服务，旧账号隧道已退役；本项目不再提供账号隧道启动配置。历史操作可通过 Git 历史查询，不作为当前部署步骤。
 
 [官方安装](https://developers.cloudflare.com/tunnel/downloads/) · [官方隧道流程](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/create-local-tunnel/)

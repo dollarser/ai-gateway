@@ -326,7 +326,10 @@ async function route(request, env) {
     );
     text(b.username, 3, 64);
     if (!/^[a-zA-Z0-9_.-]+$/.test(b.username)) fail(422, "用户名无效");
-    if (b.services) services(b.services);
+    if (b.services !== undefined) {
+      services(b.services);
+      if (!b.services.length) fail(422, "至少一个服务");
+    }
     const temporary_password = token();
     const user = await store.createUser(b.username, temporary_password, {
       ...b,
@@ -369,7 +372,7 @@ async function route(request, env) {
           "concurrency",
         ]),
       );
-      if (b.services) services(b.services);
+      if (b.services !== undefined) services(b.services);
       if (b.enabled !== undefined && typeof b.enabled !== "boolean")
         fail(422, "enabled 必须为布尔值");
       const keys = Object.keys(b);
@@ -409,7 +412,7 @@ async function route(request, env) {
       text(b.name, 1, 80);
       services(b.services);
       if (!b.services.length) fail(422, "至少一个服务");
-      b.days ??= 90;
+      if (b.days === undefined) b.days = 90;
       if (!Number.isInteger(b.days) || b.days < 1 || b.days > 365)
         fail(422, "有效期无效");
       return json(await store.createKey(u.id, target, b));

@@ -131,16 +131,22 @@ if __name__ == "__main__":
     parser.add_argument(
         "--source", type=Path, required=True, help="Legacy gateway database to import"
     )
+    parser.add_argument(
+        "--target",
+        type=Path,
+        required=True,
+        help="Explicit offline SQLite destination; this never updates production D1",
+    )
     args = parser.parse_args()
     if not args.apply:
         parser.error("Use --apply only after stopping both gateways")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     result = migrate(
         args.source,
-        ROOT / "accounts/data/accounts.db",
-        ROOT / "accounts/data/migration-backups" / stamp,
+        args.target,
+        args.target.parent / "migration-backups" / stamp,
     )
-    (ROOT / "artifacts/gateway-migration.json").write_text(
+    (Path(result["backup_directory"]) / "result.json").write_text(
         json.dumps(result, indent=2) + "\n"
     )
     print(json.dumps(result, indent=2))

@@ -87,7 +87,7 @@ def export(source, output):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--source", type=Path, default=ROOT / "accounts/data/accounts.db")
+    p.add_argument("--source", type=Path, required=True, help="Explicit local SQLite snapshot; this does not read production D1")
     p.add_argument("--output", type=Path, required=True)
     a = p.parse_args()
     counts = export(a.source, a.output)

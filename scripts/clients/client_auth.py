@@ -35,5 +35,7 @@ def websocket_auth(connect):
         raise ValueError(
             "Set AI_ACCESS_TOKEN (login token) or an administrator API Key"
         )
-    headers = {"Authorization": "Bearer " + api_key, "X-Client-ID": client_id()}
+    headers = {"Authorization": "Bearer " + api_key}
+    if api_key.startswith("ai-at-"):
+        headers["X-Client-ID"] = client_id()
     return {key: headers, "user_agent_header": "speech-client/1.0"}

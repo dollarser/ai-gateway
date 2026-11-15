@@ -16,10 +16,7 @@ from scripts.clients.client_auth import websocket_auth
 
 
 async def run(args):
-    url = (
-        args.url
-        or f"ws://127.0.0.1:{18767 if args.mode == 'asr' else 18768}/ws/{args.mode}"
-    )
+    url = args.url or f"wss://api.hilex.me/ws/{args.mode}"
     started = time.monotonic()
     async with websockets.connect(
         url, max_size=16 * 1024 * 1024, **websocket_auth(websockets.connect)
@@ -81,6 +78,7 @@ async def run(args):
             if not chunks:
                 raise RuntimeError("no audio produced")
             pcm = np.frombuffer(b"".join(chunks), dtype="<i2")
+            Path(args.output).parent.mkdir(parents=True, exist_ok=True)
             sf.write(args.output, pcm, ready["sample_rate"], subtype="PCM_16")
             print(
                 json.dumps(
@@ -94,11 +92,16 @@ async def run(args):
             )
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument("mode", choices=["asr", "tts"])
-parser.add_argument("input", help="16kHz mono WAV for ASR; UTF-8 text file for TTS")
-parser.add_argument("--url")
-parser.add_argument("--output", default="artifacts/tts.wav")
-parser.add_argument("--delay", type=float, default=0.2)
-parser.add_argument("--realtime", action="store_true")
-asyncio.run(run(parser.parse_args()))
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("mode", choices=["asr", "tts"])
+    parser.add_argument("input", help="16kHz mono WAV for ASR; UTF-8 text file for TTS")
+    parser.add_argument("--url", help="Override the public gateway WebSocket URL")
+    parser.add_argument("--output", default="artifacts/tts.wav")
+    parser.add_argument("--delay", type=float, default=0.2)
+    parser.add_argument("--realtime", action="store_true")
+    asyncio.run(run(parser.parse_args()))
+
+
+if __name__ == "__main__":
+    main()
