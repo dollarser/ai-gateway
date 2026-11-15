@@ -1543,3 +1543,70 @@ test("Edge Luna tools normalize arguments and retain safe provider diagnostics w
     openaiMode = "json";
   }
 });
+
+test("OpenAI 403 records reference probe and provider identifiers without changing refund", async () => {
+  const { uid, key } = await lunaUser("edge-egress-diagnostics");
+  const original = globalThis.fetch,
+    jobs = [];
+  globalThis.fetch = async (url, options) => {
+    if (String(url).includes("api64.ipify.org")) {
+      assert.deepEqual(options.headers, { Accept: "application/json" });
+      return Response.json({ ip: "203.0.113.42" });
+    }
+    return Response.json(
+      { error: { code: "unsupported_country_region_territory" } },
+      {
+        status: 403,
+        headers: { "x-request-id": "req_geo", "cf-ray": "abc-NRT" },
+      },
+    );
+  };
+  try {
+    const request = new Request("https://api.hilex.me/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + key,
+        "Content-Type": "application/json",
+        "cf-ray": "def-NRT",
+      },
+      body: JSON.stringify({
+        model: "gpt-6-luna",
+        messages: [{ role: "user", content: "test" }],
+      }),
+    });
+    Object.defineProperty(request, "cf", {
+      value: { colo: "NRT", country: "JP" },
+    });
+    const r = await edgeAPI(
+      request,
+      { DB: db, OPENAI_API_KEY: "test-key" },
+      { waitUntil: (p) => jobs.push(p) },
+    );
+    assert.equal(r.status, 502);
+    const error = await r.json();
+    await Promise.all(jobs);
+    assert.equal(
+      error.upstream_error_code,
+      "unsupported_country_region_territory",
+    );
+    assert.equal(error.egress_probe_ip, undefined);
+    const row = await db
+      .prepare(
+        "SELECT r.*,l.charged_tokens,l.settled FROM requests r JOIN luna_usage l ON l.lease=r.id WHERE r.request_id=?",
+      )
+      .bind(error.request_id)
+      .first();
+    assert.equal(row.ingress_colo, "NRT");
+    assert.equal(row.client_country, "JP");
+    assert.equal(row.ingress_ray, "def-NRT");
+    assert.equal(row.upstream_request_id, "req_geo");
+    assert.equal(row.upstream_cf_ray, "abc-NRT");
+    assert.equal(row.egress_probe_ip, "203.0.113.42");
+    assert.equal(row.egress_probe_status, "observed_reference");
+    assert.equal(row.egress_probe_target, "api64.ipify.org");
+    assert.equal(row.charged_tokens, 0);
+    assert.equal(row.settled, 1);
+  } finally {
+    globalThis.fetch = original;
+  }
+});

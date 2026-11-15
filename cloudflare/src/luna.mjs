@@ -288,7 +288,15 @@ export function usageTokens(usage) {
     total: input + output,
   };
 }
-export async function proxyLuna(request, env, store, ctx, payload, responses) {
+export async function proxyLuna(
+  request,
+  env,
+  store,
+  ctx,
+  payload,
+  responses,
+  transport = fetch,
+) {
   if (!env.OPENAI_API_KEY) throw new Denied(503, "尚未配置 OpenAI 服务密钥");
   const lease = request.headers.get("X-Gateway-Lease");
   const r = await activeLease(store, lease);
@@ -331,7 +339,7 @@ export async function proxyLuna(request, env, store, ctx, payload, responses) {
   }
   let upstream;
   try {
-    upstream = await fetch("https://api.openai.com" + expectedPath, {
+    upstream = await transport("https://api.openai.com" + expectedPath, {
       method: "POST",
       headers: {
         Authorization: "Bearer " + env.OPENAI_API_KEY,

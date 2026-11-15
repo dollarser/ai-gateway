@@ -1,3 +1,7 @@
+import {
+  ingressDiagnostics,
+  providerTransport,
+} from "./provider-diagnostics.mjs";
 import { compressedDuration } from "./audio-duration.mjs";
 import { Store, Denied } from "./store.mjs";
 import { digest, token, now } from "./crypto.mjs";
@@ -313,6 +317,7 @@ export async function edgeAPI(request, env, ctx) {
     start = performance.now();
   let lease = null;
   const trace = {
+    ...ingressDiagnostics(request),
     request_id: id,
     provider: "edge",
     protocol: "http",
@@ -576,6 +581,7 @@ export async function edgeAPI(request, env, ctx) {
         ctx,
         form,
         measuredMs,
+        providerTransport(store, lease, trace, ctx),
       );
       response.headers.set("X-Audio-Processing", measurement);
     } else {
@@ -616,7 +622,7 @@ export async function edgeAPI(request, env, ctx) {
           ),
           env,
           store,
-          fetch,
+          providerTransport(store, lease, trace, ctx),
           ctx,
         );
       } else if (payload.model === LUNA_MODEL) {
@@ -631,6 +637,7 @@ export async function edgeAPI(request, env, ctx) {
           ctx,
           payload,
           path === "/v1/responses",
+          providerTransport(store, lease, trace, ctx),
         );
       } else {
         if (path === "/v1/responses")
@@ -657,7 +664,8 @@ export async function edgeAPI(request, env, ctx) {
     }
     trace.upstream_error_code = e.upstream_error_code;
     trace.upstream_error_param = e.upstream_error_param;
-    trace.upstream_request_id = e.upstream_request_id;
+    trace.upstream_request_id =
+      e.upstream_request_id ?? trace.upstream_request_id;
     trace.compatibility = e.compatibility;
     trace.error_code =
       e.code ?? (status < 500 ? "request_rejected" : "edge_unavailable");

@@ -240,6 +240,7 @@ export async function proxyTranscription(
   ctx,
   preparedForm = null,
   measuredMs = null,
+  transport = fetch,
 ) {
   if (!env.OPENAI_API_KEY) throw new Denied(503, "尚未配置 OpenAI 密钥");
   let form = preparedForm;
@@ -320,12 +321,15 @@ export async function proxyTranscription(
   );
   let upstream;
   try {
-    upstream = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-      method: "POST",
-      headers: { Authorization: "Bearer " + env.OPENAI_API_KEY },
-      body: out,
-      signal: AbortSignal.timeout(180000),
-    });
+    upstream = await transport(
+      "https://api.openai.com/v1/audio/transcriptions",
+      {
+        method: "POST",
+        headers: { Authorization: "Bearer " + env.OPENAI_API_KEY },
+        body: out,
+        signal: AbortSignal.timeout(180000),
+      },
+    );
   } catch {
     throw new Denied(502, "OpenAI 识别连接失败，已预留时长待核对");
   }

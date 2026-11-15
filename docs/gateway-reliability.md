@@ -58,3 +58,26 @@ GitHub Actions 的 Gateway checks 对 push/PR 运行 Python 和 Worker 测试，
 1. 流式取消：当前取消读取会停止向客户端排队，但上游 Realtime 生成仍可能继续到完成。应将取消信号传给上游并关闭会话，同时保留已经提交请求的保守扣额，避免取消免费绕过额度。
 2. 生产观测与通知：目前认证 timer 只做拒绝边界检查，结果在本机 journal。应基于实际 Worker 请求统计 5xx、P95 延迟、首音频耗时和未结算额度数量，设置通知渠道及阈值；不需要高频调用付费模型作为健康检查。
 3. 客户端 PCM 播放：记录首音频耗时、播放缓冲欠载和中途断流；支持取消播放和长文本分段，避免把 HTTP 200 当成完整成功。新客户端通过模型目录 audio.response_formats / sample_rate / channels / encoding 读取能力。
+
+## 出口参考 IP 与地区拒绝排查
+
+公网 Worker 请求诊断新增以下字段，可在管理员“按请求 ID 诊断”中查看：
+
+| 字段 | 含义 |
+|---|---|
+| ingress_colo / ingress_ray | Cloudflare 请求入口节点与 Ray ID；不是保证的实际执行位置或出口 |
+| client_country | Cloudflare 对访问客户端的地区判定；不是 Worker 出口地区 |
+| upstream_cf_ray / upstream_request_id | OpenAI 响应携带的 CF-Ray / x-request-id，缺失时留空 |
+| egress_probe_ip | 独立诊断连接被目标服务观察到的参考 IP，不是 OpenAI 当次连接的确定出口 IP |
+| egress_probe_target / egress_probe_at | 探测目标 api64.ipify.org、探测开始的 Unix 秒时间 |
+| egress_probe_status | observed_reference、timeout、invalid_response、http_error 或 failed |
+
+仅当 OpenAI 返回 HTTP 403 时，Worker 在 waitUntil 后台发起一次独立 IP 探测；正常请求不额外探测，也不等待探测结果。探测超时为 2 秒，限制响应体 256 字节，不重试；失败不覆盖原模型错误或改变额度结算。后台任务可能因运行环境终止而未完成，空字段不代表没有地区错误。
+
+探测请求新建，只显式设置 Accept，不复制模型请求的 API Key、Cookie、客户端请求头、对话或音频。它是独立连接，目的地址、IPv4/IPv6 和网络路由均可能与 OpenAI 不同，不能把测得的 IP 标成 OpenAI 实际看到的来源。跨 Cloudflare 区域的 IP 头还可能使用合成地址。准确来源需 OpenAI/Cloudflare 根据 Ray ID、请求 ID 和时间核查；现有历史错误无法补录当时的出口。
+
+这些信息保存在 D1 requests，仅管理员诊断展示；不放进普通客户端错误响应。先应用 0007_egress_diagnostics.sql，再部署 Worker。此功能不固定出口、不改变路由，也不改变地区访问限制。
+
+参考：[ipify 的 IPv4/IPv6 接口](https://www.ipify.org/)、[Cloudflare 请求元数据](https://developers.cloudflare.com/workers/runtime-apis/request/)、[Cloudflare 请求头](https://developers.cloudflare.com/fundamentals/reference/http-headers/)。
+
+本次通过 37 项 Worker 测试，包含 403、后台探测成功/失败/超时、IPv4/IPv6 校验、探测失败不影响模型错误和额度退款。公网临时账号实际请求返回 200，入口节点及 OpenAI 的 Ray ID / request ID 已正常入库，成功请求没有额外 IP 探测；测试账号及关联数据已清理。公网此次未触发 403，因此真实参考 IP 字段须待后续 403 才会产生，不能将模拟测试 IP 视为线上出口。
