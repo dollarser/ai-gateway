@@ -44,7 +44,7 @@ chmod 600 "$cleanup_backup/before.sql" "$cleanup_backup/export.log"
 先保存本次目标密钥 ID、登录族 ID 和保留数据的校验基线，再按依赖顺序处理：
 
 1. 目标密钥的 `legacy_token_baseline`。
-2. 先删除目标用户或请求对应的 `luna_usage`，再删除目标用户或密钥的 `requests`。
+2. 先删除目标用户或请求对应的 `luna_usage`、`audio_usage`，再删除目标用户或密钥的 `requests`。
 3. 目标用户的 `sessions`。
 4. 目标登录族的 `access_tokens`、`refresh_tokens`。
 5. 目标 `auth_families`。

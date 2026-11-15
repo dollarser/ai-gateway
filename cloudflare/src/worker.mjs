@@ -1,6 +1,15 @@
-import { Store, Denied, SERVICES, publicUser } from "./store.mjs";
+import { Store, Denied, SERVICES, publicUser, day } from "./store.mjs";
 import { digest, equal, now, token, passwordHash } from "./crypto.mjs";
 import { budgetValue, lunaUsage, lunaCatalog, proxyLuna } from "./luna.mjs";
+import {
+  AUDIO_FIELDS,
+  audioQuotas,
+  audioUsage,
+  audioModels,
+  proxyTranscription,
+  proxySpeech,
+} from "./audio.mjs";
+import { adminRoute } from "./admin.mjs";
 const COOKIE = "__Host-ai_session";
 const json = (v, status = 200, headers = {}) =>
   Response.json(v, {
@@ -134,16 +143,40 @@ async function internal(request, env, store, path, ctx) {
       await body(request, 4 * 1024 * 1024),
       path.endsWith("/responses"),
     );
+  if (path === "/internal/openai/transcriptions")
+    return proxyTranscription(request, env, store, ctx);
+  if (path === "/internal/openai/speech")
+    return proxySpeech(request, env, store);
   const b = await body(request);
+  if (path === "/internal/openai-models") {
+    validate(b, ["lease"]);
+    text(b.lease, 1, 128);
+    const luna = await lunaCatalog(store, env, b.lease);
+    return json({
+      data: [...luna.data, ...(await audioModels(store, env, b.lease))],
+    });
+  }
   if (path === "/internal/luna-models") {
     validate(b, ["lease"]);
     return json(await lunaCatalog(store, env, text(b.lease, 1, 128)));
   }
   if (path === "/internal/acquire") {
-    validate(b, ["raw", "service", "path"]);
+    validate(b, ["raw", "service", "path", "metadata"]);
+    if (b.metadata !== undefined) {
+      validate(b.metadata, [
+        "client_ip",
+        "user_agent",
+        "client_version",
+        "device_id",
+      ]);
+      for (const [k, v] of Object.entries(b.metadata))
+        if (v !== null) text(v, 0, k === "user_agent" ? 512 : 128);
+    }
     text(b.raw, 1, 256);
     text(b.path, 1, 256);
-    return json({ lease: await store.acquire(b.raw, b.service, b.path) });
+    return json({
+      lease: await store.acquire(b.raw, b.service, b.path, b.metadata ?? {}),
+    });
   }
   if (path === "/internal/token-remaining") {
     validate(b, ["lease"]);
@@ -208,7 +241,10 @@ async function route(request, env, ctx) {
     fail(403, "origin denied");
   if (
     method === "GET" &&
-    (p === "/" || p === "/static/app.js" || p === "/static/style.css")
+    (p === "/" ||
+      p === "/static/app.js" ||
+      p === "/static/style.css" ||
+      p === "/static/admin.js")
   ) {
     const asset = new URL(request.url);
     asset.pathname = p === "/" ? "/" : p.slice("/static".length);
@@ -226,6 +262,7 @@ async function route(request, env, ctx) {
   if (p === "/auth/registration-info" && method === "GET")
     return json({
       services: SERVICES,
+      today: day(),
       defaults: await store.defaults(),
       email_verification: false,
     });
@@ -284,6 +321,12 @@ async function route(request, env, ctx) {
     store,
     p.startsWith("/admin/") || p.startsWith("/account/keys"),
   );
+  if (p.startsWith("/admin/")) {
+    const response = await adminRoute(request, store, u, body);
+    if (response) return response;
+  }
+  if (p === "/account/audio-usage" && method === "GET")
+    return json(await audioUsage(store, u.id));
   if (p === "/account/me" && method === "GET")
     return json({ user: publicUser(u), csrf: bearer(request) ? null : u.csrf });
   if (p === "/account/password" && method === "POST") {
@@ -343,6 +386,7 @@ async function route(request, env, ctx) {
       );
       if (!target) fail(404, "账号不存在");
       usage.luna = await lunaUsage(store, Number(uid));
+      usage.audio = await audioUsage(store, Number(uid));
     }
     return json(usage);
   }
@@ -379,6 +423,7 @@ async function route(request, env, ctx) {
       validate(await body(request), [
         "username",
         "luna_monthly_tokens",
+        ...AUDIO_FIELDS,
         "services",
         "rpm",
         "daily_requests",
@@ -391,6 +436,7 @@ async function route(request, env, ctx) {
       services(b.services);
       if (!b.services.length) fail(422, "至少一个服务");
     }
+    audioQuotas(b);
     if (b.luna_monthly_tokens !== undefined) budgetValue(b.luna_monthly_tokens);
     const temporary_password = token();
     const user = await store.createUser(b.username, temporary_password, {
@@ -429,12 +475,14 @@ async function route(request, env, ctx) {
         validate(await body(request), [
           "enabled",
           "luna_monthly_tokens",
+          ...AUDIO_FIELDS,
           "services",
           "rpm",
           "daily_requests",
           "concurrency",
         ]),
       );
+      audioQuotas(b);
       if (b.services !== undefined) services(b.services);
       if (b.enabled !== undefined && typeof b.enabled !== "boolean")
         fail(422, "enabled 必须为布尔值");

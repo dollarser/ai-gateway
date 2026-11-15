@@ -71,10 +71,17 @@ export class Store {
       ).value,
     );
     const lunaLimit = o.luna_monthly_tokens ?? lunaDefaults.monthly_tokens;
+    const audioDefaults = JSON.parse(
+      (
+        await this.first(
+          "SELECT value FROM settings WHERE name='audio_defaults'",
+        )
+      ).value,
+    );
     let row;
     try {
       row = await this.stmt(
-        "INSERT INTO users(username,password,role,services,rpm,daily_requests,concurrency,must_change,created,email,luna_monthly_tokens) VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING *",
+        "INSERT INTO users(username,password,role,services,rpm,daily_requests,concurrency,must_change,created,email,luna_monthly_tokens,openai_asr_daily_seconds,openai_tts_daily_characters) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *",
         username.toLowerCase(),
         encoded,
         o.role,
@@ -86,6 +93,9 @@ export class Store {
         now(),
         o.email,
         lunaLimit,
+        o.openai_asr_daily_seconds ?? audioDefaults.openai_asr_daily_seconds,
+        o.openai_tts_daily_characters ??
+          audioDefaults.openai_tts_daily_characters,
       ).first();
     } catch (e) {
       if (String(e).includes("UNIQUE")) throw new Denied(409, "账号已存在");
@@ -177,6 +187,15 @@ export class Store {
         csrf,
         now() + 43200,
         family,
+        family,
+      ),
+    );
+    t.statements.push(
+      this.stmt(
+        "UPDATE users SET last_login_ip=?,last_login_at=? WHERE id=? AND EXISTS(SELECT 1 FROM auth_families WHERE id=?)",
+        ip === "local" ? null : ip.slice(0, 128),
+        now(),
+        u.id,
         family,
       ),
     );
@@ -322,7 +341,7 @@ export class Store {
     );
     if (r.n >= 60) throw new Denied(429, "认证失败次数过多");
   }
-  async acquire(raw, service, path) {
+  async acquire(raw, service, path, metadata = {}) {
     if (!SERVICES.includes(service)) throw new Denied(400, "未知服务");
     let u,
       key = null,
@@ -369,6 +388,14 @@ export class Store {
       ...(auth === "access_token" ? [ts] : []),
     );
     if (!result.meta.changes) throw new Denied(401, "凭证已失效");
+    await this.run(
+      "UPDATE requests SET client_ip=?,user_agent=?,client_version=?,device_id=? WHERE id=?",
+      metadata.client_ip ?? null,
+      metadata.user_agent ?? null,
+      metadata.client_version ?? null,
+      metadata.device_id ?? null,
+      id,
+    );
     return id;
   }
   async remaining(lease) {

@@ -14,6 +14,7 @@ from accounts.store import Denied
 from gateway.auth import authorize_inference, is_local_listener
 from gateway import llm as llm_protocol
 from gateway import worker_openai as openai_proxy
+from gateway import audio as audio_proxy
 from gateway.usage import UsageTracker
 from gateway.catalog import discover_models, parse_output_modalities
 from gateway.tracking import safe_id
@@ -120,6 +121,82 @@ async def inference(path: str, request: Request):
                 body.extend(block)
                 if len(body) > cap:
                     raise Denied(413, "请求体超过服务限制")
+        audio_request = None
+        audio_format = None
+        if path == "/v1/audio/transcriptions" and request.headers.get(
+            "content-type", ""
+        ).startswith("multipart/form-data"):
+            request.state.audio_lease = lease
+            audio_request = await audio_proxy.prepare_asr(request, body)
+        elif path == "/v1/audio/speech":
+            prepared = await audio_proxy.prepare_tts(request, body, lease)
+            if prepared:
+                audio_request, audio_format = prepared
+        if audio_request:
+            upstream = await request.app.state.client.send(audio_request, stream=True)
+            status = upstream.status_code
+            if audio_format and status == 200:
+                pcm = await upstream.aread()
+                if len(pcm) > 16 * 1024 * 1024 or len(pcm) % 2:
+                    raise Denied(502, "无效的上游音频")
+                result = (
+                    pcm
+                    if audio_format == "pcm"
+                    else await audio_proxy.transcode(
+                        pcm, encode=True, output_format=audio_format
+                    )
+                )
+                size = len(result)
+                from fastapi.responses import Response
+
+                return Response(
+                    result,
+                    media_type={
+                        "pcm": "audio/pcm",
+                        "wav": "audio/wav",
+                        "mp3": "audio/mpeg",
+                        "opus": "audio/ogg",
+                        "flac": "audio/flac",
+                    }[audio_format],
+                    headers={
+                        "Cache-Control": "no-store",
+                        "X-Request-ID": request_id,
+                        "X-Audio-Sample-Rate": "24000",
+                    },
+                )
+
+            async def audio_stream():
+                nonlocal size, status
+                try:
+                    async with timeout(240):
+                        async for chunk in upstream.aiter_bytes():
+                            size += len(chunk)
+                            yield chunk
+                except asyncio.CancelledError:
+                    status = 499
+                    raise
+                except (httpx.HTTPError, TimeoutError):
+                    status = 504
+                    raise
+                finally:
+                    try:
+                        await upstream.aclose()
+                    finally:
+                        await finish()
+
+            transferred = True
+            return StreamingResponse(
+                audio_stream(),
+                status_code=status,
+                headers={
+                    "Content-Type": upstream.headers.get(
+                        "content-type", "application/json"
+                    ),
+                    "Cache-Control": "no-store",
+                    "X-Request-ID": request_id,
+                    **({"Retry-After": "60"} if status == 429 else {}),
+                },
+            )
         if service == "qwen" and path in {
             "/v1/chat/completions",
             "/v1/completions",
@@ -197,8 +274,14 @@ async def inference(path: str, request: Request):
                 if not luna:
                     raise
                 catalog, window = {"object": "list", "data": []}, 0
-            if selected is None or "text" in selected:
-                catalog["data"].extend(luna)
+            catalog["data"].extend(
+                item
+                for item in luna
+                if selected is None
+                or selected.intersection(
+                    item.get("architecture", {}).get("output_modalities", ["text"])
+                )
+            )
             request.app.state.llm_model_max_len = window
             status = 200
             response = JSONResponse(catalog, headers={"X-Request-ID": request_id})

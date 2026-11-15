@@ -11,6 +11,8 @@
 
 GPT-6 Luna 通过受内部密钥保护的 Worker 代理调用 OpenAI；提供方密钥只存在于 Worker Secrets。D1 的独立月额度账本在调用前预留、完成后按提供方 usage 结算，详见 [Luna 额度](luna-allowance.md)。
 
+OpenAI 语音服务使用同一个 Worker 密钥：识别先在网关安全解码并在 Worker 验证实际时长，合成由 Worker 把 HTTP 请求适配成受限 Realtime 会话。D1 的 audio_usage 原子检查账号日额度，参见 [语音接入](audio-allowances.md)。管理后台直接读取 D1 的用户、用量和可信入口 IP 元数据。
+
 API 网关负责模型发现、OpenAI 参数兼容、SSE、WebSocket 和用量提取；`model-serving` 负责模型加载、GPU、模型级排队和推理。模型侧的 Client ID 只是内部服务凭据，不是用户账号或 API Key。
 
 环境变量 `LLM_UPSTREAM_URL`、`ASR_UPSTREAM_URL`、`TTS_UPSTREAM_URL`、`EMBEDDING_UPSTREAM_URL`、`VIBEVOICE_UPSTREAM_URL` 是不带路径的 HTTP(S) origin，变更后重启网关。同机默认使用原端口；跨机器部署时只使用受控私网或受保护的模型入口。

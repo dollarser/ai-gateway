@@ -34,7 +34,7 @@ async def catalog(app, lease):
     origin, headers = connection(app, lease)
     try:
         response = await app.state.client.post(
-            origin + "/internal/luna-models",
+            origin + "/internal/openai-models",
             headers=headers,
             json={"lease": lease},
             timeout=httpx.Timeout(10, connect=3),
@@ -42,7 +42,9 @@ async def catalog(app, lease):
         response.raise_for_status()
         data = response.json()["data"]
         if not isinstance(data, list) or any(
-            item.get("id") != LUNA_MODEL for item in data
+            item.get("id")
+            not in {LUNA_MODEL, "gpt-transcribe", "gpt-realtime-2.1-mini"}
+            for item in data
         ):
             raise ValueError("Invalid Luna catalog")
         return data

@@ -24,3 +24,45 @@ node_modules/
 .dev.vars.*
 *.migration.sql
 .test-build/
+
+# Private keys and local connector credentials (never commit actual credentials).
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+id_ecdsa*
+*_pem_rsa*
+.cloudflared/
+
+# Account databases and database sidecars; SQL migrations remain versioned.
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+/backups/
+/cloudflare/*.sql
+*.dump
+*.dump.sql
+*.backup.sql
+
+# Generated output, local diagnostics and browser verification artifacts.
+*.log
+.cache/
+.coverage
+.coverage.*
+coverage/
+htmlcov/
+.mypy_cache/
+.tox/
+.nox/
+test-results/
+playwright-report/
+/tmp/
+/outputs/
+/recordings/
+.DS_Store
+.idea/

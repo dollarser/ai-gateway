@@ -1,3 +1,5 @@
+> 云模型、语音接口、额度和诊断字段的最新交接要求见 [客户端交接](client-handoff.md)。
+
 # 统一 AI 服务客户端接入文档
 
 > 2026-10-28：全部模型推理统一使用 api.hilex.me；旧 ASR/TTS 域名已停用。客户端配置和 WebSocket 迁移步骤见 [单域名迁移文档](client-migration-single-api.md)。

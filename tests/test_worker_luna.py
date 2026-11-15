@@ -92,7 +92,7 @@ class LunaGatewayTests(unittest.TestCase):
         self,
     ):
         async def backend(request):
-            if request.url.path == "/internal/luna-models":
+            if request.url.path == "/internal/openai-models":
                 return httpx.Response(200, json={"data": [LUNA_MODEL_ENTRY]})
             raise httpx.ConnectError("backend down")
 

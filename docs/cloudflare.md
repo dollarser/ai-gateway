@@ -12,6 +12,8 @@
 
 当前账号为 Workers Free，配置未设置自定义 `cpu_ms`（Free 不支持该字段）。本次实际注册、登录验证通过；若未来发生 CPU 超限，应根据指标调整实现或由账号持有人决定是否升级套餐，不自动产生套餐升级。
 
+语音额度和管理后台新增迁移与运行依赖见 [语音部署](audio-allowances.md)，账号后台操作见 [管理后台](admin-console.md)。
+
 ## 登录与日常发布
 
 需要 Node.js 22+。`cloudflared` 的登录与 Wrangler 的 Worker/D1 授权相互独立。

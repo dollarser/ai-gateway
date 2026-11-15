@@ -9,7 +9,9 @@
 | `GET /v1/models` | 默认仅文本输出模型：Qwen，以及账号已启用的 GPT-6 Luna |
 | `GET /v1/models?output_modalities=text` | 同上 |
 | `GET /v1/models?output_modalities=embeddings` | 嵌入模型 |
-| `GET /v1/models?output_modalities=all` | 全部已登记的模型 |
+| `GET /v1/models?output_modalities=all` | 全部已登记的模型，含已启用的云端语音模型 |
+| `GET /v1/models?output_modalities=transcription` | GPT-Transcribe |
+| `GET /v1/models?output_modalities=audio` | GPT-Realtime-2.1 mini 语音合成适配 |
 | `GET /v1/models?output_modalities=text,embeddings` | 支持任一所列输出模态的模型 |
 | `GET /v1/models?output_modalities=rerank` | 当前返回空列表，尚未部署重排序 |
 
@@ -74,6 +76,6 @@ curl 'http://127.0.0.1:18901/v1/models?output_modalities=embeddings'
 
 `gateway/deployments.py` 是模型部署注册表，推理路由与目录读取同一份配置。每个部署声明上游地址、实际开放的推理路径及输入/输出模态；模型 ID 从对应上游发现，不在网关硬编码追加 Embedding。
 
-目录查询并发读取已登记后端的 `/v1/models`，然后合并、过滤。单后端超时为 10 秒；未启用 Luna 时，任一后端失败或返回无效数据时返回 502。Worker 已配置 OpenAI 密钥且该账号 Luna 月额度大于 0 时，目录另外合并 `gpt-6-luna`；自建后端不可用时返回 Luna 条目，保持云模型可用。Luna 同样遵循输出模态过滤，余额是否足够在实际请求时检查。Worker 配置查询失败则返回 503，不假设模型已启用。公网错误不包含内部地址。
+目录查询并发读取已登记后端的 `/v1/models`，然后合并、过滤。单后端超时为 10 秒；未启用 Luna 时，任一后端失败或返回无效数据时返回 502。Worker 已配置 OpenAI 密钥且该账号 Luna 月额度大于 0 时，目录另外合并 `gpt-6-luna`；自建后端不可用时返回 Luna 条目，保持云模型可用。Luna 同样遵循输出模态过滤，余额是否足够在实际请求时检查。云语音条目按账号和 Key 的 asr/tts 权限及其对应日额度过滤。识别模型使用 transcription 输出模态，避免混入默认聊天列表；合成使用 audio/speech，二者的 endpoints 指向实际开放的 HTTP 路径。Worker 配置查询失败则返回 503，不假设模型已启用。公网错误不包含内部地址。
 
-新增模型用途时，先部署真实后端，再在注册表配置路径和模态。Luna 云模型的固定代理和独立额度见 [Luna 额度](luna-allowance.md)，本机免认证目录不追加 Luna。当前目录范围为 LLM 与 Embedding；ASR、TTS、仅本机 VibeVoice 的路径、可见性和上传限制不变。新增登记的推理路径还需接入对应的计量与代理策略，不能只靠增加一个模态值宣称支持完整新服务。
+新增模型用途时，先部署真实后端，再在注册表配置路径和模态。Luna 云模型的固定代理和独立额度见 [Luna 额度](luna-allowance.md)，本机免认证目录不追加 Luna。当前目录范围为 LLM、Embedding 及已接入的 OpenAI 语音模型；ASR、TTS、仅本机 VibeVoice 的路径、可见性和上传限制不变。新增登记的推理路径还需接入对应的计量与代理策略，不能只靠增加一个模态值宣称支持完整新服务。

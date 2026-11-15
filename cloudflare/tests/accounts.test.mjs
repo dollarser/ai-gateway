@@ -2,6 +2,8 @@ import { before, after, test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import { Miniflare } from "miniflare";
+import { proxySpeech } from "../src/audio.mjs";
+import { Store } from "../src/store.mjs";
 import { passwordHash, digest } from "../src/crypto.mjs";
 let mf, db, admin;
 let openaiMode = "json",
@@ -9,6 +11,19 @@ let openaiMode = "json",
 async function provider(request) {
   assert.equal(new URL(request.url).hostname, "api.openai.com");
   assert.equal(request.headers.get("Authorization"), "Bearer test-openai-key");
+  if (new URL(request.url).pathname === "/v1/audio/transcriptions") {
+    const form = await request.formData();
+    assert.equal(form.get("model"), "gpt-transcribe");
+    providerCalls++;
+    if (openaiMode === "reject")
+      return new Response("rejected", { status: 400 });
+    if (form.get("stream") === "true")
+      return new Response(
+        'data: {"type":"transcript.text.done","text":"hello"}\n\n',
+        { headers: { "Content-Type": "text/event-stream" } },
+      );
+    return Response.json({ text: "hello", languages: [{ code: "en" }] });
+  }
   const p = await request.json();
   assert.equal(p.model, "gpt-6-luna");
   assert.equal(p.service_tier, "default");
@@ -754,4 +769,344 @@ test("Luna budgets can only be changed by admins and new account defaults are ap
   });
   assert.equal(balance.status, 200);
   assert.equal(balance.body.monthly_tokens, 10000000);
+});
+
+function testWav(milliseconds = 1000) {
+  const pcm = new Uint8Array(milliseconds * 32),
+    wav = new Uint8Array(44 + pcm.length),
+    view = new DataView(wav.buffer);
+  for (const [at, text] of [
+    [0, "RIFF"],
+    [8, "WAVE"],
+    [12, "fmt "],
+    [36, "data"],
+  ])
+    wav.set(new TextEncoder().encode(text), at);
+  view.setUint32(4, wav.length - 8, true);
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, 16000, true);
+  view.setUint32(28, 32000, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  view.setUint32(40, pcm.length, true);
+  return wav;
+}
+async function audioUser(name, kind) {
+  const r = await lunaUser(name);
+  await db
+    .prepare("UPDATE users SET services=? WHERE id=?")
+    .bind(JSON.stringify(["qwen", kind]), r.uid)
+    .run();
+  await db
+    .prepare("UPDATE keys SET services=? WHERE user_id=?")
+    .bind(JSON.stringify(["qwen", kind]), r.uid)
+    .run();
+  return r;
+}
+async function audioLease(key, kind) {
+  const r = await internal("acquire", {
+    raw: key,
+    service: kind,
+    path: kind === "asr" ? "/v1/audio/transcriptions" : "/v1/audio/speech",
+    metadata: {
+      client_ip: "203.0.113.9",
+      user_agent: "test-client",
+      client_version: "1.2.3",
+      device_id: "device-test",
+    },
+  });
+  assert.equal(r.status, 200);
+  return r.body.lease;
+}
+async function asrCall(lease, ms = 1000, extra = {}) {
+  const form = new FormData();
+  form.set("model", "gpt-transcribe");
+  form.set("file", new Blob([testWav(ms)], { type: "audio/wav" }), "audio.wav");
+  for (const [k, v] of Object.entries(extra)) form.set(k, v);
+  const request = new Request(
+    "https://accounts.test/internal/openai/transcriptions",
+    { method: "POST", body: form },
+  );
+  return mf.dispatchFetch(request.url, {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer " + secret,
+      "X-Gateway-Lease": lease,
+      "Content-Type": request.headers.get("Content-Type"),
+    },
+    body: await request.arrayBuffer(),
+  });
+}
+test("audio ASR measures PCM duration, atomically shares daily allowance, rejects replay and rolls over by day", async () => {
+  const { uid, key } = await audioUser("audio-asr", "asr");
+  await db
+    .prepare("UPDATE users SET openai_asr_daily_seconds=1 WHERE id=?")
+    .bind(uid)
+    .run();
+  const a = await audioLease(key, "asr"),
+    b = await audioLease(key, "asr"),
+    before = providerCalls;
+  const responses = await Promise.all([asrCall(a), asrCall(b)]);
+  assert.deepEqual(responses.map((r) => r.status).sort(), [200, 429]);
+  for (const r of responses) await r.text();
+  assert.equal(providerCalls, before + 1);
+  const rows = (
+    await db
+      .prepare("SELECT * FROM audio_usage WHERE user_id=?")
+      .bind(uid)
+      .all()
+  ).results;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].charged_units, 1000);
+  assert.equal(rows[0].settled, 1);
+  assert.equal((await asrCall(rows[0].lease)).status, 409);
+  await db
+    .prepare("UPDATE audio_usage SET day='2000-01-01' WHERE user_id=?")
+    .bind(uid)
+    .run();
+  assert.equal((await asrCall(await audioLease(key, "asr"))).status, 200);
+});
+test("ASR rejects malformed duration before provider use and streams final transcripts", async () => {
+  const { key } = await audioUser("audio-asr-stream", "asr");
+  const lease = await audioLease(key, "asr");
+  assert.equal(
+    (await asrCall(lease, 1000, { stream: "true", response_format: "text" }))
+      .status,
+    422,
+  );
+  const r = await asrCall(lease, 1000, { stream: "true" });
+  assert.equal(r.status, 200);
+  assert.match(await r.text(), /transcript.text.done/);
+  assert.equal(
+    (
+      await db
+        .prepare("SELECT settled FROM audio_usage WHERE lease=?")
+        .bind(lease)
+        .first()
+    ).settled,
+    1,
+  );
+});
+class MockRealtime extends EventTarget {
+  constructor(mode = "success") {
+    super();
+    this.mode = mode;
+    this.messages = [];
+  }
+  event(data) {
+    queueMicrotask(() =>
+      this.dispatchEvent(
+        new MessageEvent("message", { data: JSON.stringify(data) }),
+      ),
+    );
+  }
+  accept() {
+    this.event({ type: "session.created" });
+  }
+  send(raw) {
+    const b = JSON.parse(raw);
+    this.messages.push(b);
+    if (b.type === "session.update") {
+      assert.deepEqual(b.session.tools, []);
+      assert.equal(b.session.audio.output.format.rate, 24000);
+      this.event({ type: "session.updated" });
+    } else if (b.type === "response.create") {
+      assert.equal(b.response.conversation, "none");
+      if (this.mode === "reject") this.event({ type: "error" });
+      else if (this.mode === "disconnect")
+        queueMicrotask(() => this.dispatchEvent(new Event("close")));
+      else {
+        this.event({ type: "response.output_audio.delta", delta: "AAAAAA==" });
+        this.event({
+          type: "response.done",
+          response: { status: "completed", id: "resp-audio" },
+        });
+      }
+    }
+  }
+  close() {}
+}
+async function ttsCall(lease, input = "你好🙂", mode = "success") {
+  const ws = new MockRealtime(mode);
+  const req = new Request("https://accounts.test/internal/openai/speech", {
+    method: "POST",
+    headers: { "X-Gateway-Lease": lease },
+    body: JSON.stringify({
+      model: "gpt-realtime-2.1-mini",
+      input,
+      response_format: "pcm",
+    }),
+  });
+  return proxySpeech(
+    req,
+    { OPENAI_API_KEY: "test-key" },
+    new Store(db),
+    async (url, options) => {
+      assert.match(url, /gpt-realtime-2.1-mini/);
+      assert.equal(options.headers.Upgrade, "websocket");
+      return { webSocket: ws };
+    },
+  );
+}
+test("Realtime TTS uses Unicode characters, refunds explicit rejections, retains unknown submissions and enforces daily caps", async () => {
+  const { uid, key } = await audioUser("audio-tts", "tts");
+  await db
+    .prepare("UPDATE users SET openai_tts_daily_characters=3 WHERE id=?")
+    .bind(uid)
+    .run();
+  const lease = await audioLease(key, "tts");
+  const r = await ttsCall(lease);
+  assert.equal(r.status, 200);
+  assert.equal((await r.arrayBuffer()).byteLength, 4);
+  assert.equal(
+    (
+      await db
+        .prepare("SELECT charged_units,settled FROM audio_usage WHERE lease=?")
+        .bind(lease)
+        .first()
+    ).charged_units,
+    3,
+  );
+  await assert.rejects(
+    ttsCall(await audioLease(key, "tts"), "a"),
+    (e) => e.status === 429,
+  );
+  await db
+    .prepare("UPDATE users SET openai_tts_daily_characters=100 WHERE id=?")
+    .bind(uid)
+    .run();
+  const rejected = await audioLease(key, "tts");
+  await assert.rejects(ttsCall(rejected, "abc", "reject"));
+  assert.equal(
+    (
+      await db
+        .prepare("SELECT charged_units FROM audio_usage WHERE lease=?")
+        .bind(rejected)
+        .first()
+    ).charged_units,
+    0,
+  );
+  const unknown = await audioLease(key, "tts");
+  await assert.rejects(ttsCall(unknown, "abc", "disconnect"));
+  const row = await db
+    .prepare("SELECT * FROM audio_usage WHERE lease=?")
+    .bind(unknown)
+    .first();
+  assert.equal(row.charged_units, 3);
+  assert.equal(row.settled, 0);
+});
+test("admin unified defaults, user overview, IP metadata and atomic bulk ban/unban", async () => {
+  const defaults = await call("/admin/quota-defaults", undefined, {
+    access: admin,
+  });
+  assert.equal(defaults.status, 200);
+  assert.equal(defaults.body.openai_asr_daily_seconds, 1800);
+  const patch = {
+    ...defaults.body,
+    luna_monthly_tokens: 10000000,
+    openai_asr_daily_seconds: 2400,
+    openai_tts_daily_characters: 600000,
+  };
+  assert.equal(
+    (
+      await call("/admin/quota-defaults", patch, {
+        method: "PATCH",
+        access: admin,
+      })
+    ).status,
+    200,
+  );
+  const created = await call(
+    "/admin/users",
+    { username: "unified-defaults" },
+    { access: admin },
+  );
+  assert.equal(created.body.user.openai_asr_daily_seconds, 2400);
+  assert.equal(created.body.user.openai_tts_daily_characters, 600000);
+  const overview = await call("/admin/overview?q=audio-asr", undefined, {
+    access: admin,
+  });
+  assert.equal(overview.status, 200);
+  assert.ok(overview.body.matching >= 1);
+  const target = overview.body.users.find((u) => u.username === "audio-asr");
+  assert.equal(target.last_request_ip, "203.0.113.9");
+  assert.equal(target.password, undefined);
+  const details = await call(
+    "/admin/users/" + target.id + "/details",
+    undefined,
+    { access: admin },
+  );
+  assert.equal(details.status, 200);
+  assert.equal(details.body.requests[0].client_version, "1.2.3");
+  assert.equal(details.body.ips[0].client_ip, "203.0.113.9");
+  const ids = [target.id, created.body.user.id];
+  assert.equal(
+    (
+      await call(
+        "/admin/users/bulk",
+        { ids, patch: { enabled: false } },
+        { access: admin },
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await db
+        .prepare("SELECT enabled FROM users WHERE id=?")
+        .bind(target.id)
+        .first()
+    ).enabled,
+    0,
+  );
+  assert.equal(
+    (
+      await call(
+        "/admin/users/bulk",
+        { ids, patch: { enabled: true, openai_asr_daily_seconds: 1800 } },
+        { access: admin },
+      )
+    ).status,
+    200,
+  );
+  const me = await call("/account/me", undefined, { access: admin });
+  assert.equal(
+    (
+      await call(
+        "/admin/users/bulk",
+        {
+          ids: [created.body.user.id, me.body.user.id],
+          patch: { enabled: false },
+        },
+        { access: admin },
+      )
+    ).status,
+    409,
+  );
+  assert.equal(
+    (
+      await db
+        .prepare("SELECT enabled FROM users WHERE id=?")
+        .bind(created.body.user.id)
+        .first()
+    ).enabled,
+    1,
+  );
+  assert.equal(
+    (
+      await call(
+        "/admin/users/bulk",
+        { ids, patch: { role: "admin" } },
+        { access: admin },
+      )
+    ).status,
+    422,
+  );
+  assert.equal(
+    (await call("/admin/overview?day=2026-02-30", undefined, { access: admin }))
+      .status,
+    422,
+  );
 });

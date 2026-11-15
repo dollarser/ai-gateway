@@ -6,6 +6,11 @@
 
 ## 运维文档导航
 
+- [管理员后台与用量管理](docs/admin-console.md)
+- [OpenAI 语音与日额度](docs/audio-allowances.md)
+- [客户端交接](docs/client-handoff.md)
+- [Git 内容与本地材料边界](docs/repository-hygiene.md)
+
 - [GPT-6 Luna：每账号每月 1000 万 tokens](docs/luna-allowance.md)
 
 - [项目与生产一致性维护](docs/maintenance-audit.md)

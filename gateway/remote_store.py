@@ -68,6 +68,11 @@ class RemoteStore:
     def acquire(self, raw, service, path):
         return self.call("acquire", raw=raw, service=service, path=path)["lease"]
 
+    def acquire_with_metadata(self, raw, service, path, metadata):
+        return self.call(
+            "acquire", raw=raw, service=service, path=path, metadata=metadata
+        )["lease"]
+
     def token_remaining(self, lease):
         return self.call("token-remaining", lease=lease)["remaining"]
 
