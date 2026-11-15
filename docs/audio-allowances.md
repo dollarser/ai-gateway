@@ -47,7 +47,7 @@ D1 `audio_usage` 按账号、日、模型用途汇总，识别单位为毫秒，
 
 1. 备份生产 D1 并验证可恢复，不把备份写入 Git。
 2. 安装更新的 Python 依赖，`imageio-ffmpeg==0.8.1` 包含 Linux 可用的解码器；依赖及锁文件均跟踪在 Git 中。
-3. 按顺序应用全部迁移（当前至 `0008_operations.sql`），再部署 Worker 并重启网关。
+3. 按顺序应用全部迁移（当前至 `0009_audio_spend.sql`），再部署 Worker 并重启网关。
 4. Worker 继续使用已有 `OPENAI_API_KEY` 和 `INTERNAL_SECRET`，无需把 OpenAI 密钥复制到 GPU 机器或客户端。
 5. 验证模型列表、识别、合成、额度扣减和零额度拒绝；测试账号及其关联账本、请求、密钥和登录信息应清理。
 

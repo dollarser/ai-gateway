@@ -70,7 +70,7 @@ GitHub Actions 的 Gateway checks 对 push/PR 运行 Python 和 Worker 测试，
 
 探测请求新建，只显式设置 Accept，不复制模型请求的 API Key、Cookie、客户端请求头、对话或音频。它是独立连接，目的地址、IPv4/IPv6 和网络路由均可能与 OpenAI 不同，不能把测得的 IP 标成 OpenAI 实际看到的来源。跨 Cloudflare 区域的 IP 头还可能使用合成地址。准确来源需 OpenAI/Cloudflare 根据 Ray ID、请求 ID 和时间核查；现有历史错误无法补录当时的出口。
 
-这些信息保存在 D1 requests，仅管理员诊断展示；不放进普通客户端错误响应。先应用 0008_operations.sql，再部署 Worker。此功能不固定出口、不改变路由，也不改变地区访问限制。
+这些信息保存在 D1 requests，仅管理员诊断展示；不放进普通客户端错误响应。先应用 0009_audio_spend.sql，再部署 Worker。此功能不固定出口、不改变路由，也不改变地区访问限制。
 
 参考：[ipify 的 IPv4/IPv6 接口](https://www.ipify.org/)、[Cloudflare 请求元数据](https://developers.cloudflare.com/workers/runtime-apis/request/)、[Cloudflare 请求头](https://developers.cloudflare.com/fundamentals/reference/http-headers/)。
 
@@ -89,3 +89,5 @@ Cron 每 15 分钟根据真实请求更新告警：地区限制、15 分钟内�
 每轮清理最多 1000 个过期 token/session；已使用 refresh token 保留到过期后一天，以保留重放检测证据。清理无关联的过期 family，30 天后清除请求 IP/UA/设备标识。超过 90 天且无模型账本或核对记录的已结束请求，每轮最多归档 500 条到 request_history 再删除明细，归档与删除同批事务，重复运行不重复计数。财务账本及其请求、审计和全站成本不自动删除，不会批量退还未结算额度。
 
 维护和监测在同一 Cron 中执行；数据库或平台故障时仍可能导致任务失败，需结合 Workers Logs 检查。未开启外部推送时请定期查看后台告警。
+
+Luna 与语音的全站计量分别保存在独立 luna_spend / audio_spend；删除账号不重置已经计入的全站预算或语音日总量。个人额度账本及人工核对仍与账号关联，核对结果同步全站计量。

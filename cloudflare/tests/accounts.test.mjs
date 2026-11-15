@@ -1900,3 +1900,39 @@ test("Old Worker inserts and in-flight settlements cannot bypass the new global 
     16400,
   );
 });
+
+test("Optional global audio limits survive account usage deletion", async () => {
+  const store = new Store(db),
+    saved = JSON.parse(
+      (
+        await store.first(
+          "SELECT value FROM settings WHERE name='global_limits'",
+        )
+      ).value,
+    );
+  const { uid, key } = await audioUser("global-audio-ledger", "tts");
+  const leases = [await audioLease(key, "tts"), await audioLease(key, "tts")];
+  const insert = (lease) =>
+    store.run(
+      "INSERT INTO audio_usage(lease,user_id,day,kind,reserved_units,charged_units) VALUES(?,?,'2099-01-01','tts',100,100)",
+      lease,
+      uid,
+    );
+  try {
+    await store.run(
+      "UPDATE settings SET value=? WHERE name='global_limits'",
+      JSON.stringify({ ...saved, tts_daily_characters: 150 }),
+    );
+    await insert(leases[0]);
+    await store.run("DELETE FROM audio_usage WHERE lease=?", leases[0]);
+    await assert.rejects(insert(leases[1]), (e) =>
+      String(e).includes("global_audio_budget_exhausted"),
+    );
+  } finally {
+    await store.run(
+      "UPDATE settings SET value=? WHERE name='global_limits'",
+      JSON.stringify(saved),
+    );
+    await store.run("DELETE FROM audio_spend WHERE day='2099-01-01'");
+  }
+});

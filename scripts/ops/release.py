@@ -33,10 +33,15 @@ def main():
     args = parser.parse_args()
     os.chdir(ROOT)
     os.umask(0o077)
-    if args.deploy and subprocess.check_output(["git", "status", "--porcelain"]):
-        raise SystemExit(
-            "Commit changes before deployment so the release SHA is reviewable"
-        )
+
+    def assert_clean():
+        if subprocess.check_output(["git", "status", "--porcelain"]):
+            raise RuntimeError(
+                "Commit changes before deployment so the release SHA is reviewable"
+            )
+
+    if args.deploy:
+        assert_clean()
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     directory = (
         ROOT
@@ -89,6 +94,7 @@ def main():
             if not args.deploy:
                 manifest["status"] = "checks_passed"
                 return
+            assert_clean()
             wrangler = [str(ROOT / "cloudflare/node_modules/.bin/wrangler")]
             config = ["--config", "cloudflare/wrangler.jsonc"]
             backup = directory / "d1.sql"
@@ -105,6 +111,7 @@ def main():
             )
             manifest["status"] = "migrated"
             save()
+            assert_clean()
             run(
                 "deploy",
                 wrangler

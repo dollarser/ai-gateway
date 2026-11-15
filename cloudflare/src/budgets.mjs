@@ -42,7 +42,7 @@ export async function globalUsage(store) {
     month,
   );
   const audio = await store.all(
-    "SELECT kind,sum(charged_units) used FROM audio_usage WHERE day=? GROUP BY kind",
+    "SELECT kind,sum(units) used FROM audio_spend WHERE day=? GROUP BY kind",
     day(),
   );
   return {
