@@ -4,6 +4,14 @@
 
 模型推理独立位于 `../model-serving`。两者通过 HTTP/WebSocket 连接，不导入对方的 Python 包，也不共享账号数据库。
 
+## 运维文档导航
+
+- [部署、授权与运维经验](docs/operations-lessons.md)
+- [Worker / D1 部署流程](docs/cloudflare.md)
+- [Cloudflare Tunnel 运维](docs/tunnels.md)
+- [生产测试账号清理手册](docs/production-data-cleanup.md)
+- [备份恢复、目录迁移与项目拆分经验](docs/backup-restore-lessons.md)
+
 ## 当前线上部署
 
 - 账号网页与账号 API：https://accounts.hilex.me（Worker `hilex-accounts`）
