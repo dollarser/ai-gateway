@@ -1,3 +1,4 @@
+import { compressedDuration } from "./audio-duration.mjs";
 import { Store, Denied } from "./store.mjs";
 import { digest, token, now } from "./crypto.mjs";
 import { LUNA_MODEL, lunaCatalog, proxyLuna } from "./luna.mjs";
@@ -144,7 +145,9 @@ async function origin(request, env, lease, id, body, operation = null) {
       redirect: "manual",
       signal: AbortSignal.timeout(
         operation
-          ? 65000
+          ? operation === "/__codec/stream-encode"
+            ? 210000
+            : 65000
           : new URL(request.url).pathname === "/v1/models"
             ? 1500
             : 900000,
@@ -206,6 +209,7 @@ function badAudio(model, expected, local) {
   throw error;
 }
 async function track(response, store, lease, trace, ctx, start) {
+  trace.compatibility = response.headers.get("X-Inference-Compatibility");
   trace.upstream_status = Number(
     response.headers.get("X-Upstream-Status") ?? response.status,
   );
@@ -553,27 +557,41 @@ export async function edgeAPI(request, env, ctx) {
       const audio = new Uint8Array(await file.arrayBuffer());
       if (audio.length > 21 * 1024 * 1024)
         throw new Denied(413, "音频超过 21 MiB");
-      let measuredMs;
+      let measuredMs,
+        measurement = "pcm-frame-scan";
       try {
         measuredMs = wavDuration(audio);
       } catch (e) {
         if (e.status === 413) throw e;
-        trace.failure_stage = "codec_decode";
-        const decoded = await origin(
-          request,
-          env,
-          lease,
-          id,
-          audio,
-          "/__codec/decode",
-        );
-        if (!decoded.ok) return track(decoded, store, lease, trace, ctx, start);
-        const normalized = await readBytes(decoded, 10 * 1024 * 1024);
-        measuredMs = wavDuration(normalized);
-        form.set(
-          "file",
-          new File([normalized], "audio.wav", { type: "audio/wav" }),
-        );
+        const scanned = compressedDuration(audio);
+        if (scanned) {
+          measuredMs = scanned.milliseconds;
+          measurement = scanned.method;
+          if (measuredMs > 300000) throw new Denied(413, "单次识别最多 5 分钟");
+          form.set(
+            "file",
+            new File([file], scanned.filename, { type: scanned.mime }),
+          );
+        } else {
+          measurement = "origin-decode";
+          trace.failure_stage = "codec_decode";
+          const decoded = await origin(
+            request,
+            env,
+            lease,
+            id,
+            audio,
+            "/__codec/decode",
+          );
+          if (!decoded.ok)
+            return track(decoded, store, lease, trace, ctx, start);
+          const normalized = await readBytes(decoded, 10 * 1024 * 1024);
+          measuredMs = wavDuration(normalized);
+          form.set(
+            "file",
+            new File([normalized], "audio.wav", { type: "audio/wav" }),
+          );
+        }
       }
       response = await proxyTranscription(
         internalRequest(request, lease, form, null),
@@ -583,6 +601,7 @@ export async function edgeAPI(request, env, ctx) {
         form,
         measuredMs,
       );
+      response.headers.set("X-Audio-Processing", measurement);
     } else {
       let payload;
       try {
@@ -606,11 +625,11 @@ export async function edgeAPI(request, env, ctx) {
         const fmt = payload.response_format ?? (payload.stream ? "pcm" : "mp3");
         if (
           !["pcm", "wav", "mp3", "opus", "flac"].includes(fmt) ||
-          (payload.stream && fmt !== "pcm")
+          (payload.stream && fmt === "wav")
         )
           throw new Denied(
             422,
-            "流式合成使用 pcm；非流式支持 pcm/wav/mp3/opus/flac",
+            "流式合成支持 pcm/mp3/opus/flac；wav 使用非流式",
           );
         trace.provider = "openai";
         trace.protocol = payload.stream ? "audio-stream" : "http";
@@ -626,26 +645,35 @@ export async function edgeAPI(request, env, ctx) {
           ctx,
         );
         if (fmt !== "pcm" && response.ok) {
-          const pcm = await readBytes(response, 16 * 1024 * 1024);
           if (fmt === "wav")
-            response = new Response(wavPcm(pcm), {
-              headers: { "Content-Type": "audio/wav" },
-            });
+            response = new Response(
+              wavPcm(await readBytes(response, 16 * 1024 * 1024)),
+              { headers: { "Content-Type": "audio/wav" } },
+            );
           else {
             const codecRequest = new Request(request.url, {
               headers: {
                 ...Object.fromEntries(request.headers),
                 "X-Codec-Format": fmt,
+                ...(payload.stream ? { "X-Codec-Stream": "1" } : {}),
               },
             });
             trace.failure_stage = "codec_encode";
+            const source = payload.stream
+              ? response.body
+              : await readBytes(response, 16 * 1024 * 1024);
             response = await origin(
               codecRequest,
               env,
               lease,
               id,
-              pcm,
-              "/__codec/encode",
+              source,
+              payload.stream ? "/__codec/stream-encode" : "/__codec/encode",
+            );
+            response = new Response(response.body, response);
+            response.headers.set(
+              "X-Audio-Processing",
+              payload.stream ? "origin-stream-encode" : "origin-encode",
             );
           }
         }
@@ -681,6 +709,14 @@ export async function edgeAPI(request, env, ctx) {
           : /account_permission|key_permission/.test(String(e))
             ? 403
             : 503;
+    if (Number.isInteger(e.upstream_status)) {
+      trace.upstream_status = e.upstream_status;
+      trace.failure_stage = "upstream_rejected";
+    }
+    trace.upstream_error_code = e.upstream_error_code;
+    trace.upstream_error_param = e.upstream_error_param;
+    trace.upstream_request_id = e.upstream_request_id;
+    trace.compatibility = e.compatibility;
     trace.error_code =
       e.code ?? (status < 500 ? "request_rejected" : "edge_unavailable");
     if (!(e instanceof Denied))
@@ -699,11 +735,20 @@ export async function edgeAPI(request, env, ctx) {
                 : "服务暂不可用",
         request_id: id,
         error_code: trace.error_code,
+        ...(trace.upstream_error_code
+          ? { upstream_error_code: trace.upstream_error_code }
+          : {}),
+        ...(trace.upstream_error_param
+          ? { upstream_error_param: trace.upstream_error_param }
+          : {}),
       },
       status,
       {
         "X-Request-ID": id,
         "X-Inference-Execution": "edge",
+        ...(trace.compatibility
+          ? { "X-Inference-Compatibility": trace.compatibility }
+          : {}),
         ...(status === 429 ? { "Retry-After": "60" } : {}),
       },
     );

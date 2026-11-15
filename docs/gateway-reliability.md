@@ -26,7 +26,7 @@ API 为 GET `/admin/quota-review?state=pending&user_id=...`，POST `/admin/quota
 
 ## 流式合成
 
-TTS 新增 `stream:true,response_format:"pcm"`。服务端在收到第一段提供方音频后返回 HTTP 音频流，PCM 为 24kHz、16-bit、单声道。非流式 mp3/wav 等仍兼容。流式请求暂不提供压缩编码，以避免编码缓冲和格式头不确定性。
+TTS 新增 `stream:true,response_format:"pcm"`。服务端在收到第一段提供方音频后返回 HTTP 音频流，PCM 为 24kHz、16-bit、单声道。非流式 mp3/wav 等仍兼容。流式也支持 mp3/opus/flac，通过私有源站边收 PCM 边编码；WAV 仅非流式。协议和路径见 [边缘接口](edge-api.md)。
 
 客户端按完整 16-bit 样本缓存/播放，HTTP 分块边界不保证对齐样本。先预缓冲少量音频再播放，网络错误应标为未完成，不能仅凭 HTTP 200 判断整段成功。开始流式响应后不能改变 HTTP 状态码；服务端中断流并记录失败诊断。断连或无最终完成事件时仍可能保留额度，不能依靠取消播放绕过扣费。原生 Realtime 会话暂未直接开放，避免绕过字符额度和服务权限。
 

@@ -435,16 +435,20 @@ export class Store {
       "protocol",
       "failure_stage",
       "error_code",
+      "upstream_error_code",
+      "upstream_error_param",
+      "upstream_request_id",
+      "compatibility",
     ];
     const extra = fields.map((k) =>
-      typeof t[k] === "string" && /^[a-zA-Z0-9_.:/-]{1,128}$/.test(t[k])
+      typeof t[k] === "string" && /^[a-zA-Z0-9_.:,/\[\]-]{1,256}$/.test(t[k])
         ? t[k]
         : null,
     );
     const numeric = (k) =>
       Number.isSafeInteger(t[k]) && t[k] >= 0 ? t[k] : null;
     await this.run(
-      "UPDATE requests SET model=?,provider=?,protocol=?,failure_stage=?,error_code=?,upstream_status=?,duration_ms=? WHERE id=? AND ended IS NULL",
+      "UPDATE requests SET model=?,provider=?,protocol=?,failure_stage=?,error_code=?,upstream_error_code=?,upstream_error_param=?,upstream_request_id=?,compatibility=?,upstream_status=?,duration_ms=? WHERE id=? AND ended IS NULL",
       ...extra,
       numeric("upstream_status"),
       numeric("duration_ms"),

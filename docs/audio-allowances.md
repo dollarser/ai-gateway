@@ -11,9 +11,9 @@
 
 ## 语音识别
 
-使用 multipart 表单，上传 `file`，设置 `model=gpt-transcribe`。支持 WAV、MP3、M4A、WebM 等 FFmpeg 可解码的音频。文件上限 21 MiB，单次最多 5 分钟，较长录音应切片。Worker 对标准 16-bit PCM WAV 校验实际帧数、字节数和采样率；其他格式才经私有本机 FFmpeg 解码为 16kHz 单声道 PCM WAV，按向上取整的毫秒数计入额度，忽略客户端上报的时长。解码子进程最多 60 秒，禁止网络和文件协议输入。
+使用 multipart 表单，上传 `file`，设置 `model=gpt-transcribe`。支持 WAV、MP3、M4A、WebM 等 FFmpeg 可解码的音频。文件上限 21 MiB，单次最多 5 分钟，较长录音应切片。Worker 对标准 16-bit PCM WAV 校验实际帧数、字节数和采样率；常见 MP3、Ogg/WebM Opus、非分片单音轨 M4A AAC-LC 优先在 Worker 扫描实际音频帧/采样表并直接上传原文件；不支持或无法验证的变体经私有本机 FFmpeg 解码为 16kHz 单声道 PCM WAV，按向上取整的毫秒数计入额度，忽略客户端上报的时长。解码子进程最多 60 秒，禁止网络和文件协议输入。
 
-可用字段：`file`、`model`、`language`、`languages[]`、`keywords[]`、`prompt`、`response_format`（json/text）、`stream`（true/false）。`languages` / `keywords` 也接受 JSON 数组字符串。流式响应必须选择 json，返回 transcript SSE 事件。识别额度以完整上传音频时长计算，不按检测出的讲话时长计算。
+可用字段：`file`、`model`、`language`、`languages[]`、`keywords[]`、`prompt`、`response_format`（json/text）、`stream`（true/false）。`languages` / `keywords` 也接受 JSON 数组字符串。流式响应必须选择 json，返回 transcript SSE 事件。识别额度以完整上传音频时长计算，不按检测出的讲话时长计算。压缩扫描计入编码帧填充，可能比解码后的实际播放时长略大；不信任 duration 标签或客户端声明。
 
 ## 语音合成
 
@@ -32,7 +32,7 @@ OpenAI 的该模型使用 Realtime WebSocket，而非旧 Speech API。网关保�
 
 单次输入 1–2000 个 Unicode 码点，包含空格和标点，中文、普通英文字母和大多数 emoji 各为一个，组合字符按实际码点计数。不是 UTF-8 字节数，也不是 JavaScript 字符串 length。每日 50 万字符指输入文本字符数，不是音频 token 或输出时长。
 
-默认声音 `marin`，声音白名单见服务端 `speechPayload`。格式支持 mp3（默认）、wav、pcm、opus、flac；PCM 为 24kHz、16-bit、单声道。当前仅支持 speed=1。默认等待整段生成后返回；`stream:true,response_format:"pcm"` 支持边生成边返回，原生 Realtime 会话仍未开放。模型是生成式语音模型，需遵循 OpenAI 的安全限制，不能保证任意文本逐字朗读。
+默认声音 `marin`，声音白名单见服务端 `speechPayload`。格式支持 mp3（默认）、wav、pcm、opus、flac；PCM 为 24kHz、16-bit、单声道。当前仅支持 speed=1。默认等待整段生成后返回；`stream:true` 配合 pcm/mp3/opus/flac 支持边生成边返回（压缩输出仍依赖私有编码源站），WAV 仅支持非流式，原生 Realtime 会话仍未开放。模型是生成式语音模型，需遵循 OpenAI 的安全限制，不能保证任意文本逐字朗读。
 
 原有 `/ws/asr`、`/ws/tts` 继续提供自建语音协议，不是这两个 OpenAI 模型的入口。客户端需要按所选模型切换到 HTTP，见 [客户端交接](client-handoff.md)。
 
@@ -46,7 +46,7 @@ D1 `audio_usage` 按账号、日、模型用途汇总，识别单位为毫秒，
 
 1. 备份生产 D1 并验证可恢复，不把备份写入 Git。
 2. 安装更新的 Python 依赖，`imageio-ffmpeg==0.8.1` 包含 Linux 可用的解码器；依赖及锁文件均跟踪在 Git 中。
-3. 应用 `0003_audio_allowance.sql` 和 `0004_admin_observability.sql`，再部署 Worker 并重启网关。
+3. 按顺序应用全部迁移（当前至 `0006_provider_diagnostics.sql`），再部署 Worker 并重启网关。
 4. Worker 继续使用已有 `OPENAI_API_KEY` 和 `INTERNAL_SECRET`，无需把 OpenAI 密钥复制到 GPU 机器或客户端。
 5. 验证模型列表、识别、合成、额度扣减和零额度拒绝；测试账号及其关联账本、请求、密钥和登录信息应清理。
 

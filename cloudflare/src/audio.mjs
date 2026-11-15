@@ -278,7 +278,7 @@ export async function proxyTranscription(
   const ms =
     measuredMs ?? wavDuration(new Uint8Array(await file.arrayBuffer()));
   const out = new FormData();
-  out.set("file", file, "audio.wav");
+  out.set("file", file, file.name || "audio.wav");
   out.set("model", ASR_MODEL);
   out.set("response_format", "json");
   out.set("stream", stream);

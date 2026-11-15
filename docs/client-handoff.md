@@ -23,7 +23,7 @@ POST `/v1/audio/transcriptions`，multipart 的 `model=gpt-transcribe`，`file` 
 
 POST `/v1/audio/speech`，JSON 包含 model、input、voice（默认 marin）和 response_format（默认 mp3）。输入每段 1–2000 Unicode 码点，长文本分段；JavaScript 用 `Array.from(text).length` 估算，不使用 UTF-16 length 或字节数。空格和标点也计入每日字符。
 
-当前支持 mp3、wav、pcm、opus、flac，speed=1。增加 `stream:true,response_format:"pcm"` 可以边生成边播放；其他格式默认保持非流式。PCM 需要按 24kHz、16-bit、单声道播放。非流式请求返回生成完成后的音频，PCM 流式请求则逐块返回。它们都不是原生 Realtime WebSocket。HTTP 分块可能不对齐 16-bit 样本，客户端需缓存拼接；流式中断不能只凭 HTTP 200 当成成功。
+当前支持 mp3、wav、pcm、opus、flac，speed=1。`stream:true` 配合 pcm/mp3/opus/flac 可以边生成边播放；WAV 仅非流式。PCM 需要按 24kHz、16-bit、单声道播放。非流式请求返回生成完成后的音频，流式请求则逐块返回。它们都不是原生 Realtime WebSocket。HTTP 分块可能不对齐 16-bit 样本，客户端需缓存拼接；流式中断不能只凭 HTTP 200 当成成功。
 
 ## 账号余额展示
 
@@ -58,4 +58,10 @@ POST `/v1/audio/speech`，JSON 包含 model、input、voice（默认 marin）和
 
 ## 边缘直连更新
 
-API 域名和请求格式不变。云文本、PCM/WAV 合成、标准 PCM WAV 识别直接由 Worker 处理，不再经过本机网关。响应 X-Inference-Execution: edge 可确认入口。压缩输入识别和 MP3/Opus/FLAC 输出保留一次私有编解码回源，若源站停机可能失败；低延迟和源站独立性优先时，识别上传 16kHz 单声道 PCM WAV，合成选择 PCM 流。不要给客户端添加任何 X-Edge-* 内部头。详情见 [边缘路径](edge-api.md)。
+API 域名和请求格式不变。云文本、PCM/WAV 合成、标准 PCM WAV 识别直接由 Worker 处理，不再经过本机网关。响应 X-Inference-Execution: edge 可确认入口。常见 MP3、Ogg/WebM Opus、M4A AAC-LC 识别经帧扫描后直传；无法验证的输入和 MP3/Opus/FLAC 输出保留一次私有编解码回源，若源站停机可能失败；低延迟和源站独立性优先时，识别上传 16kHz 单声道 PCM WAV，合成选择 PCM 流。不要给客户端添加任何 X-Edge-* 内部头。详情见 [边缘路径](edge-api.md)。
+
+## 压缩音频与 Luna 工具兼容更新
+
+- 识别可直接上传常见 MP3、Ogg/WebM Opus、M4A AAC-LC；网关验证后直接传 OpenAI，不要求客户端转换 WAV，也不接受客户端 duration 作为扣额依据。特殊变体仍可能回源解码。
+- 合成 stream=true 支持 pcm/mp3/opus/flac，响应为连续二进制；根据 Content-Type 增量解码，网络 chunk 不等于音频帧，Opus 为 Ogg 容器。WAV 使用非流式。压缩流依赖源站，PCM/WAV 不依赖源站。详见 [边缘接口](edge-api.md)。
+- Luna Chat 带工具统一使用 reasoning_effort=none，网关自动兼容；需要推理加工具时使用 Responses。记录 X-Request-ID 和 X-Inference-Compatibility 便于排查；错误 JSON 可能带 upstream_error_code / upstream_error_param，请勿记录敏感请求正文。详见 [Luna 额度及工具协议](luna-allowance.md)。

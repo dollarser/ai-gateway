@@ -9,7 +9,19 @@ import { passwordHash, digest } from "../src/crypto.mjs";
 let mf, db, admin;
 let openaiMode = "json",
   providerCalls = 0;
-let originCalls = 0;
+let originCalls = 0,
+  lastProviderPayload,
+  lastAudioName;
+function immutableCodec() {
+  const r = new Response("ID3-test", {
+    headers: { "Content-Type": "audio/mpeg" },
+  });
+  // Workers fetch responses have immutable headers, unlike new Response().
+  r.headers.set = () => {
+    throw new TypeError("immutable headers");
+  };
+  return r;
+}
 async function provider(request) {
   if (new URL(request.url).hostname === "api.hilex.me") {
     originCalls++;
@@ -21,10 +33,12 @@ async function provider(request) {
       return new Response(testWav(1000), {
         headers: { "Content-Type": "audio/wav" },
       });
-    if (new URL(request.url).pathname === "/__codec/encode")
-      return new Response("ID3-test", {
-        headers: { "Content-Type": "audio/mpeg" },
-      });
+    if (
+      ["/__codec/encode", "/__codec/stream-encode"].includes(
+        new URL(request.url).pathname,
+      )
+    )
+      return immutableCodec();
     return Response.json({ text: "local" });
   }
   assert.equal(new URL(request.url).hostname, "api.openai.com");
@@ -32,6 +46,7 @@ async function provider(request) {
   if (new URL(request.url).pathname === "/v1/audio/transcriptions") {
     const form = await request.formData();
     assert.equal(form.get("model"), "gpt-transcribe");
+    lastAudioName = form.get("file").name;
     providerCalls++;
     if (openaiMode === "reject")
       return new Response("rejected", { status: 400 });
@@ -43,6 +58,7 @@ async function provider(request) {
     return Response.json({ text: "hello", languages: [{ code: "en" }] });
   }
   const p = await request.json();
+  lastProviderPayload = p;
   assert.equal(p.model, "gpt-6-luna");
   assert.equal(p.service_tier, "default");
   assert.equal(p.store, false);
@@ -50,6 +66,17 @@ async function provider(request) {
   providerCalls++;
   if (openaiMode === "reject")
     return new Response("private upstream error", { status: 401 });
+  if (openaiMode === "parameter-error")
+    return Response.json(
+      {
+        error: {
+          code: "unsupported_value",
+          param: "reasoning_effort",
+          message: "private tool contents",
+        },
+      },
+      { status: 400, headers: { "x-request-id": "req_tools_test" } },
+    );
   if (openaiMode === "unknown") return new Response("invalid-json");
   const usage = {
     prompt_tokens: 100,
@@ -1357,6 +1384,14 @@ test("edge ASR WAV skips origin; compressed inputs use only the protected codec"
   assert.equal(originCalls, initial);
   await run(new TextEncoder().encode("compressed fixture"), "audio.mp3");
   assert.equal(originCalls, initial + 1);
+  const fixtures = JSON.parse(
+    await readFile("tests/audio-fixtures.json", "utf8"),
+  );
+  for (const f of fixtures) {
+    await run(new Uint8Array(Buffer.from(f.base64, "base64")), "wrong.wav");
+    assert.equal(originCalls, initial + 1);
+    assert.notEqual(lastAudioName, "audio.wav");
+  }
 });
 test("edge forwards legacy local requests with server-only headers and prevents credential confusion", async () => {
   const { key } = await audioUser("edge-local", "tts");
@@ -1393,7 +1428,7 @@ test("edge PCM and WAV TTS stay independent of origin, compressed output uses on
   globalThis.fetch = async (url, options) =>
     String(url).includes("/v1/realtime?")
       ? { webSocket: new MockRealtime() }
-      : provider(new Request(url, options));
+      : provider(new Request(url, { ...options, duplex: "half" }));
   try {
     const env = {
       DB: db,
@@ -1404,6 +1439,9 @@ test("edge PCM and WAV TTS stay independent of origin, compressed output uses on
       ["wav", false],
       ["pcm", true],
       ["mp3", false],
+      ["mp3", true],
+      ["opus", true],
+      ["flac", true],
     ]) {
       const before = originCalls;
       const r = await edgeAPI(
@@ -1431,7 +1469,10 @@ test("edge PCM and WAV TTS stay independent of origin, compressed output uses on
       const bytes = new Uint8Array(await r.arrayBuffer());
       if (fmt === "wav")
         assert.equal(new TextDecoder().decode(bytes.slice(0, 4)), "RIFF");
-      assert.equal(originCalls, before + (fmt === "mp3" ? 1 : 0));
+      assert.equal(
+        originCalls,
+        before + (["mp3", "opus", "flac"].includes(fmt) ? 1 : 0),
+      );
     }
     await Promise.all(jobs);
     assert.equal(
@@ -1443,7 +1484,7 @@ test("edge PCM and WAV TTS stay independent of origin, compressed output uses on
           .bind(uid)
           .first()
       ).n,
-      6,
+      12,
     );
   } finally {
     globalThis.fetch = original;
@@ -1455,4 +1496,51 @@ test("WAV wrapper supplies verifiable 24kHz PCM duration", async () => {
   const invalid = wavPcm(new Uint8Array(48000));
   new DataView(invalid.buffer).setUint32(28, 1, true);
   assert.throws(() => wavDuration(invalid));
+});
+
+test("Edge Luna tools normalize arguments and retain safe provider diagnostics with zero charge", async () => {
+  const { uid, key } = await lunaUser("edge-tools");
+  const payload = {
+    model: "gpt-6-luna",
+    messages: [{ role: "user", content: "lookup" }],
+    reasoning_effort: "medium",
+    tools: [
+      {
+        type: "function",
+        function: {
+          name: "lookup",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+    ],
+  };
+  const ok = await apiCall("/v1/chat/completions", key, payload);
+  assert.equal(ok.status, 200);
+  assert.equal(lastProviderPayload.reasoning_effort, "none");
+  assert.match(
+    ok.headers.get("X-Inference-Compatibility"),
+    /chat-tools-reasoning-none/,
+  );
+  openaiMode = "parameter-error";
+  try {
+    const r = await apiCall("/v1/chat/completions", key, payload);
+    assert.equal(r.status, 400);
+    assert.equal(r.body.upstream_error_param, "reasoning_effort");
+    assert.ok(!JSON.stringify(r.body).includes("private tool contents"));
+    const row = await db
+      .prepare(
+        "SELECT r.*,l.charged_tokens,l.settled FROM requests r JOIN luna_usage l ON l.lease=r.id WHERE r.request_id=?",
+      )
+      .bind(r.body.request_id)
+      .first();
+    assert.equal(row.upstream_error_code, "unsupported_value");
+    assert.equal(row.upstream_error_param, "reasoning_effort");
+    assert.equal(row.upstream_request_id, "req_tools_test");
+    assert.equal(row.failure_stage, "upstream_rejected");
+    assert.equal(row.upstream_status, 400);
+    assert.equal(row.charged_tokens, 0);
+    assert.equal(row.settled, 1);
+  } finally {
+    openaiMode = "json";
+  }
 });

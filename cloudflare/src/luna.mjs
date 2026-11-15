@@ -56,6 +56,10 @@ export async function lunaCatalog(store, env, lease) {
               id: LUNA_MODEL,
               object: "model",
               owned_by: "openai",
+              tool_calling: {
+                chat_completions_reasoning_effort: "none",
+                reasoning_tools_endpoint: "/v1/responses",
+              },
               architecture: {
                 input_modalities: ["text"],
                 output_modalities: ["text"],
@@ -185,6 +189,57 @@ export function preparePayload(payload, responses) {
     store: false,
   };
   delete result.max_tokens;
+  const compatibility = [];
+  if (payload.tools) {
+    result.tools = payload.tools.map((t) => {
+      const f = t.function ?? t;
+      if (typeof f.name !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(f.name))
+        throw new Denied(
+          422,
+          "工具 name 应为 1–64 位英文字母、数字、下划线或连字符",
+        );
+      if (
+        f.parameters !== undefined &&
+        (!f.parameters ||
+          typeof f.parameters !== "object" ||
+          Array.isArray(f.parameters))
+      )
+        throw new Denied(422, "工具 parameters 应为 JSON Schema 对象");
+      const definition = {
+        name: f.name,
+        ...(f.description !== undefined ? { description: f.description } : {}),
+        ...(f.parameters !== undefined ? { parameters: f.parameters } : {}),
+        strict: f.strict ?? false,
+      };
+      if ((responses && t.function) || (!responses && !t.function))
+        compatibility.push("tools-schema-normalized");
+      return responses
+        ? { type: "function", ...definition }
+        : { type: "function", function: definition };
+    });
+  }
+  if (
+    result.tool_choice &&
+    typeof result.tool_choice === "object" &&
+    result.tool_choice.type === "function"
+  ) {
+    const name = result.tool_choice.name ?? result.tool_choice.function?.name;
+    if (!result.tools?.some((t) => (t.function ?? t).name === name))
+      throw new Denied(422, "tool_choice 必须引用当前 tools 中的函数");
+    result.tool_choice = responses
+      ? { type: "function", name }
+      : { type: "function", function: { name } };
+  }
+  const chatTools =
+    !responses &&
+    (result.tools?.length ||
+      payload.messages.some(
+        (m) => m?.tool_calls?.length || m?.role === "tool",
+      ));
+  if (chatTools && result.reasoning_effort !== "none") {
+    result.reasoning_effort = "none";
+    compatibility.push("chat-tools-reasoning-none");
+  }
   if (!responses && result.stream)
     result.stream_options = { include_usage: true };
   // A conservative upper bound for text tokenization, framing and function schemas.
@@ -205,6 +260,7 @@ export function preparePayload(payload, responses) {
     inputBound,
     max,
     reservation: inputBound + max,
+    compatibility: [...new Set(compatibility)].join(","),
   };
 }
 // Cached inputs count toward the token allowance like other input tokens.
@@ -289,10 +345,20 @@ export async function proxyLuna(request, env, store, ctx, payload, responses) {
   }
   if (!upstream.ok) {
     // A definitive non-success response never delivers a model completion.
-    let code = "";
+    let code = "",
+      providerCode = null,
+      providerParam = null;
     try {
       const error = await upstream.json();
       const value = error?.error?.code;
+      const param = error?.error?.param;
+      if (typeof value === "string" && /^[a-z0-9_]{1,128}$/.test(value))
+        providerCode = value;
+      if (
+        typeof param === "string" &&
+        /^[a-zA-Z0-9_.\[\]-]{1,128}$/.test(param)
+      )
+        providerParam = param;
       if (typeof value === "string" && /^[a-z0-9_]{1,64}$/.test(value))
         code = "（" + value + "）";
     } catch {
@@ -305,6 +371,11 @@ export async function proxyLuna(request, env, store, ctx, payload, responses) {
         ? "OpenAI 请求频率或账户余额受限"
         : "OpenAI 拒绝了请求，请检查模型权限或请求参数" + code,
     );
+    failure.upstream_error_code = providerCode;
+    failure.upstream_error_param = providerParam;
+    failure.upstream_request_id = upstream.headers.get("x-request-id");
+    failure.compatibility = p.compatibility;
+    if (providerParam) failure.message += "；参数：" + providerParam;
     failure.upstream_status = upstream.status;
     failure.code = "openai_chat_rejected";
     throw failure;
@@ -317,7 +388,14 @@ export async function proxyLuna(request, env, store, ctx, payload, responses) {
       throw new Denied(502, "OpenAI 返回无效响应；预留额度待核对");
     }
     await settle(usageTokens(value.usage), value.id);
-    return Response.json(value, { headers: { "Cache-Control": "no-store" } });
+    return Response.json(value, {
+      headers: {
+        "Cache-Control": "no-store",
+        ...(p.compatibility
+          ? { "X-Inference-Compatibility": p.compatibility }
+          : {}),
+      },
+    });
   }
   // The pump keeps reading the provider after client cancellation so the final
   // usage event can settle the account. Failed/truncated streams keep the reserve.
@@ -374,6 +452,9 @@ export async function proxyLuna(request, env, store, ctx, payload, responses) {
   return new Response(stream.readable, {
     headers: {
       "Content-Type": "text/event-stream; charset=utf-8",
+      ...(p.compatibility
+        ? { "X-Inference-Compatibility": p.compatibility }
+        : {}),
       "Cache-Control": "no-store",
     },
   });

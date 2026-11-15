@@ -75,3 +75,20 @@ class EdgeOriginTests(unittest.TestCase):
         self.assertEqual(
             self.db.db.execute("SELECT count(*) FROM requests").fetchone()[0], 0
         )
+
+    def test_codec_stream_encodes_with_protected_duplex_http_route(self):
+        self.set_edge()
+        self.assertEqual(
+            self.call("/__codec/stream-encode", body=b"\0" * 48000).status_code, 401
+        )
+        r = self.call(
+            "/__codec/stream-encode",
+            {
+                "X-Edge-Secret": self.app.state.settings.accounts_worker_secret,
+                "X-Codec-Format": "opus",
+            },
+            b"\0" * 48000,
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.content[:4], b"OggS")
+        self.assertEqual(r.headers["x-audio-processing"], "origin-stream-encode")

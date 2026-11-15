@@ -11,13 +11,14 @@
 | PCM 流式或非流式合成 | 客户端 → Worker/D1 → OpenAI Realtime | 否 |
 | WAV 合成 | 同上，Worker 为 PCM 添加准确 WAV 头 | 否 |
 | 16-bit PCM WAV 识别 | Worker 校验实际帧数 → 预留日时长 → OpenAI | 否 |
-| MP3/M4A/WebM 等压缩输入识别 | Worker → 私有编解码源站解码一次 → Worker → OpenAI | 仅解码 |
+| 常见 MP3、Ogg/WebM Opus、M4A AAC-LC 识别 | Worker 扫描帧/采样表 → 直接上传原压缩音频到 OpenAI | 否 |
+| 其他或无法可靠扫描的音频识别 | Worker → 私有编解码源站解码一次 → Worker → OpenAI | 仅解码 |
 | MP3/Opus/FLAC 合成输出 | Worker → OpenAI → 私有编解码源站编码一次 → 客户端 | 仅编码 |
 | 自建 Qwen/Embedding/ASR/TTS | Worker 鉴权 → Tunnel → 本机模型 | 是 |
 
-因此云端文本和 PCM/WAV 语音不再经过本机，也没有本机 → Worker 的逐请求鉴权往返。压缩格式保持兼容，编解码仍依赖本机，不能把“语音已迁到 Worker”理解为所有格式都已完全脱离源站。Worker Free 不适合运行重型 FFmpeg；本次没有升级付费套餐或引入第三方编解码服务。
+因此云端文本和 PCM/WAV 语音不再经过本机，也没有本机 → Worker 的逐请求鉴权往返。无法可靠扫描的压缩输入、压缩合成编码仍依赖本机，不能把“语音已迁到 Worker”理解为所有格式都已完全脱离源站。Worker Free 不适合运行重型 FFmpeg；本次没有升级付费套餐或引入第三方编解码服务。
 
-新客户端建议录制 16kHz、单声道、16-bit PCM WAV，合成播放选择 stream=true,response_format=pcm；现有默认 MP3 仍可用，但多一次编码回源。PCM WAV 直传支持 8–48kHz、单/双声道，按数据帧数计量；不信任容器内声明的时长，更不信任客户端上报 duration。其他格式由受限 FFmpeg 实际解码后再计量。21 MiB / 5 分钟 / 每日 30 分钟的限制保持。
+新客户端建议录制 16kHz、单声道、16-bit PCM WAV，合成播放选择 stream=true,response_format=pcm；现有默认 MP3 仍可用，但多一次编码回源。PCM WAV 直传支持 8–48kHz、单/双声道，按数据帧数计量；不信任容器内声明的时长，更不信任客户端上报 duration。MP3 按 MPEG 帧数，Ogg/WebM Opus 按音频包，非分片单音轨 M4A AAC-LC 按采样表及实际数据区边界计算，不只读取 duration 标签；歧义、损坏或不支持的编码回退受限 FFmpeg 解码。压缩帧可能包含编码延迟/尾部填充，额度按保守毫秒上界计入，通常略长于播放器显示。21 MiB / 5 分钟 / 每日 30 分钟的限制保持。
 
 ## 鉴权、额度与结算
 
@@ -33,7 +34,7 @@ Worker 直接验证凭证、Client ID、权限、RPM/日请求/并发，再预�
 
 ## 保护回源
 
-本机配置 GATEWAY_EDGE_ONLY=1；18900 只接受具备 INTERNAL_SECRET 对应服务凭证的 Worker 请求。客户端伪造的 X-Edge-*、Authorization、Cookie 等不会作为内部授权原样转发。Worker 给回源请求附加私有 lease 和请求 ID，本机不再重复发起账号授权。公网无法通过 `/__codec/decode` 或 `/__codec/encode` 直接使用编解码服务。
+本机配置 GATEWAY_EDGE_ONLY=1；18900 只接受具备 INTERNAL_SECRET 对应服务凭证的 Worker 请求。客户端伪造的 X-Edge-*、Authorization、Cookie 等不会作为内部授权原样转发。Worker 给回源请求附加私有 lease 和请求 ID，本机不再重复发起账号授权。公网无法通过 `/__codec/*` 直接使用编解码服务。
 
 HTTP 回源的请求结算由 Worker 负责；自建 WebSocket 仍由本机在连接结束后回报结算。18901 继续是回环免认证开发入口，绝不能加入 Tunnel。
 
@@ -51,4 +52,14 @@ Worker Route 的 fetch 到相同路由域名进入原源站，不再次运行此
 
 ## 本次验证
 
-通过 155 项 Python 测试及 26 项 Worker/Miniflare 测试。线上使用临时账号验证了账户 token + Client ID 直接调用 Luna、PCM 流式和 WAV 合成、PCM WAV 识别、MP3 输出和压缩输入的私有编解码回源，并核对实际扣额。对应云端直接请求未进入本机模型网关日志，受保护的自建 WebSocket 仍正确返回上游停机 503。验证账号和相关数据已清理。
+当前通过 158 项 Python 测试及 34 项 Worker/Miniflare 测试。公网临时账号验证了 MP3/Opus/FLAC 流式合成，均能在上传结束前生成可解码音频；本轮首段音频约 2.6–2.9 秒，仅代表该轮观测。MP3、Ogg Opus、WebM Opus、M4A AAC-LC 识别均经 Worker 帧扫描直传，未进入源站解码。账本及请求生命周期正常结算，临时账号与关联数据已清理。
+
+Luna 同时验证了工具调用（省略推理、medium、none）、工具结果回传、Chat SSE 工具增量和 Responses 推理加工具。medium 在兼容修复前可复现上游 400，修复后返回 200；详见 [Luna 工具兼容](luna-allowance.md)。
+
+## 压缩流式输出
+
+`POST /v1/audio/speech` 设置 `stream:true`，`response_format` 支持 `pcm`、`mp3`、`opus`、`flac`。缺省格式在流式模式为 pcm、非流式为 mp3；WAV 仍须非流式，以便写入准确长度头。
+
+PCM 直接从 OpenAI 分片返回；压缩格式由私有源站边收 PCM 边编码，不再等待整段生成完成。响应为原始二进制连续流，不是 SSE/JSON，也不是每个 HTTP chunk 都是一段完整文件。MIME 分别为 audio/pcm、audio/mpeg、audio/ogg、audio/flac；Opus 使用 Ogg 容器。客户端需增量缓冲并使用支持对应容器的解码器，不要对每个网络分片单独解码。中途断流不自动重试，已产生上游用量可能保留扣额。
+
+`X-Audio-Processing` 区分 mpeg-frame-scan、opus-packet-scan、webm-opus-packet-scan、aac-sample-table-scan、origin-decode 和 origin-stream-encode 等路径。不要据此跳过客户端错误处理。

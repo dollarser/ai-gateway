@@ -6,7 +6,7 @@ Python / Worker 源码、账号页面（包含 admin.js）、SQL 增量迁移、
 
 `deploy/cloudflared-api.yml`、`deploy/tunnels.json`、`deploy/hilex.json` 和 `cloudflare/wrangler.jsonc` 描述部署拓扑。域名、Worker 名、数据库 ID、隧道 ID 不是访问凭据，继续跟踪；其中引用的凭据文件只保留在本机。不能因为目录叫 deploy 就整目录忽略，也不能忽略整个 cloudflare 或所有 JSON/SQL 文件。
 
-`cloudflare/package-lock.json` 和 `requirements/gateway.lock` 应同步。生产运行时依赖记录在 pyproject.toml，验证用的临时浏览器安装不混入生产依赖锁。纯测试用的固定密码编码向量不是真实账号密码，保留作为兼容性测试材料。
+`cloudflare/package-lock.json` 和 `requirements/gateway.lock` 应同步。生产运行时依赖记录在 pyproject.toml，验证用的临时浏览器安装不混入生产依赖锁。纯测试用的固定密码编码向量不是真实账号密码，保留作为兼容性测试材料。`cloudflare/tests/audio-fixtures.json` 是 FFmpeg 从 1 秒静音生成的小型压缩音频测试向量，包含 base64 与实测解码毫秒数，应跟踪；真实录音和生产验证音频保留在已忽略的 `.runtime/`。
 
 ## 不应跟踪
 

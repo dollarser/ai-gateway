@@ -15,6 +15,10 @@ router = APIRouter()
 async def codec(operation: str, request: Request):
     if not trusted_edge(request.app, request.headers, request.scope):
         raise Denied(401, "编解码源站需要边缘服务认证")
+    if operation == "stream-encode":
+        from gateway.codec_stream import stream_encode
+
+        return await stream_encode(request, request.headers.get("x-codec-format"))
     if operation not in {"decode", "encode"}:
         raise Denied(404, "未知编解码操作")
     limit = 21 * 1024 * 1024 if operation == "decode" else 16 * 1024 * 1024

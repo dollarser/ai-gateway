@@ -58,4 +58,16 @@ OpenAI SDK 的 base URL 为 `https://api.hilex.me/v1`，模型选择 `gpt-6-luna
 
 ## 验证
 
-本次发布通过 141 项 Python 测试和 13 项 Worker/Miniflare 测试。线上使用临时验证账号完成模型发现、API Key 普通对话、账号 access_token 流式对话和 Responses 请求，核对账本与返回 usage 一致；设为 0 后返回 429 且未增加上游调用。验证账号及关联数据已删除。后续常规健康检查仍使用不创建账号的 `scripts.smoke.check_deployment`。
+最初额度接入验证了普通对话及结算；当前统一回归已通过 158 项 Python 测试和 34 项 Worker/Miniflare 测试。线上使用临时验证账号完成模型发现、API Key 普通对话、账号 access_token 流式对话和 Responses 请求，核对账本与返回 usage 一致；设为 0 后返回 429 且未增加上游调用。验证账号及关联数据已删除。后续常规健康检查仍使用不创建账号的 `scripts.smoke.check_deployment`。
+
+## 工具调用兼容与 400 定位
+
+Luna 的 Chat Completions 工具调用要求 `reasoning_effort:"none"`，省略时的模型默认推理模式也可能导致 400。线上已复现同一函数请求 medium 返回 400、none 返回 200。网关发现当前 tools 或历史 tool_calls/tool 消息时，统一设置 none；仅普通对话保留客户端推理设置。需要推理和工具同时工作时使用 `/v1/responses`，例如 `reasoning:{"effort":"low"}`，不会被降级。
+
+兼容 Chat 嵌套 `tools[].function` 和 Responses 扁平 function 定义，按目标端点规范化；tool_choice 也支持两种写法，但必须引用本次 tools 中的函数。未显式设置 strict 的函数使用 false，避免 Responses 默认严格模式拒绝旧客户端的可选参数 schema；显式 strict:true 原样保留，客户端负责满足严格 schema 规则。不开放托管工具或隐藏历史引用。
+
+发生转换时响应包含 `X-Inference-Compatibility`，例如 `chat-tools-reasoning-none`。管理员 requests 记录保存 compatibility、upstream_status、upstream_error_code、upstream_error_param、upstream_request_id，可按客户端收到的 X-Request-ID 搜索；不保存提示词、工具参数、schema 正文或原始上游报错。确定的上游拒绝释放 token 预留，参数校验失败在调用前返回 422。
+
+客户端交接：工具结果使用匹配的 tool_call_id；Chat SSE 累积 delta.tool_calls 的 index/id/name/arguments 后再执行函数，不能假定 arguments 在一个分片中完整返回。Responses 使用 function_call / function_call_output 并提供完整上下文；需要推理时优先持续使用 Responses 协议，勿将两种事件直接混用。
+
+参考：[OpenAI Luna 工具限制](https://developers.openai.com/api/docs/models/gpt-6-luna.md)、[函数调用协议](https://developers.openai.com/api/docs/guides/function-calling.md)。
