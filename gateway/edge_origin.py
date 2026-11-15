@@ -3,7 +3,7 @@
 import hmac
 import ipaddress
 import re
-from accounts.store import Denied
+from gateway.errors import Denied
 from gateway.tracking import safe_id
 
 

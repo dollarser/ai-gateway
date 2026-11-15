@@ -1,3 +1,4 @@
+import { operationsRoute } from "./operations.mjs";
 import { Denied, publicUser, day } from "./store.mjs";
 import { now } from "./crypto.mjs";
 import { budgetValue } from "./luna.mjs";
@@ -59,6 +60,8 @@ const result = (v) =>
     },
   });
 export async function adminRoute(request, store, u, readBody) {
+  const operational = await operationsRoute(request, store, u, readBody);
+  if (operational) return operational;
   const diagnostic = await diagnosticsRoute(request, store, u, readBody);
   if (diagnostic) return diagnostic;
   const url = new URL(request.url),

@@ -3,7 +3,7 @@
 from accounts.auth import bearer
 import hmac
 import ipaddress
-from accounts.store import Denied
+from gateway.errors import Denied
 
 from gateway.settings import settings
 

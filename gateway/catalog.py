@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import httpx
-from accounts.store import Denied
+from gateway.errors import Denied
 from gateway.deployments import MODEL_DEPLOYMENTS
 from gateway import llm
 

@@ -21,6 +21,7 @@
     "LOCAL_MODELS_ENABLED": "false",
   },
   "routes": [{"pattern": "accounts.hilex.me", "custom_domain": true}, {"pattern":"api.hilex.me/*", "zone_name":"hilex.me"}],
+  "observability": {"enabled": true, "logs": {"enabled": true, "invocation_logs": false}},
   "triggers": {
     "crons": ["*/15 * * * *"],
   },

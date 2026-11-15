@@ -2,7 +2,7 @@
 
 import json
 import httpx
-from accounts.store import Denied
+from gateway.errors import Denied
 
 LUNA_MODEL = "gpt-6-luna"
 LUNA_MODEL_ENTRY = {

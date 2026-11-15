@@ -1,3 +1,5 @@
+import { budgetError } from "./budgets.mjs";
+import { providerFailure, providerEventError } from "./provider-errors.mjs";
 import { Denied, day } from "./store.mjs";
 export const ASR_MODEL = "gpt-transcribe";
 export const TTS_MODEL = "gpt-realtime-2.1-mini";
@@ -188,6 +190,8 @@ async function reserve(store, lease, kind, units) {
       units,
     );
   } catch (e) {
+    const global = budgetError(e);
+    if (global) throw global;
     if (String(e).includes("audio_budget_exhausted"))
       throw new Denied(
         429,
@@ -319,6 +323,7 @@ export async function proxyTranscription(
     "asr",
     ms,
   );
+  const abort = new AbortController();
   let upstream;
   try {
     upstream = await transport(
@@ -327,67 +332,69 @@ export async function proxyTranscription(
         method: "POST",
         headers: { Authorization: "Bearer " + env.OPENAI_API_KEY },
         body: out,
-        signal: AbortSignal.timeout(180000),
+        signal: AbortSignal.any([abort.signal, AbortSignal.timeout(180000)]),
       },
     );
   } catch {
     throw new Denied(502, "OpenAI 识别连接失败，已预留时长待核对");
   }
   if (!upstream.ok) {
-    await upstream.body?.cancel();
+    const error = await providerFailure(upstream, "transcription");
     await settle(false);
-    const error = new Denied(
-      upstream.status === 429 ? 429 : upstream.status === 400 ? 400 : 502,
-      "OpenAI 拒绝识别请求，请检查模型权限或参数",
-    );
-    error.upstream_status = upstream.status;
-    error.code = "openai_transcription_rejected";
     throw error;
   }
   if (stream === "true") {
-    if (fmt !== "json") {
-      await upstream.body?.cancel();
-      throw new Denied(422, "流式识别仅支持 JSON SSE");
+    const reader = upstream.body.getReader(),
+      decoder = new TextDecoder();
+    let pending = "",
+      terminal = false;
+    function accept(line) {
+      if (!line.startsWith("data:")) return;
+      let e;
+      try {
+        e = JSON.parse(line.slice(5));
+      } catch {
+        return;
+      }
+      if (e.type === "error" || e.error)
+        throw new Error("Transcription failed");
+      if (e.type === "transcript.text.done") terminal = true;
     }
-    const pair = new TransformStream(),
-      writer = pair.writable.getWriter();
-    ctx.waitUntil(
-      (async () => {
-        let connected = true,
-          pending = "",
-          done = false;
-        const decoder = new TextDecoder();
+    const pair = new ReadableStream({
+      async pull(controller) {
         try {
-          for await (const chunk of upstream.body) {
-            pending += decoder.decode(chunk, { stream: true });
-            const lines = pending.split("\n");
-            pending = lines.pop();
-            if (pending.length > 1048576) throw new Error("SSE oversized");
-            for (const line of lines)
-              if (line.startsWith("data:")) {
-                try {
-                  const event = JSON.parse(line.slice(5));
-                  if (event.type === "transcript.text.done") done = true;
-                } catch {}
-              }
-            if (connected)
-              try {
-                await writer.write(chunk);
-              } catch {
-                connected = false;
-              }
+          const r = await reader.read();
+          if (r.done) {
+            if (pending.trim()) accept(pending);
+            if (!terminal) throw new Error("Transcription stream incomplete");
+            await settle(true);
+            controller.close();
+            return;
           }
-          if (done) await settle(true);
-        } catch {
-        } finally {
-          if (connected)
-            try {
-              await writer.close();
-            } catch {}
+          pending += decoder.decode(r.value, { stream: true });
+          const lines = pending.split("\n");
+          pending = lines.pop();
+          if (pending.length > 1048576) throw new Error("Oversized SSE event");
+          for (const line of lines) accept(line);
+          controller.enqueue(r.value);
+        } catch (e) {
+          abort.abort();
+          await reader.cancel().catch(() => {});
+          controller.enqueue(
+            new TextEncoder().encode(
+              'data: {"type":"error","error":{"code":"provider_stream_interrupted","message":"模型响应未完整结束，已保留待核对额度","retryable":false}}\n\n',
+            ),
+          );
+          controller.close();
         }
-      })(),
-    );
-    return new Response(pair.readable, {
+      },
+      async cancel() {
+        abort.abort();
+        await reader.cancel().catch(() => {});
+        if (terminal) await settle(true);
+      },
+    });
+    return new Response(pair, {
       headers: {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-store",
@@ -469,26 +476,37 @@ export async function synthesize(
   transport = fetch,
   hooks = null,
 ) {
-  const upstream = await transport(
-    "https://api.openai.com/v1/realtime?model=" + TTS_MODEL,
-    {
-      headers: {
-        Authorization: "Bearer " + env.OPENAI_API_KEY,
-        Upgrade: "websocket",
+  const handshake = new AbortController(),
+    onCancel = () => handshake.abort();
+  const handshakeTimer = setTimeout(() => handshake.abort(), 15000);
+  hooks?.signal?.addEventListener("abort", onCancel, { once: true });
+  let upstream;
+  try {
+    if (hooks?.signal?.aborted) handshake.abort();
+    upstream = await transport(
+      "https://api.openai.com/v1/realtime?model=" + TTS_MODEL,
+      {
+        headers: {
+          Authorization: "Bearer " + env.OPENAI_API_KEY,
+          Upgrade: "websocket",
+        },
+        signal: handshake.signal,
       },
-    },
-  );
+    );
+  } finally {
+    clearTimeout(handshakeTimer);
+    hooks?.signal?.removeEventListener("abort", onCancel);
+  }
   const ws = upstream.webSocket;
   if (!ws) {
-    await upstream.body?.cancel();
-    const error = new Denied(502, "OpenAI Realtime 连接被拒绝");
-    error.upstream_status = upstream.status;
-    error.code = "realtime_handshake_failed";
+    const error = await providerFailure(upstream, "realtime");
     throw error;
   }
   let submitted = false;
   try {
     return await new Promise((resolve, reject) => {
+      const onAbort = () => end(new Denied(499, "客户端已取消语音生成"));
+      hooks?.signal?.addEventListener("abort", onAbort, { once: true });
       let size = 0,
         finished = false;
       const chunks = [];
@@ -500,6 +518,7 @@ export async function synthesize(
         if (finished) return;
         finished = true;
         clearTimeout(timer);
+        hooks?.signal?.removeEventListener("abort", onAbort);
         try {
           ws.close(1000, "done");
         } catch {}
@@ -516,6 +535,10 @@ export async function synthesize(
           }
           resolve({ pcm, id });
         }
+      }
+      if (hooks?.signal?.aborted) {
+        onAbort();
+        return;
       }
       ws.addEventListener("message", (event) => {
         try {
@@ -579,7 +602,7 @@ export async function synthesize(
               end(new Denied(502, "语音生成未完成"));
             else end(null, e.response.id);
           } else if (e.type === "error") {
-            const error = new Denied(502, "OpenAI Realtime 拒绝合成请求");
+            const error = providerEventError(e.error, 502, "realtime");
             error.definitive = true;
             end(error);
           }
@@ -624,6 +647,7 @@ export async function proxySpeech(
     );
   if (b.stream) {
     if (!ctx) throw new Denied(503, "流式合成执行环境不可用");
+    const abort = new AbortController();
     let controller,
       connected = true,
       started = false,
@@ -639,11 +663,13 @@ export async function proxySpeech(
       },
       cancel() {
         connected = false;
+        abort.abort();
       },
     });
     const task = (async () => {
       try {
         const { id } = await synthesize(env, p.input, p.voice, transport, {
+          signal: abort.signal,
           chunk(value) {
             if (!started) {
               started = true;

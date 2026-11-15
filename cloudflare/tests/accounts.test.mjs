@@ -747,7 +747,7 @@ test("Luna streams settle authoritative usage for Chat and Responses; truncated 
       }),
     },
   );
-  await r.text();
+  assert.match(await r.text(), /provider_stream_interrupted/);
   const row = await db
     .prepare("SELECT * FROM luna_usage WHERE lease=?")
     .bind(lease)
@@ -949,6 +949,7 @@ class MockRealtime extends EventTarget {
         queueMicrotask(() => this.dispatchEvent(new Event("close")));
       else {
         this.event({ type: "response.output_audio.delta", delta: "AAAAAA==" });
+        if (this.mode === "hold") return;
         this.event({
           type: "response.done",
           response: { status: "completed", id: "resp-audio" },
@@ -956,7 +957,9 @@ class MockRealtime extends EventTarget {
       }
     }
   }
-  close() {}
+  close() {
+    this.closed = true;
+  }
 }
 async function ttsCall(lease, input = "你好🙂", mode = "success") {
   const ws = new MockRealtime(mode);
@@ -1609,4 +1612,291 @@ test("OpenAI 403 records reference probe and provider identifiers without changi
   } finally {
     globalThis.fetch = original;
   }
+});
+
+test("Global budget controls are admin-only, atomic across accounts, and zero prevents provider calls", async () => {
+  const saved = await call("/admin/operations", undefined, { access: admin });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.limits.luna_monthly_usd, 200);
+  assert.equal((await call("/admin/operations")).status, 401);
+  const limits = { ...saved.body.limits, luna_monthly_usd: 0 };
+  try {
+    assert.equal(
+      (
+        await call("/admin/global-limits", limits, {
+          method: "PATCH",
+          access: admin,
+        })
+      ).status,
+      200,
+    );
+    const { key } = await lunaUser("global-zero"),
+      before = providerCalls;
+    const r = await apiCall("/v1/chat/completions", key, {
+      model: "gpt-6-luna",
+      messages: [{ role: "user", content: "hi" }],
+    });
+    assert.equal(r.status, 429);
+    assert.equal(r.body.error_code, "global_budget_exhausted");
+    assert.equal(r.body.retryable, false);
+    assert.equal(providerCalls, before);
+    await call(
+      "/admin/global-limits",
+      { ...limits, luna_monthly_usd: 0.01 },
+      { method: "PATCH", access: admin },
+    );
+    const { key: k1, uid } = await lunaUser("global-race-one"),
+      { key: k2, uid: uid2 } = await lunaUser("global-race-two");
+    const leases = [await lunaLease(k1), await lunaLease(k2)];
+    const insert = (lease, user) =>
+      db
+        .prepare(
+          "INSERT INTO luna_usage(lease,user_id,month,reserved_tokens,charged_tokens,prompt_tokens,completion_tokens,reserved_cost_nanos,charged_cost_nanos) VALUES(?,?,?,100,100,50,50,9000000,9000000)",
+        )
+        .bind(lease, user, "2099-01")
+        .run();
+    const attempts = await Promise.allSettled([
+      insert(leases[0], uid),
+      insert(leases[1], uid2),
+    ]);
+    assert.equal(attempts.filter((r) => r.status === "fulfilled").length, 1);
+    const first = attempts.findIndex((r) => r.status === "fulfilled");
+    await db
+      .prepare("DELETE FROM luna_usage WHERE lease=?")
+      .bind(leases[first])
+      .run();
+    await assert.rejects(insert(leases[1 - first], first === 0 ? uid2 : uid));
+    // Account deletion must not erase global spend. Synthetic test spend can be explicitly removed.
+    await db
+      .prepare("DELETE FROM luna_spend WHERE month=?")
+      .bind("2099-01")
+      .run();
+  } finally {
+    await call("/admin/global-limits", saved.body.limits, {
+      method: "PATCH",
+      access: admin,
+    });
+  }
+});
+
+test("Registration burst and account identity limits apply across IPs; open registration remains available", async () => {
+  const store = new Store(db),
+    ts = Date.now() / 1000;
+  for (let n = 0; n < 10; n++)
+    await store.rateLimit("identity-ip-" + n, "login", " victim@example.org ");
+  await assert.rejects(
+    store.rateLimit("new-identity-ip", "login", "VICTIM@example.org"),
+    (e) => e.status === 429,
+  );
+  await db.prepare("DELETE FROM registration_attempts").run();
+  const saved = JSON.parse(
+    (
+      await store.first(
+        "SELECT value FROM settings WHERE name='registration_policy'",
+      )
+    ).value,
+  );
+  await store.run(
+    "UPDATE settings SET value=? WHERE name='registration_policy'",
+    JSON.stringify({ ...saved, global_minute: 2 }),
+  );
+  try {
+    await store.rateLimit("register-one", "register", "one@example.org");
+    await store.rateLimit("register-two", "register", "two@example.org");
+    await assert.rejects(
+      store.rateLimit("register-three", "register", "three@example.org"),
+      (e) => e.status === 429,
+    );
+  } finally {
+    await store.run(
+      "UPDATE settings SET value=? WHERE name='registration_policy'",
+      JSON.stringify(saved),
+    );
+    await db.prepare("DELETE FROM registration_attempts").run();
+  }
+});
+
+test("Maintenance preserves live refresh replay evidence and financial ledgers while archiving old nonbillable requests", async () => {
+  const { maintenance, monitor } = await import("../src/operations.mjs");
+  const store = new Store(db);
+  const { uid } = await lunaUser("retention-test");
+  const old = Date.now() / 1000 - 100 * 86400;
+  await store.run(
+    "INSERT INTO requests(id,user_id,service,path,started,day,ended,status,response_bytes,client_ip) VALUES('old-archive',?,'qwen','/v1/models',?,'2026-01-01',?,200,12,'203.0.113.3')",
+    uid,
+    old,
+    old + 1,
+  );
+  await maintenance(store);
+  assert.equal(
+    await store.first("SELECT * FROM requests WHERE id='old-archive'"),
+    null,
+  );
+  assert.equal(
+    (
+      await store.first(
+        "SELECT total,response_bytes FROM request_history WHERE user_id=?",
+        uid,
+      )
+    ).total,
+    1,
+  );
+  await maintenance(store);
+  assert.equal(
+    (
+      await store.first(
+        "SELECT total FROM request_history WHERE user_id=?",
+        uid,
+      )
+    ).total,
+    1,
+  );
+  await monitor(store);
+  const ops = await call("/admin/operations", undefined, { access: admin });
+  assert.equal(ops.status, 200);
+  assert.ok(Array.isArray(ops.body.alerts));
+});
+
+test("Cancelling PCM output closes the upstream Realtime session and preserves submitted usage", async () => {
+  const { key } = await audioUser("tts-cancel", "tts");
+  const lease = await audioLease(key, "tts");
+  const ws = new MockRealtime("hold"),
+    jobs = [];
+  const request = new Request("https://worker/internal/openai/speech", {
+    method: "POST",
+    headers: { "X-Gateway-Lease": lease },
+    body: JSON.stringify({
+      model: "gpt-realtime-2.1-mini",
+      input: "cancel me",
+      stream: true,
+      response_format: "pcm",
+    }),
+  });
+  const r = await proxySpeech(
+    request,
+    { OPENAI_API_KEY: "key" },
+    new Store(db),
+    async () => ({ webSocket: ws }),
+    { waitUntil: (p) => jobs.push(p) },
+  );
+  const reader = r.body.getReader();
+  assert.ok((await reader.read()).value.length);
+  await reader.cancel();
+  await Promise.all(jobs);
+  assert.equal(ws.closed, true);
+  const row = await db
+    .prepare("SELECT settled,charged_units FROM audio_usage WHERE lease=?")
+    .bind(lease)
+    .first();
+  assert.equal(row.settled, 0);
+  assert.equal(row.charged_units, 9);
+});
+
+test("Retention keeps live used refresh tokens and old financial requests; cost reconciliation is audited", async () => {
+  const { maintenance } = await import("../src/operations.mjs");
+  const store = new Store(db),
+    ts = Date.now() / 1000;
+  const { uid, key } = await lunaUser("financial-retention");
+  await store.run(
+    "INSERT INTO auth_families(id,user_id,expires,revoked) VALUES('live-replay-family',?,?,0)",
+    uid,
+    ts + 3600,
+  );
+  await store.run(
+    "INSERT INTO refresh_tokens(hash,family_id,expires,used) VALUES('retained-used','live-replay-family',?,1)",
+    ts + 3600,
+  );
+  const lease = await lunaLease(key);
+  await store.run(
+    "INSERT INTO luna_usage(lease,user_id,month,reserved_tokens,charged_tokens,prompt_tokens,completion_tokens,reserved_cost_nanos,charged_cost_nanos) VALUES(?,?,?,1000,1000,500,500,1000000,1000000)",
+    lease,
+    uid,
+    "2026-01",
+  );
+  await store.run(
+    "UPDATE requests SET started=?,ended=?,status=504,client_ip='203.0.113.8' WHERE id=?",
+    ts - 100 * 86400,
+    ts - 100 * 86400 + 1,
+    lease,
+  );
+  await maintenance(store);
+  assert.ok(
+    await store.first(
+      "SELECT * FROM refresh_tokens WHERE hash='retained-used'",
+    ),
+  );
+  assert.equal(
+    (await store.first("SELECT client_ip FROM requests WHERE id=?", lease))
+      .client_ip,
+    null,
+  );
+  const b = {
+    id: "cost-adjustment-id",
+    kind: "luna",
+    lease,
+    expected_units: 1000,
+    units: 0,
+    reason: "Confirmed rejected request, zero provider usage",
+    expected_cost_nanos: 1000000,
+    cost_nanos: 0,
+  };
+  const adjusted = await call("/admin/quota-adjustments", b, { access: admin });
+  assert.equal(adjusted.status, 200);
+  assert.equal(
+    (
+      await store.first(
+        "SELECT cost_nanos FROM luna_spend WHERE lease=?",
+        lease,
+      )
+    ).cost_nanos,
+    0,
+  );
+  assert.equal(
+    (await call("/admin/quota-adjustments", b, { access: admin })).body
+      .replayed,
+    true,
+  );
+});
+
+test("Old Worker inserts and in-flight settlements cannot bypass the new global cost ledger", async () => {
+  const { uid, key } = await lunaUser("legacy-cost-compat");
+  const lease = await lunaLease(key);
+  const store = new Store(db);
+  await store.run(
+    "INSERT INTO luna_usage(lease,user_id,month,reserved_tokens,charged_tokens,prompt_tokens,completion_tokens) VALUES(?,?,?,1000,1000,500,500)",
+    lease,
+    uid,
+    "2026-11",
+  );
+  assert.equal(
+    (
+      await store.first(
+        "SELECT cost_nanos FROM luna_spend WHERE lease=?",
+        lease,
+      )
+    ).cost_nanos,
+    312500,
+  );
+  await store.run(
+    "UPDATE luna_usage SET charged_tokens=120,settled=1,prompt_tokens=100,completion_tokens=20,cached_tokens=40 WHERE lease=?",
+    lease,
+  );
+  assert.equal(
+    (
+      await store.first(
+        "SELECT cost_nanos FROM luna_spend WHERE lease=?",
+        lease,
+      )
+    ).cost_nanos,
+    16400,
+  );
+  assert.equal(
+    (
+      await store.first(
+        "SELECT charged_cost_nanos FROM luna_usage WHERE lease=?",
+        lease,
+      )
+    ).charged_cost_nanos,
+    16400,
+  );
 });

@@ -15,10 +15,7 @@ from zoneinfo import ZoneInfo
 SERVICES = {"qwen", "asr", "tts"}
 
 
-class Denied(Exception):
-    def __init__(self, status, detail):
-        self.status, self.detail = status, detail
-        super().__init__(detail)
+from gateway.errors import Denied
 
 
 def digest(value):

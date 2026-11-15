@@ -2,7 +2,7 @@
 
 import httpx
 from urllib.parse import urlsplit
-from accounts.store import Denied
+from gateway.errors import Denied
 
 
 class RemoteStore:

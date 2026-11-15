@@ -104,23 +104,49 @@ export class Store {
     await this.audit(options.actor ?? null, "create_user", row.id);
     return publicUser(row);
   }
-  async rateLimit(ip, kind) {
+  async rateLimit(ip, kind, identity = "") {
     const login = kind === "login";
     const table = login ? "login_attempts" : "registration_attempts";
     const column = login ? "ip" : "ip_hash";
     const value = login ? ip : await digest(ip);
     const window = login ? 300 : 3600;
-    const limit = login ? 10 : 5;
-    const ts = now();
-    const result = await this.run(
-      `INSERT INTO ${table}(${column},ts) SELECT ?,? WHERE (SELECT count(*) FROM ${table} WHERE ${column}=? AND ts>?)<? ${login ? "" : `AND (SELECT count(*) FROM ${table} WHERE ts>?)<100`}`,
-      value,
-      ts,
-      value,
-      ts - window,
-      limit,
-      ...(login ? [] : [ts - window]),
-    );
+    const policy = login
+      ? null
+      : JSON.parse(
+          (
+            await this.first(
+              "SELECT value FROM settings WHERE name='registration_policy'",
+            )
+          ).value,
+        );
+    if (policy && !policy.enabled) throw new Denied(403, "当前暂停公开注册");
+    const limit = login ? 10 : policy.ip_hourly;
+    const ts = now(),
+      identityHash = await digest(identity.trim().toLowerCase());
+    const rows = await this.db.batch([
+      this.stmt(
+        `INSERT INTO ${table}(${column},ts) SELECT ?,? WHERE (SELECT count(*) FROM ${table} WHERE ${column}=? AND ts>?)<? AND (SELECT count(*) FROM identity_attempts WHERE kind=? AND hash=? AND ts>?)<? ${login ? "" : `AND (SELECT count(*) FROM ${table} WHERE ts>?)<? AND (SELECT count(*) FROM ${table} WHERE ts>?)<?`}`,
+        value,
+        ts,
+        value,
+        ts - window,
+        limit,
+        kind,
+        identityHash,
+        ts - window,
+        login ? 10 : 3,
+        ...(login
+          ? []
+          : [ts - window, policy.global_hourly, ts - 60, policy.global_minute]),
+      ),
+      this.stmt(
+        "INSERT INTO identity_attempts(kind,hash,ts) SELECT ?,?,? WHERE changes()=1",
+        kind,
+        identityHash,
+        ts,
+      ),
+    ]);
+    const result = rows[0];
     if (!result.meta.changes) throw new Denied(429, "尝试过多，请稍后重试");
   }
   async newTokens(family, expiry, extra = []) {
@@ -157,7 +183,7 @@ export class Store {
     };
   }
   async login(username, password, ip) {
-    await this.rateLimit(ip, "login");
+    await this.rateLimit(ip, "login", username);
     const u = await this.first(
       "SELECT * FROM users WHERE username=?",
       username.trim().toLowerCase(),
@@ -452,10 +478,11 @@ export class Store {
     const numeric = (k) =>
       Number.isSafeInteger(t[k]) && t[k] >= 0 ? t[k] : null;
     await this.run(
-      "UPDATE requests SET model=?,provider=?,protocol=?,failure_stage=?,error_code=?,upstream_error_code=?,upstream_error_param=?,upstream_request_id=?,compatibility=?,ingress_colo=?,client_country=?,ingress_ray=?,upstream_cf_ray=?,upstream_status=?,duration_ms=? WHERE id=? AND ended IS NULL",
+      "UPDATE requests SET model=?,provider=?,protocol=?,failure_stage=?,error_code=?,upstream_error_code=?,upstream_error_param=?,upstream_request_id=?,compatibility=?,ingress_colo=?,client_country=?,ingress_ray=?,upstream_cf_ray=?,upstream_status=?,duration_ms=?,first_byte_ms=? WHERE id=? AND ended IS NULL",
       ...extra,
       numeric("upstream_status"),
       numeric("duration_ms"),
+      numeric("first_byte_ms"),
       b.lease,
     );
     await this.run(

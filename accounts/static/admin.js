@@ -70,6 +70,7 @@
       $("admin-filter-form").elements.day.value = info.today;
       state.loaded = true;
     }
+    await loadOperations();
     state.defaults = await api("/admin/quota-defaults");
     for (const k of quotaFields) {
       $("quota-defaults-form").elements[k].value = state.defaults[k];
@@ -464,7 +465,23 @@
           )
         )
           return;
+        let costs = {};
+        if (r.kind === "luna") {
+          const dollars = prompt(
+            "填写核对后的美元成本（不是 token 数）",
+            String(units === 0 ? 0 : r.charged_cost_nanos / 1e9),
+          );
+          if (dollars === null) return;
+          const value = Number(dollars);
+          if (!Number.isFinite(value) || value < 0)
+            throw new Error("成本应为非负美元数");
+          costs = {
+            cost_nanos: Math.round(value * 1e9),
+            expected_cost_nanos: r.charged_cost_nanos,
+          };
+        }
         await api("/admin/quota-adjustments", "POST", {
+          ...costs,
           id: crypto.randomUUID(),
           kind: r.kind,
           lease: r.lease,
@@ -487,5 +504,101 @@
     }
   }
   $("quota-review-filter").addEventListener("submit", run(review));
+  async function loadOperations() {
+    const data = await api("/admin/operations"),
+      f = $("global-limits-form"),
+      r = $("registration-policy-form");
+    f.elements.cloud_enabled.checked = data.limits.cloud_enabled;
+    for (const k of [
+      "luna_monthly_usd",
+      "asr_daily_minutes",
+      "tts_daily_characters",
+    ])
+      f.elements[k].value = data.limits[k] ?? "";
+    r.elements.enabled.checked = data.registration.enabled;
+    for (const k of ["ip_hourly", "global_hourly", "global_minute"])
+      r.elements[k].value = data.registration[k];
+    $("global-budget-summary").textContent =
+      data.month +
+      "（北京时间）Luna 估算用量 $" +
+      data.luna.used_usd.toFixed(4) +
+      "，其中预留 $" +
+      data.luna.reserved_usd.toFixed(4) +
+      "，剩余 $" +
+      data.luna.remaining_usd.toFixed(4);
+    $("operational-alerts").replaceChildren();
+    const names = {
+      provider_region_restricted: "上游地区限制",
+      slow_first_audio: "首音频响应偏慢",
+      provider_error_rate: "模型错误率偏高",
+      pending_usage: "存在待核对额度",
+      high_latency: "请求延迟偏高",
+      luna_budget: "Luna 全站预算接近上限",
+    };
+    for (const alert of data.alerts) {
+      const row = document.createElement("p");
+      row.textContent =
+        (names[alert.kind] ?? alert.kind) +
+        " · " +
+        alert.state +
+        " · " +
+        new Date(alert.last_seen * 1000).toLocaleString() +
+        " · " +
+        alert.details;
+      if (alert.state === "open") {
+        const button = document.createElement("button");
+        button.textContent = "已知悉";
+        button.onclick = run(async () => {
+          await api("/admin/alerts/acknowledge", "POST", { kind: alert.kind });
+          await loadOperations();
+        });
+        row.append(button);
+      }
+      $("operational-alerts").append(row);
+    }
+    if (!data.alerts.some((a) => a.state === "open")) {
+      const p = document.createElement("p");
+      p.textContent = "暂无未处理告警；监测每 15 分钟运行一次。";
+      $("operational-alerts").append(p);
+    }
+  }
+  $("load-operations").addEventListener("click", run(loadOperations));
+  $("global-limits-form").addEventListener(
+    "submit",
+    run(async (e) => {
+      const f = e.target;
+      await api("/admin/global-limits", "PATCH", {
+        cloud_enabled: f.elements.cloud_enabled.checked,
+        luna_monthly_usd: Number(f.elements.luna_monthly_usd.value),
+        asr_daily_minutes:
+          f.elements.asr_daily_minutes.value === ""
+            ? null
+            : Number(f.elements.asr_daily_minutes.value),
+        tts_daily_characters:
+          f.elements.tts_daily_characters.value === ""
+            ? null
+            : Number(f.elements.tts_daily_characters.value),
+      });
+      message("全站预算已保存；不会清零已有用量");
+      await loadOperations();
+    }),
+  );
+  $("registration-policy-form").addEventListener(
+    "submit",
+    run(async (e) => {
+      const f = e.target;
+      await api("/admin/registration-policy", "PATCH", {
+        enabled: f.elements.enabled.checked,
+        ...Object.fromEntries(
+          ["ip_hourly", "global_hourly", "global_minute"].map((k) => [
+            k,
+            Number(f.elements[k].value),
+          ]),
+        ),
+      });
+      message("注册保护已保存");
+      await loadOperations();
+    }),
+  );
   window.adminUI = { load };
 })();

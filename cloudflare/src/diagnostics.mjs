@@ -30,7 +30,7 @@ export async function diagnosticsRoute(request, store, user, readBody) {
     )
       throw new Denied(422, "核对筛选字段无效");
     const rows = await store.all(
-      `SELECT q.*,u.username,r.request_id,r.status,r.ended,r.ended+60 adjustable_after,r.model FROM (SELECT 'luna' kind,'tokens' unit,lease,user_id,month period,reserved_tokens reserved_units,charged_tokens charged_units,settled,response_id FROM luna_usage UNION ALL SELECT 'audio' kind,CASE kind WHEN 'asr' THEN 'milliseconds' ELSE 'characters' END unit,lease,user_id,day period,reserved_units,charged_units,settled,response_id FROM audio_usage) q JOIN users u ON u.id=q.user_id JOIN requests r ON r.id=q.lease WHERE (?='all' OR q.settled=?) AND (? IS NULL OR q.user_id=?) ORDER BY r.started DESC LIMIT 100`,
+      `SELECT q.*,u.username,r.request_id,r.status,r.ended,r.ended+60 adjustable_after,r.model FROM (SELECT 'luna' kind,'tokens' unit,lease,user_id,month period,reserved_tokens reserved_units,charged_tokens charged_units,settled,response_id,reserved_cost_nanos,charged_cost_nanos FROM luna_usage UNION ALL SELECT 'audio' kind,CASE kind WHEN 'asr' THEN 'milliseconds' ELSE 'characters' END unit,lease,user_id,day period,reserved_units,charged_units,settled,response_id,NULL,NULL FROM audio_usage) q JOIN users u ON u.id=q.user_id JOIN requests r ON r.id=q.lease WHERE (?='all' OR q.settled=?) AND (? IS NULL OR q.user_id=?) ORDER BY r.started DESC LIMIT 100`,
       state,
       state === "settled" ? 1 : 0,
       uid,
@@ -45,10 +45,21 @@ export async function diagnosticsRoute(request, store, user, readBody) {
       !b ||
       typeof b !== "object" ||
       Array.isArray(b) ||
-      Object.keys(b).length !== fields.length ||
-      Object.keys(b).some((k) => !fields.includes(k))
+      Object.keys(b).length < fields.length ||
+      Object.keys(b).length > fields.length + 2 ||
+      Object.keys(b).some(
+        (k) => ![...fields, "cost_nanos", "expected_cost_nanos"].includes(k),
+      )
     )
       throw new Denied(422, "核对字段无效");
+    if (
+      (b.cost_nanos !== undefined || b.expected_cost_nanos !== undefined) &&
+      (![b.cost_nanos, b.expected_cost_nanos].every(
+        (n) => Number.isSafeInteger(n) && n >= 0,
+      ) ||
+        b.kind !== "luna")
+    )
+      throw new Denied(422, "成本核对字段无效");
     queryId(b.id);
     queryId(b.lease);
     if (
@@ -72,7 +83,10 @@ export async function diagnosticsRoute(request, store, user, readBody) {
         old.new_units !== b.units ||
         old.previous_units !== b.expected_units ||
         old.reason !== b.reason ||
-        old.actor !== user.id
+        old.actor !== user.id ||
+        (b.cost_nanos !== undefined &&
+          (old.new_cost_nanos !== b.cost_nanos ||
+            old.previous_cost_nanos !== b.expected_cost_nanos))
       )
         throw new Denied(409, "核对操作 ID 已被其他内容使用");
       return reply({ ok: true, id: b.id, replayed: true });
@@ -89,15 +103,23 @@ export async function diagnosticsRoute(request, store, user, readBody) {
       !row.ended ||
       row.ended > now() - 60 ||
       row[charge] !== b.expected_units ||
-      b.units > Math.max(row[reserve], row[charge])
+      b.units > Math.max(row[reserve], row[charge]) ||
+      (b.cost_nanos !== undefined &&
+        (b.expected_cost_nanos !== row.charged_cost_nanos ||
+          b.cost_nanos >
+            Math.max(row.charged_cost_nanos, row.reserved_cost_nanos)))
     )
       throw new Denied(
         409,
         "请求尚未结束一分钟、用量已变更或核对值超出原预留，请刷新核对",
       );
+    const newCost =
+      b.kind === "luna"
+        ? (b.cost_nanos ?? (b.units === 0 ? 0 : row.charged_cost_nanos))
+        : null;
     const result = await store.db.batch([
       store.stmt(
-        `UPDATE ${table} SET ${charge}=?,settled=1 WHERE lease=? AND ${charge}=? AND EXISTS(SELECT 1 FROM requests WHERE id=? AND ended<=?) AND NOT EXISTS(SELECT 1 FROM quota_adjustments WHERE id=?)`,
+        `UPDATE ${table} SET ${charge}=?,settled=1${b.kind === "luna" ? ",charged_cost_nanos=" + newCost : ""} WHERE lease=? AND ${charge}=? ${b.kind === "luna" ? "AND charged_cost_nanos=" + row.charged_cost_nanos : ""} AND EXISTS(SELECT 1 FROM requests WHERE id=? AND ended<=?) AND NOT EXISTS(SELECT 1 FROM quota_adjustments WHERE id=?)`,
         b.units,
         b.lease,
         b.expected_units,
@@ -106,7 +128,7 @@ export async function diagnosticsRoute(request, store, user, readBody) {
         b.id,
       ),
       store.stmt(
-        "INSERT INTO quota_adjustments(id,kind,lease,actor,user_id,previous_units,new_units,reason,created) SELECT ?,?,?,?,?,?,?,?,? WHERE changes()=1",
+        "INSERT INTO quota_adjustments(id,kind,lease,actor,user_id,previous_units,new_units,reason,created,previous_cost_nanos,new_cost_nanos) SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE changes()=1",
         b.id,
         b.kind,
         b.lease,
@@ -116,6 +138,8 @@ export async function diagnosticsRoute(request, store, user, readBody) {
         b.units,
         b.reason,
         now(),
+        b.kind === "luna" ? row.charged_cost_nanos : null,
+        newCost,
       ),
       store.stmt(
         "INSERT INTO audit(actor,action,target,ts) SELECT ?,?,?,? WHERE changes()=1",
@@ -128,6 +152,7 @@ export async function diagnosticsRoute(request, store, user, readBody) {
           previous: b.expected_units,
           units: b.units,
           reason: b.reason,
+          cost_nanos: newCost,
         }),
         now(),
       ),

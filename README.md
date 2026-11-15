@@ -1,6 +1,6 @@
 # AI Gateway：账号管理与 API 网关
 
-从 `asr-tts` 拆出的独立项目。负责账号、登录、API Key、权限、配额、审计、用量和 HTTP/SSE/WebSocket 代理。不包含模型源码、权重或模型进程启动逻辑。
+本项目负责账号、登录、API Key、权限、配额、审计、用量和 HTTP/SSE/WebSocket 代理。不包含模型源码、权重或模型进程启动逻辑。
 
 模型推理独立位于 `../model-serving`。两者通过 HTTP/WebSocket 连接，不导入对方的 Python 包，也不共享账号数据库。
 
@@ -73,3 +73,5 @@ ACCOUNTS_WORKER_SECRET=<与 Worker 的 INTERNAL_SECRET 相同>
 启用后本地账号路由关闭，不再创建或使用 SQLite；用户在 Worker 的账号域名登录，模型客户端仍调用 API 网关域名。Worker 暂时不可用时鉴权失败关闭，不降级为本地账号。D1 的额度检查在原子 SQL 写入中完成，支持多个 API 网关实例。
 
 完整调用链与配置见 [架构说明](docs/architecture.md)。
+
+运行管理与标准发布见 [维护流程](docs/maintenance-audit.md)：开放注册限频、全站 Luna 每月 200 美元估算预算、管理员运行告警及分批保留策略均由 Worker/D1 实施。云语音 CLI 见 [当前接入入口](docs/client-integration.md)，自建语音 WebSocket 示例为 `scripts.clients.local_ws`。

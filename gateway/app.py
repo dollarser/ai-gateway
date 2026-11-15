@@ -3,8 +3,7 @@
 import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from accounts.router import router as accounts_router
-from accounts.store import Denied
+from gateway.errors import Denied
 from gateway.lifecycle import lifespan
 from gateway.middleware import security
 from gateway.router import router as inference_router
@@ -45,6 +44,8 @@ def create_app(config: Settings = settings) -> FastAPI:
         }
 
     if not config.accounts_worker_url:
+        from accounts.router import router as accounts_router
+
         app.include_router(accounts_router)
     app.include_router(codec_router)
     app.include_router(inference_router)

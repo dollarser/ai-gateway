@@ -6,7 +6,6 @@ import os
 import threading
 from contextlib import asynccontextmanager, ExitStack
 import httpx
-from accounts.store import Store
 from gateway.remote_store import RemoteStore
 
 
@@ -21,6 +20,8 @@ async def lifespan(app):
             )
             stack.callback(store.close)
         else:
+            from accounts.store import Store
+
             settings.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
             lock = stack.enter_context((settings.data_dir / "instance.lock").open("a"))
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

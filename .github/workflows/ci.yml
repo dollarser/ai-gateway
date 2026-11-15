@@ -17,6 +17,8 @@ jobs:
       - run: .venv-accounts/bin/pip install -r requirements/gateway.lock && .venv-accounts/bin/pip install -e . --no-deps
       - run: .venv-accounts/bin/python -m scripts.setup.create_client_id
       - run: .venv-accounts/bin/python -m tests.run
+      - run: .venv-accounts/bin/pip install ruff==0.17.5
+      - run: .venv-accounts/bin/ruff check gateway scripts accounts tests
       - run: git diff --check
   worker:
     runs-on: ubuntu-latest
@@ -32,3 +34,14 @@ jobs:
           cache-dependency-path: cloudflare/package-lock.json
       - run: npm ci
       - run: npm test
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements/dev.txt
+      - run: python -m playwright install --with-deps chromium
+      - run: python tests/browser_admin.py

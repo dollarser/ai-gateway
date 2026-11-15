@@ -80,7 +80,26 @@ export function providerTransport(store, lease, trace, ctx, transport = fetch) {
     trace.upstream_cf_ray = safe(r.headers?.get("cf-ray"));
     if (r.status === 403 && ctx)
       ctx.waitUntil(
-        probeEgress(store, lease, transport).catch(() => {
+        (async () => {
+          const stamp = Math.floor(Date.now() / 1000);
+          const slot =
+            (trace.ingress_colo ?? "unknown") + ":" + Math.floor(stamp / 300);
+          const reserved = await store.run(
+            "INSERT OR IGNORE INTO diagnostic_probe_slots(slot,created) VALUES(?,?)",
+            slot,
+            stamp,
+          );
+          if (reserved?.meta?.changes === 0) {
+            await store.run(
+              "UPDATE requests SET egress_probe_at=?,egress_probe_target=?,egress_probe_status='sampled_out' WHERE id=?",
+              stamp,
+              TARGET,
+              lease,
+            );
+            return;
+          }
+          await probeEgress(store, lease, transport);
+        })().catch(() => {
           console.error("egress_probe_write_failed");
         }),
       );

@@ -227,6 +227,11 @@ async function track(response, store, lease, trace, ctx, start) {
     ),
     isJSON = (headers.get("Content-Type") ?? "").includes("application/json");
   const accept = (obj) => {
+    if (obj?.error || obj?.type === "error") {
+      trace.stream_failed = true;
+      trace.failure_stage = "response_stream";
+      trace.error_code = "provider_stream_interrupted";
+    }
     const value = obj?.response ?? obj,
       u = value?.usage;
     if (value?.id) trace.upstream_response_id = String(value.id).slice(0, 128);
@@ -246,6 +251,7 @@ async function track(response, store, lease, trace, ctx, start) {
   const finish = async (status) => {
     if (finished) return;
     finished = true;
+    if (trace.stream_failed && status < 400) status = 502;
     trace.duration_ms = Math.round(performance.now() - start);
     if (status < 400) trace.failure_stage = null;
     if (!isSSE && isJSON)
@@ -276,6 +282,8 @@ async function track(response, store, lease, trace, ctx, start) {
           controller.close();
           return;
         }
+        if (size === 0)
+          trace.first_byte_ms = Math.round(performance.now() - start);
         size += r.value.length;
         if (isJSON && body.length < 2 * 1024 * 1024)
           body += decoder.decode(r.value, { stream: true });
@@ -328,6 +336,7 @@ export async function edgeAPI(request, env, ctx) {
       await store.first("SELECT 1");
       return json(
         {
+          release: env.RELEASE_SHA ?? null,
           ready: true,
           service: "inference-gateway",
           storage: "d1",
@@ -685,6 +694,7 @@ export async function edgeAPI(request, env, ctx) {
                 : "服务暂不可用",
         request_id: id,
         error_code: trace.error_code,
+        retryable: e.retryable === true,
         ...(trace.upstream_error_code
           ? { upstream_error_code: trace.upstream_error_code }
           : {}),
@@ -699,7 +709,9 @@ export async function edgeAPI(request, env, ctx) {
         ...(trace.compatibility
           ? { "X-Inference-Compatibility": trace.compatibility }
           : {}),
-        ...(status === 429 ? { "Retry-After": "60" } : {}),
+        ...(status === 429 && e.retryable !== false
+          ? { "Retry-After": String(e.retry_after ?? 60) }
+          : {}),
       },
     );
   }

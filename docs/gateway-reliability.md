@@ -53,12 +53,6 @@ GitHub Actions 的 Gateway checks 对 push/PR 运行 Python 和 Worker 测试，
 
 通过 151 项 Python 测试、21 项 Worker 测试；在不含私有配置的源码副本中创建测试 Client ID 后也通过全套 Python 测试。浏览器验证请求诊断和额度核对操作。线上验证云语音精确模型校验、语音专用 Key 发现、WebSocket 503、PCM 首块返回与最终字符结算、带审计的幂等额度修正，临时账号与核对材料已清理。systemd 服务和定时器均启用，linger 生效，健康检查成功，隧道回环 metrics /ready 返回 200。
 
-## 下一步优化方向
-
-1. 流式取消：当前取消读取会停止向客户端排队，但上游 Realtime 生成仍可能继续到完成。应将取消信号传给上游并关闭会话，同时保留已经提交请求的保守扣额，避免取消免费绕过额度。
-2. 生产观测与通知：目前认证 timer 只做拒绝边界检查，结果在本机 journal。应基于实际 Worker 请求统计 5xx、P95 延迟、首音频耗时和未结算额度数量，设置通知渠道及阈值；不需要高频调用付费模型作为健康检查。
-3. 客户端 PCM 播放：记录首音频耗时、播放缓冲欠载和中途断流；支持取消播放和长文本分段，避免把 HTTP 200 当成完整成功。新客户端通过模型目录 audio.response_formats / sample_rate / channels / encoding 读取能力。
-
 ## 出口参考 IP 与地区拒绝排查
 
 公网 Worker 请求诊断新增以下字段，可在管理员“按请求 ID 诊断”中查看：
@@ -70,14 +64,28 @@ GitHub Actions 的 Gateway checks 对 push/PR 运行 Python 和 Worker 测试，
 | upstream_cf_ray / upstream_request_id | OpenAI 响应携带的 CF-Ray / x-request-id，缺失时留空 |
 | egress_probe_ip | 独立诊断连接被目标服务观察到的参考 IP，不是 OpenAI 当次连接的确定出口 IP |
 | egress_probe_target / egress_probe_at | 探测目标 api64.ipify.org、探测开始的 Unix 秒时间 |
-| egress_probe_status | observed_reference、timeout、invalid_response、http_error 或 failed |
+| egress_probe_status | observed_reference、timeout、invalid_response、http_error、sampled_out 或 failed |
 
-仅当 OpenAI 返回 HTTP 403 时，Worker 在 waitUntil 后台发起一次独立 IP 探测；正常请求不额外探测，也不等待探测结果。探测超时为 2 秒，限制响应体 256 字节，不重试；失败不覆盖原模型错误或改变额度结算。后台任务可能因运行环境终止而未完成，空字段不代表没有地区错误。
+仅当 OpenAI 返回 HTTP 403 时，Worker 在 waitUntil 后台尝试独立 IP 探测；同入口节点每 5 分钟最多一次，其余标记 sampled_out；正常请求不额外探测，也不等待探测结果。探测超时为 2 秒，限制响应体 256 字节，不重试；失败不覆盖原模型错误或改变额度结算。后台任务可能因运行环境终止而未完成，空字段不代表没有地区错误。
 
 探测请求新建，只显式设置 Accept，不复制模型请求的 API Key、Cookie、客户端请求头、对话或音频。它是独立连接，目的地址、IPv4/IPv6 和网络路由均可能与 OpenAI 不同，不能把测得的 IP 标成 OpenAI 实际看到的来源。跨 Cloudflare 区域的 IP 头还可能使用合成地址。准确来源需 OpenAI/Cloudflare 根据 Ray ID、请求 ID 和时间核查；现有历史错误无法补录当时的出口。
 
-这些信息保存在 D1 requests，仅管理员诊断展示；不放进普通客户端错误响应。先应用 0007_egress_diagnostics.sql，再部署 Worker。此功能不固定出口、不改变路由，也不改变地区访问限制。
+这些信息保存在 D1 requests，仅管理员诊断展示；不放进普通客户端错误响应。先应用 0008_operations.sql，再部署 Worker。此功能不固定出口、不改变路由，也不改变地区访问限制。
 
 参考：[ipify 的 IPv4/IPv6 接口](https://www.ipify.org/)、[Cloudflare 请求元数据](https://developers.cloudflare.com/workers/runtime-apis/request/)、[Cloudflare 请求头](https://developers.cloudflare.com/fundamentals/reference/http-headers/)。
 
 本次通过 37 项 Worker 测试，包含 403、后台探测成功/失败/超时、IPv4/IPv6 校验、探测失败不影响模型错误和额度退款。公网临时账号实际请求返回 200，入口节点及 OpenAI 的 Ray ID / request ID 已正常入库，成功请求没有额外 IP 探测；测试账号及关联数据已清理。公网此次未触发 403，因此真实参考 IP 字段须待后续 403 才会产生，不能将模拟测试 IP 视为线上出口。
+
+## 全站运行管理
+
+管理员“全站预算、注册保护与告警”提供云模型暂停开关、Luna 每月美元预算（默认 200）、识别每日分钟和合成每日字符全站上限。语音上限空值表示未设置，0 表示停用；不改变个人额度。所有修改写审计，预算原子检查发生在预留 SQL 内。
+
+继续开放注册，默认每 IP 5 次/小时、全站 100 次/小时、15 次/分钟；同邮箱标识最多 3 次/小时。登录增加按规范化账号标识跨 IP 的 10 次/5 分钟限制，仍保留 IP 限频。标识摘要只短期保留，不发送验证邮件。
+
+Cron 每 15 分钟根据真实请求更新告警：地区限制、15 分钟内至少 20 次请求且 5xx 占比达到 10%、P95 完整请求耗时大于 120 秒、至少 10 个音频流且 P95 首字节大于 10 秒、超过 15 分钟未结算额度、Luna 月预算达到 80%。首字节是网关输出首块的时间，不是客户端播放时间。告警在后台查看、知悉，恢复后自动解除；已知悉但持续一小时仍异常会重新打开。
+
+安全的聚合告警同时写 Worker console，并启用 Workers Logs、关闭自动 invocation 日志，避免收集原始请求头。没有配置外部邮件/IM 通知，不会向第三方发送告警。认证 timer 继续只验证匿名拒绝边界，不消耗模型额度。
+
+每轮清理最多 1000 个过期 token/session；已使用 refresh token 保留到过期后一天，以保留重放检测证据。清理无关联的过期 family，30 天后清除请求 IP/UA/设备标识。超过 90 天且无模型账本或核对记录的已结束请求，每轮最多归档 500 条到 request_history 再删除明细，归档与删除同批事务，重复运行不重复计数。财务账本及其请求、审计和全站成本不自动删除，不会批量退还未结算额度。
+
+维护和监测在同一 Cron 中执行；数据库或平台故障时仍可能导致任务失败，需结合 Workers Logs 检查。未开启外部推送时请定期查看后台告警。

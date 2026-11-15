@@ -1,7 +1,7 @@
 """Canonical inference routes, independent of the public hostname."""
 
 from dataclasses import dataclass
-from accounts.store import Denied
+from gateway.errors import Denied
 
 from gateway.settings import settings
 from gateway.deployments import MODEL_DEPLOYMENTS

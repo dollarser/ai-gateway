@@ -1,3 +1,5 @@
+import { lunaCost, budgetError } from "./budgets.mjs";
+import { providerFailure } from "./provider-errors.mjs";
 import { Denied, day } from "./store.mjs";
 
 export const LUNA_MODEL = "gpt-6-luna";
@@ -305,7 +307,7 @@ export async function proxyLuna(
   const p = preparePayload(payload, responses);
   try {
     await store.run(
-      "INSERT INTO luna_usage(lease,user_id,month,reserved_tokens,charged_tokens,prompt_tokens,completion_tokens) VALUES(?,?,?,?,?,?,?)",
+      "INSERT INTO luna_usage(lease,user_id,month,reserved_tokens,charged_tokens,prompt_tokens,completion_tokens,reserved_cost_nanos,charged_cost_nanos) VALUES(?,?,?,?,?,?,?,?,?)",
       lease,
       r.user_id,
       month(),
@@ -313,8 +315,12 @@ export async function proxyLuna(
       p.reservation,
       p.inputBound,
       p.max,
+      p.inputBound * 125 + p.max * 500,
+      p.inputBound * 125 + p.max * 500,
     );
   } catch (e) {
+    const global = budgetError(e);
+    if (global) throw global;
     if (String(e).includes("luna_budget_exhausted"))
       throw new Denied(
         429,
@@ -327,16 +333,18 @@ export async function proxyLuna(
   async function settle(cost, id = null) {
     if (!cost) return; // Unknown usage keeps its conservative reservation charged.
     await store.run(
-      "UPDATE luna_usage SET charged_tokens=?,settled=1,prompt_tokens=?,completion_tokens=?,cached_tokens=?,cache_write_tokens=?,response_id=? WHERE lease=? AND settled=0",
+      "UPDATE luna_usage SET charged_tokens=?,settled=1,prompt_tokens=?,completion_tokens=?,cached_tokens=?,cache_write_tokens=?,response_id=?,charged_cost_nanos=? WHERE lease=? AND settled=0",
       cost.total,
       cost.input,
       cost.output,
       cost.cached,
       cost.writes,
       typeof id === "string" ? id.slice(0, 256) : null,
+      lunaCost(cost),
       lease,
     );
   }
+  const abort = new AbortController();
   let upstream;
   try {
     upstream = await transport("https://api.openai.com" + expectedPath, {
@@ -346,46 +354,16 @@ export async function proxyLuna(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(p.payload),
-      signal: AbortSignal.timeout(840000),
+      signal: AbortSignal.any([abort.signal, AbortSignal.timeout(840000)]),
     });
   } catch {
     throw new Denied(502, "OpenAI 连接失败；未知用量暂按预留额度计入");
   }
   if (!upstream.ok) {
     // A definitive non-success response never delivers a model completion.
-    let code = "",
-      providerCode = null,
-      providerParam = null;
-    try {
-      const error = await upstream.json();
-      const value = error?.error?.code;
-      const param = error?.error?.param;
-      if (typeof value === "string" && /^[a-z0-9_]{1,128}$/.test(value))
-        providerCode = value;
-      if (
-        typeof param === "string" &&
-        /^[a-zA-Z0-9_.\[\]-]{1,128}$/.test(param)
-      )
-        providerParam = param;
-      if (typeof value === "string" && /^[a-z0-9_]{1,64}$/.test(value))
-        code = "（" + value + "）";
-    } catch {
-      /* Do not expose raw upstream errors or request content. */
-    }
+    const failure = await providerFailure(upstream, "luna");
     await settle({ total: 0, input: 0, output: 0, cached: 0, writes: 0 });
-    const failure = new Denied(
-      upstream.status === 429 ? 429 : upstream.status === 400 ? 400 : 502,
-      upstream.status === 429
-        ? "OpenAI 请求频率或账户余额受限"
-        : "OpenAI 拒绝了请求，请检查模型权限或请求参数" + code,
-    );
-    failure.upstream_error_code = providerCode;
-    failure.upstream_error_param = providerParam;
-    failure.upstream_request_id = upstream.headers.get("x-request-id");
     failure.compatibility = p.compatibility;
-    if (providerParam) failure.message += "；参数：" + providerParam;
-    failure.upstream_status = upstream.status;
-    failure.code = "openai_chat_rejected";
     throw failure;
   }
   if (!p.payload.stream) {
@@ -405,59 +383,87 @@ export async function proxyLuna(
       },
     });
   }
-  // The pump keeps reading the provider after client cancellation so the final
-  // usage event can settle the account. Failed/truncated streams keep the reserve.
-  const stream = new TransformStream();
-  const writer = stream.writable.getWriter();
-  const pump = (async () => {
-    let connected = true,
-      pending = "",
-      cost = null,
-      id = null;
-    const decoder = new TextDecoder();
+  const reader = upstream.body.getReader(),
+    decoder = new TextDecoder();
+  let pending = "",
+    cost = null,
+    id = null,
+    terminal = false,
+    done = false;
+  function accept(line) {
+    if (!line.startsWith("data:")) return;
+    const raw = line.slice(5).trim();
+    if (raw === "[DONE]") {
+      if (!responses) terminal = true;
+      return;
+    }
+    let event;
     try {
-      for await (const chunk of upstream.body) {
-        pending += decoder.decode(chunk, { stream: true });
+      event = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (
+      event.error ||
+      ["error", "response.failed", "response.incomplete"].includes(event.type)
+    )
+      throw new Error("Provider stream failed");
+    const value = responses ? event.response : event;
+    if (value?.id) id = value.id;
+    const parsed = usageTokens(value?.usage);
+    if (parsed && (!responses || event.type === "response.completed"))
+      cost = parsed;
+    if (
+      responses &&
+      event.type === "response.completed" &&
+      (!value.status || value.status === "completed")
+    )
+      terminal = true;
+  }
+  const stream = new ReadableStream({
+    async pull(controller) {
+      try {
+        const r = await reader.read();
+        if (r.done) {
+          if (pending.trim()) accept(pending);
+          if (!terminal || !cost)
+            throw new Error("Provider stream ended before completion");
+          done = true;
+          await settle(cost, id);
+          controller.close();
+          return;
+        }
+        pending += decoder.decode(r.value, { stream: true });
         const lines = pending.split("\n");
         pending = lines.pop();
-        if (pending.length > 1048576) throw new Error("oversized SSE event");
-        for (const line of lines) {
-          if (!line.startsWith("data:")) continue;
-          try {
-            const event = JSON.parse(line.slice(5).trim());
-            const value = responses ? event.response : event;
-            if (value?.id) id = value.id;
-            const parsed = usageTokens(value?.usage);
-            if (parsed && (!responses || event.type === "response.completed"))
-              cost = parsed;
-          } catch {
-            /* SSE [DONE], comments and non-JSON lines. */
-          }
+        if (pending.length > 1048576) throw new Error("Oversized SSE event");
+        for (const line of lines) accept(line);
+        controller.enqueue(r.value);
+      } catch (e) {
+        done = true;
+        abort.abort();
+        await reader.cancel().catch(() => {});
+        try {
+          await settle(terminal ? cost : null, id);
+        } finally {
+          controller.enqueue(
+            new TextEncoder().encode(
+              'data: {"type":"error","error":{"code":"provider_stream_interrupted","message":"模型响应未完整结束，已保留待核对额度","retryable":false}}\n\n',
+            ),
+          );
+          controller.close();
         }
-        if (connected)
-          try {
-            await writer.write(chunk);
-          } catch {
-            connected = false;
-          }
       }
-    } catch {
-      /* Keep the reservation if no authoritative final usage arrived. */
-    } finally {
-      try {
-        await settle(cost, id);
-      } finally {
-        if (connected)
-          try {
-            await writer.close();
-          } catch {
-            /* disconnected */
-          }
-      }
-    }
-  })();
-  ctx.waitUntil(pump);
-  return new Response(stream.readable, {
+    },
+    async cancel() {
+      if (done) return;
+      done = true;
+      abort.abort();
+      await reader.cancel().catch(() => {});
+      await settle(terminal ? cost : null, id);
+    },
+  });
+  return new Response(stream, {
     headers: {
       "Content-Type": "text/event-stream; charset=utf-8",
       ...(p.compatibility

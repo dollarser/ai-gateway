@@ -58,3 +58,22 @@ npm run check
 测试通过后提交代码，再发布 Worker，可使用 `--tag` / `--message` 记录 Git 提交，便于后续对照。网关 Python 代码或环境变化时，需要检查在途请求，再重启本机网关；单独发布 Worker 不会更新本机进程。
 
 发布后运行无账号创建的部署检查，并再次比较 Worker 构建和生产配置。日常维护不运行数据导入或账号清理。本机服务现由 systemd 用户服务管理并配置开机启动，运维命令见 [自动运行](gateway-reliability.md)。
+
+## 当前架构收敛与标准发布
+
+生产源站通过可信边缘请求识别，跳过 Python 的云模型回桥；SQLite Store 和本地账号路由仅在显式离线模式加载。共享 Denied 移至 gateway/errors.py，解码器独立为 audio_decode.py，生产解码不再导入云代理/本地账号库。离线 SQLite、旧 Key 和额度基线保留供恢复及兼容验证。
+
+发布入口：
+
+```bash
+# 不带 --deploy 只检查，不写云端。
+.venv-accounts/bin/python -m scripts.ops.release
+# 先提交，再执行；需要现有 Wrangler 授权及 Node/npm PATH。
+.venv-accounts/bin/python -m scripts.ops.release --deploy
+```
+
+依次运行 Python/Worker 测试、私有 D1 备份及内存恢复校验、增量迁移、Worker 发布、源站重启、部署检查及公网 SHA 核对。Worker 版本 tag/message 和 RELEASE_SHA 对应 Git 提交；healthz 返回 release。完整日志、备份、版本与步骤记录在忽略的 `.runtime/releases/`，权限受 umask 077 保护；发布加进程锁且要求干净工作区。
+
+失败后停止后续步骤，查看 release.json。Worker 回滚使用已验证旧版本的 wrangler rollback；增量 schema 保留向后兼容，不用旧备份覆盖仍有写入的生产 D1。账本修复另行审计处理。
+
+CI 增加 Python 静态检查和合成数据的桌面/移动端浏览器测试，测试预算、注册开关和告警知悉；浏览器请求全部拦截，不使用生产凭据。

@@ -11,11 +11,9 @@ import websockets
 from fastapi import APIRouter, Request, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.exceptions import HTTPException
-from accounts.store import Denied
+from gateway.errors import Denied
 from gateway.auth import authorize_inference, is_local_listener
 from gateway import llm as llm_protocol
-from gateway import worker_openai as openai_proxy
-from gateway import audio as audio_proxy
 from gateway.usage import UsageTracker
 from gateway.catalog import discover_models, parse_output_modalities
 from gateway.tracking import safe_id
@@ -31,6 +29,10 @@ logger = logging.getLogger("uvicorn.error")
 async def inference(path: str, request: Request):
     local = is_local_listener(request.scope)
     edge = trusted_edge(request.app, request.headers, request.scope)
+    if not edge:
+        # Offline/legacy cloud bridge only; production edge requests never enter it.
+        from gateway import worker_openai as openai_proxy
+        from gateway import audio as audio_proxy
     path = "/" + path
     route = http_route(request.url.hostname, path, request.method, local)
     service = (
@@ -140,12 +142,16 @@ async def inference(path: str, request: Request):
                     raise Denied(413, "请求体超过服务限制")
         audio_request = None
         audio_format = None
-        if path == "/v1/audio/transcriptions" and request.headers.get(
-            "content-type", ""
-        ).startswith("multipart/form-data"):
+        if (
+            not edge
+            and path == "/v1/audio/transcriptions"
+            and request.headers.get("content-type", "").startswith(
+                "multipart/form-data"
+            )
+        ):
             request.state.audio_lease = lease
             audio_request = await audio_proxy.prepare_asr(request, body)
-        elif path == "/v1/audio/transcriptions":
+        elif not edge and path == "/v1/audio/transcriptions":
             if (
                 request.app.state.settings.accounts_worker_url
                 and request.headers.get("x-inference-provider") != "local"
@@ -155,7 +161,7 @@ async def inference(path: str, request: Request):
                     422,
                     "语音识别需要 multipart/form-data，包含 model=gpt-transcribe 和 file 音频字段",
                 )
-        elif path == "/v1/audio/speech":
+        elif not edge and path == "/v1/audio/speech":
             prepared = await audio_proxy.prepare_tts(request, body, lease)
             if prepared:
                 audio_request, audio_format = prepared
@@ -239,7 +245,7 @@ async def inference(path: str, request: Request):
                 raise Denied(400, "无效的 JSON 请求")
             if not isinstance(candidate, dict):
                 raise Denied(400, "JSON 请求必须为对象")
-            if (
+            if not edge and (
                 candidate.get("model") == openai_proxy.LUNA_MODEL
                 or path == "/v1/responses"
             ):

@@ -2,7 +2,7 @@
 
 ## 应跟踪
 
-Python / Worker 源码、账号页面（包含 admin.js）、SQL 增量迁移、自动化测试、依赖声明和锁文件、脱敏环境模板、运维及客户端交接文档。
+Python / Worker 源码、账号页面（包含 admin.js）、SQL 增量迁移、自动化测试、依赖声明和锁文件（含开发用 requirements/dev.txt）、脱敏环境模板、运维及客户端交接文档。
 
 `deploy/cloudflared-api.yml`、`deploy/tunnels.json`、`deploy/hilex.json` 和 `cloudflare/wrangler.jsonc` 描述部署拓扑。域名、Worker 名、数据库 ID、隧道 ID 不是访问凭据，继续跟踪；其中引用的凭据文件只保留在本机。不能因为目录叫 deploy 就整目录忽略，也不能忽略整个 cloudflare 或所有 JSON/SQL 文件。
 
@@ -29,3 +29,5 @@ git check-ignore -v .env .runtime/example.json deploy/backups/example.sql
 `.gitignore` 不会自动停止跟踪已有文件。发现已跟踪的敏感文件，先判断是否已泄露并轮换凭据，再从索引移除、更新忽略规则；不能只加一条规则后认为泄露已解决。历史清理和强制推送需单独评估，不在普通功能提交中重写远端历史。
 
 本次检查了已跟踪文件和待提交文件，未发现私钥 / 真实提供方 Key 的明显特征；生产备份、密钥及临时验证材料继续保留在本地忽略目录。特征检查不是对所有可能的秘密的形式化证明，实际新增配置仍需人工审阅。
+
+`.runtime/releases/` 含发布清单、私有日志和 D1 备份，继续忽略。浏览器回归脚本与合成测试数据跟踪，截图写入已忽略 artifacts/。

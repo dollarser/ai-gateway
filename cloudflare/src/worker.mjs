@@ -1,3 +1,4 @@
+import { monitor, maintenance } from "./operations.mjs";
 import { Store, Denied, SERVICES, publicUser, day } from "./store.mjs";
 import { digest, equal, now, token, passwordHash } from "./crypto.mjs";
 import { budgetValue, lunaUsage, lunaCatalog, proxyLuna } from "./luna.mjs";
@@ -246,7 +247,12 @@ async function route(request, env, ctx) {
   if (p.startsWith("/internal/")) return internal(request, env, store, p, ctx);
   if (p === "/healthz" && method === "GET") {
     await store.first("SELECT 1");
-    return json({ ready: true, service: "accounts", storage: "d1" });
+    return json({
+      release: env.RELEASE_SHA ?? null,
+      ready: true,
+      service: "accounts",
+      storage: "d1",
+    });
   }
   const origin = env.ACCOUNT_ORIGIN || url.origin;
   // A configured custom domain owns the portal. Local Wrangler is also allowed for testing.
@@ -287,6 +293,13 @@ async function route(request, env, ctx) {
       today: day(),
       defaults: await store.defaults(),
       email_verification: false,
+      registration_enabled: JSON.parse(
+        (
+          await store.first(
+            "SELECT value FROM settings WHERE name='registration_policy'",
+          )
+        ).value,
+      ).enabled,
     });
   if (p === "/auth/register" && method === "POST") {
     const b = validate(await body(request), ["email", "password"]);
@@ -297,6 +310,7 @@ async function route(request, env, ctx) {
     await store.rateLimit(
       request.headers.get("CF-Connecting-IP") || "local",
       "register",
+      email,
     );
     const user = await store.createUser(email, b.password, {
       email,
@@ -578,15 +592,25 @@ export default {
       return await route(request, env, ctx);
     } catch (e) {
       if (e instanceof Denied)
-        return json({ detail: e.message }, e.status, {
-          ...(e.status === 429 ? { "Retry-After": "60" } : {}),
-          "X-Error-Code":
-            e.code ??
-            (e.status < 500 ? "request_rejected" : "provider_unavailable"),
-          ...(e.upstream_status
-            ? { "X-Upstream-Status": String(e.upstream_status) }
-            : {}),
-        });
+        return json(
+          {
+            detail: e.message,
+            error_code: e.code ?? "request_rejected",
+            retryable: e.retryable === true,
+          },
+          e.status,
+          {
+            ...(e.status === 429 && e.retryable !== false
+              ? { "Retry-After": String(e.retry_after ?? 60) }
+              : {}),
+            "X-Error-Code":
+              e.code ??
+              (e.status < 500 ? "request_rejected" : "provider_unavailable"),
+            ...(e.upstream_status
+              ? { "X-Upstream-Status": String(e.upstream_status) }
+              : {}),
+          },
+        );
       const message = String(e);
       if (/quota_/.test(message))
         return json({ detail: "账号请求或并发额度已用尽" }, 429, {
@@ -603,23 +627,26 @@ export default {
   async scheduled(event, env, ctx) {
     const store = new Store(env.DB);
     ctx.waitUntil(
-      env.DB.batch([
-        store.stmt(
-          "UPDATE requests SET ended=?,status=504 WHERE ended IS NULL AND started<?",
-          now(),
-          now() - 920,
-        ),
-        store.stmt("DELETE FROM login_attempts WHERE ts<?", now() - 300),
-        store.stmt(
-          "DELETE FROM registration_attempts WHERE ts<?",
-          now() - 3600,
-        ),
-        store.stmt(
-          "DELETE FROM inference_auth_failures WHERE ts<?",
-          now() - 60,
-        ),
-        store.stmt("DELETE FROM sessions WHERE expires<?", now()),
-      ]),
+      (async () => {
+        await env.DB.batch([
+          store.stmt(
+            "UPDATE requests SET ended=?,status=504 WHERE ended IS NULL AND started<?",
+            now(),
+            now() - 920,
+          ),
+          store.stmt("DELETE FROM login_attempts WHERE ts<?", now() - 300),
+          store.stmt(
+            "DELETE FROM registration_attempts WHERE ts<?",
+            now() - 3600,
+          ),
+          store.stmt(
+            "DELETE FROM inference_auth_failures WHERE ts<?",
+            now() - 60,
+          ),
+        ]);
+        await monitor(store);
+        await maintenance(store);
+      })(),
     );
   },
 };

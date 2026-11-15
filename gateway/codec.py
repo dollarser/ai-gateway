@@ -2,9 +2,9 @@
 
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
-from accounts.store import Denied
+from gateway.errors import Denied
 from gateway.edge_origin import trusted_edge
-from gateway.audio import transcode
+from gateway.audio_decode import transcode
 import io
 import wave
 

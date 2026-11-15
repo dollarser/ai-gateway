@@ -71,3 +71,13 @@ Luna 的 Chat Completions 工具调用要求 `reasoning_effort:"none"`，省略�
 客户端交接：工具结果使用匹配的 tool_call_id；Chat SSE 累积 delta.tool_calls 的 index/id/name/arguments 后再执行函数，不能假定 arguments 在一个分片中完整返回。Responses 使用 function_call / function_call_output 并提供完整上下文；需要推理时优先持续使用 Responses 协议，勿将两种事件直接混用。
 
 参考：[OpenAI Luna 工具限制](https://developers.openai.com/api/docs/models/gpt-6-luna.md)、[函数调用协议](https://developers.openai.com/api/docs/guides/function-calling.md)。
+
+## 全站每月 200 美元预算
+
+账号 token 额度之外，增加独立全站成本预算，默认 200 美元/北京时间自然月。2026-11-16 核对的 Standard 价格为每百万输入 $0.10、缓存输入 $0.01、缓存写入 $0.125、输出 $0.50，见 [官方定价](https://developers.openai.com/api/docs/models/gpt-6-luna.md)。200 美元约对应 20 亿纯普通输入 tokens，或 4 亿纯输出 tokens；输入输出各半时约 6.67 亿总 tokens，不能用一个固定 token 数精确代替美元预算。
+
+内部以整数纳美元计量：普通输入 100、缓存 10、缓存写入 125、输出 500 / token。请求前按输入上界×125＋输出上限×500 预留，D1 trigger 原子核对全站预算；请求结束按 usage 分类结算。当前输入上界低于长上下文加价阈值，且不开放付费档位和托管工具。明确拒绝成本为 0；取消或缺少最终 usage 保留预留。
+
+`luna_spend` 独立于账号和请求表，删除账号或请求不释放已计成本。管理员核对用量时可同时填写美元成本，记录审计并检查旧值；旧 API 未传成本时，非零 token 修正不会自动释放美元预留，修正为 0 才同步归零。
+
+这是网关已记录请求的估算成本控制，不是 OpenAI 发票总额：独立使用同一上游 Key、此前已删除的用量、税费或上游价格变更不在自动计量内。历史现存账本按当前已核对标准价格回填，不修改个人额度；模型价格变化时应先更新估算器和测试再发布。

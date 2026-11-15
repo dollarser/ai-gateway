@@ -65,3 +65,11 @@ API 域名和请求格式不变。云文本、PCM 合成、标准 PCM WAV 识别
 - 识别可直接上传常见 MP3、Ogg/WebM Opus、M4A AAC-LC；网关验证后直接传 OpenAI，不要求客户端转换 WAV，也不接受客户端 duration 作为扣额依据。特殊变体仍可能回源解码。
 - 合成仅支持 PCM（默认），流式和非流式均不依赖源站；客户端应移除旧压缩格式参数并按原始 PCM 播放，详情见 [边缘接口](edge-api.md)。
 - Luna Chat 带工具统一使用 reasoning_effort=none，网关自动兼容；需要推理加工具时使用 Responses。记录 X-Request-ID 和 X-Inference-Compatibility 便于排查；错误 JSON 可能带 upstream_error_code / upstream_error_param，请勿记录敏感请求正文。详见 [Luna 额度及工具协议](luna-allowance.md)。
+
+## 流式取消、错误与全站预算
+
+- Chat SSE 正常完成需要最终 usage 和 `[DONE]`，Responses 需要 `response.completed`，识别需要 `transcript.text.done`。若收到 `type:error` / `error.code=provider_stream_interrupted`，丢失终止标记或连接失败，应显示“未完成”，不要自动续写或重发有工具副作用的请求。
+- 用户停止播放/生成时取消 HTTP 读取，网关会中止上游；已发生或无法确认的用量仍计入预留，不应因客户端取消就显示已退款。PCM 是原始音频，无法嵌入 SSE 错误；客户端仍须处理网络异常和播放失败。
+- 错误 JSON 提供 error_code、retryable，参数错误和地区限制不会通过重试修复。`provider_rate_limited` 可遵守 Retry-After；`provider_credit_exhausted`、`provider_auth_failed`、`provider_region_restricted`、`global_budget_exhausted` 应提示并停止自动重试。不得将提供方认证异常当成用户 token 失效而反复登录。
+- 账号每月 1000 万 tokens 额度保留；全站 Luna 另有每月 200 美元估算预算。管理员暂停云服务返回 global_cloud_disabled。预算按北京时间自然月重置；全站预算耗尽不代表个人额度被清零。
+- 默认示例客户端改用云 HTTP，老自建语音示例移至 `python -m scripts.clients.local_ws`。
