@@ -1,0 +1,22 @@
+{
+  "name": "waylens-accounts-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:local": "wrangler d1 migrations apply accounts --local",
+    "db:remote": "wrangler d1 migrations apply accounts --remote",
+    "check": "wrangler deploy --dry-run",
+    "test": "wrangler deploy --dry-run --outdir .test-build && node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@noble/hashes": "^1.8.0"
+  },
+  "devDependencies": {
+    "miniflare": "^4.0.0",
+    "prettier": "^3.10.1",
+    "wrangler": "^4.0.0"
+  }
+}

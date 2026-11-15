@@ -1,0 +1,16 @@
+{
+  "gateway_tests": 123,
+  "model_tests": 33,
+  "worker_d1_tests": 7,
+  "local_d1_migration": {
+    "users": 56,
+    "keys": 27,
+    "requests": 3296
+  },
+  "python_worker_http_integration": "PASS",
+  "gateway_and_model_lint": "PASS",
+  "shell_syntax": "PASS",
+  "cloud_deployed": false,
+  "gpu_inference_started": false,
+  "original_snapshot": "/home/lingzhang/workspace/asr-tts"
+}

@@ -1,0 +1,18 @@
+# 项目边界与部署架构
+
+```text
+账号用户 ──HTTPS──> Cloudflare accounts Worker ──D1
+模型客户端 ──HTTPS/WSS──> API 网关 ──HTTP/WS──> model-serving
+                             │
+                             └──HTTPS /internal/*──> accounts Worker
+```
+
+不启用 Worker 时，账号路由和 SQLite 在 API 网关进程内，保留原行为。启用 Worker 后，网页和账号业务迁到 Worker，网关只调用账号服务的鉴权、请求占用、token 余量和用量结算接口。
+
+API 网关负责模型发现、OpenAI 参数兼容、SSE、WebSocket 和用量提取；`model-serving` 负责模型加载、GPU、模型级排队和推理。模型侧的 Client ID 只是内部服务凭据，不是用户账号或 API Key。
+
+环境变量 `LLM_UPSTREAM_URL`、`ASR_UPSTREAM_URL`、`TTS_UPSTREAM_URL`、`EMBEDDING_UPSTREAM_URL`、`VIBEVOICE_UPSTREAM_URL` 是不带路径的 HTTP(S) origin，变更后重启网关。同机默认使用原端口；跨机器部署时只使用受控私网或受保护的模型入口。
+
+现有 `deploy/client_ids.json` 已独立复制到两个项目，默认仍匹配。若单独轮换模型服务 ID，同时更新网关的 `GATEWAY_BACKEND_CLIENT_ID`。前者不能由客户端传入的 Authorization 或 Client ID 覆盖。
+
+Worker 模式下 D1 保存凭证的 SHA256 摘要、scrypt 密码哈希、账号权限和请求占用；内部服务密钥只通过 Worker Secret 和网关环境变量配置。数据库请求占用采用条件 INSERT 和 SQL trigger 原子执行限额，不依赖某个 Worker 实例的内存锁。

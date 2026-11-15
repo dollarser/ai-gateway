@@ -1,0 +1,7 @@
+tunnel: 4aa254d5-8737-422c-9913-36ae20c3a41b
+credentials-file: /home/lingzhang/.cloudflared/4aa254d5-8737-422c-9913-36ae20c3a41b.json
+protocol: http2
+ingress:
+  - hostname: accounts.sunlingzhang.com
+    service: http://127.0.0.1:18900
+  - service: http_status:404

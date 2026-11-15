@@ -1,0 +1,475 @@
+import { Store, Denied, SERVICES, publicUser } from "./store.mjs";
+import { digest, equal, now, token, passwordHash } from "./crypto.mjs";
+const COOKIE = "__Host-ai_session";
+const json = (v, status = 200, headers = {}) =>
+  Response.json(v, {
+    status,
+    headers: {
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+      ...headers,
+    },
+  });
+function fail(status, message) {
+  throw new Denied(status, message);
+}
+function validate(body, fields) {
+  if (
+    !body ||
+    typeof body !== "object" ||
+    Array.isArray(body) ||
+    Object.keys(body).some((k) => !fields.includes(k))
+  )
+    fail(422, "无效字段");
+  return body;
+}
+function text(value, min, max) {
+  if (typeof value !== "string" || value.length < min || value.length > max)
+    fail(422, "字符串字段长度无效");
+  return value;
+}
+function services(value) {
+  if (
+    !Array.isArray(value) ||
+    value.length > 3 ||
+    value.some((x) => !SERVICES.includes(x))
+  )
+    fail(422, "服务权限无效");
+  return value;
+}
+function quotas(b, defaults = false) {
+  for (const k of ["rpm", "daily_requests", "concurrency"])
+    if (
+      b[k] !== undefined &&
+      (!Number.isSafeInteger(b[k]) ||
+        b[k] < (k === "concurrency" || defaults ? 1 : 0) ||
+        b[k] >
+          (k === "concurrency"
+            ? 8
+            : defaults
+              ? k === "rpm"
+                ? 600
+                : 1000000
+              : 1000000000))
+    )
+      fail(422, "额度字段无效");
+  return b;
+}
+async function body(request) {
+  if (Number(request.headers.get("Content-Length") || 0) > 16384)
+    fail(413, "请求体过大");
+  const reader = request.body?.getReader();
+  let n = 0;
+  const chunks = [];
+  if (reader)
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      n += value.length;
+      if (n > 16384) {
+        await reader.cancel();
+        fail(413, "请求体过大");
+      }
+      chunks.push(value);
+    }
+  const bytes = new Uint8Array(n);
+  let at = 0;
+  for (const c of chunks) {
+    bytes.set(c, at);
+    at += c.length;
+  }
+  try {
+    return n ? JSON.parse(new TextDecoder().decode(bytes)) : {};
+  } catch {
+    fail(400, "无效 JSON");
+  }
+}
+function bearer(request) {
+  const auth = request.headers.get("Authorization") || "";
+  return /^Bearer /i.test(auth) ? auth.slice(7).trim() : "";
+}
+async function userSession(request, store, admin = false) {
+  const raw = bearer(request);
+  let u;
+  if (raw) {
+    if (!raw.startsWith("ai-at-")) fail(401, "账号管理需要登录 access_token");
+    u = await store.access(raw);
+  } else {
+    const cookie =
+      (request.headers.get("Cookie") || "")
+        .split(";")
+        .map((s) => s.trim())
+        .find((s) => s.startsWith(COOKIE + "="))
+        ?.slice(COOKIE.length + 1) || "";
+    u = await store.session(cookie);
+    if (
+      !["GET", "HEAD"].includes(request.method) &&
+      !equal(request.headers.get("X-CSRF-Token") || "", u.csrf)
+    )
+      fail(403, "CSRF 校验失败");
+  }
+  if (admin && (u.role !== "admin" || u.must_change))
+    fail(403, "需要管理员权限；首次登录请先修改密码");
+  return u;
+}
+async function internal(request, env, store, path) {
+  if (
+    request.method !== "POST" ||
+    !env.INTERNAL_SECRET ||
+    !equal(bearer(request), env.INTERNAL_SECRET)
+  )
+    fail(401, "内部服务认证失败");
+  const b = await body(request);
+  if (path === "/internal/acquire") {
+    validate(b, ["raw", "service", "path"]);
+    text(b.raw, 1, 256);
+    text(b.path, 1, 256);
+    return json({ lease: await store.acquire(b.raw, b.service, b.path) });
+  }
+  if (path === "/internal/token-remaining") {
+    validate(b, ["lease"]);
+    return json({ remaining: await store.remaining(text(b.lease, 1, 128)) });
+  }
+  if (path === "/internal/finish") {
+    validate(b, [
+      "lease",
+      "status",
+      "size",
+      "prompt_tokens",
+      "completion_tokens",
+      "trace",
+    ]);
+    text(b.lease, 1, 128);
+    for (const key of ["status", "size", "prompt_tokens", "completion_tokens"])
+      if (b[key] !== undefined && (!Number.isSafeInteger(b[key]) || b[key] < 0))
+        fail(422, "用量字段无效");
+    if (!Number.isInteger(b.status) || b.status < 100 || b.status > 599)
+      fail(422, "状态码无效");
+    await store.finish(b);
+    return json({ ok: true });
+  }
+  if (path === "/internal/check-auth") {
+    validate(b, ["ip"]);
+    await store.authCheck(text(b.ip, 1, 128));
+    return json({ ok: true });
+  }
+  if (path === "/internal/record-auth-failure") {
+    validate(b, ["ip"]);
+    await store.run(
+      "INSERT INTO inference_auth_failures(ip_hash,ts) VALUES(?,?)",
+      await digest(text(b.ip, 1, 128)),
+      now(),
+    );
+    return json({ ok: true });
+  }
+  fail(404, "未知内部接口");
+}
+async function route(request, env) {
+  const url = new URL(request.url),
+    p = url.pathname,
+    method = request.method;
+  const store = new Store(env.DB);
+  if (p.startsWith("/internal/")) return internal(request, env, store, p);
+  if (p === "/healthz" && method === "GET") {
+    await store.first("SELECT 1");
+    return json({ ready: true, service: "accounts", storage: "d1" });
+  }
+  const origin = env.ACCOUNT_ORIGIN || url.origin;
+  // A configured custom domain owns the portal. Local Wrangler is also allowed for testing.
+  if (
+    !["localhost", "127.0.0.1"].includes(url.hostname) &&
+    url.origin !== origin
+  )
+    fail(404, "未知账号域名");
+  if (
+    !["GET", "HEAD"].includes(method) &&
+    request.headers.get("Origin") &&
+    request.headers.get("Origin") !== origin
+  )
+    fail(403, "origin denied");
+  if (
+    method === "GET" &&
+    (p === "/" || p === "/static/app.js" || p === "/static/style.css")
+  ) {
+    const asset = new URL(request.url);
+    asset.pathname = p === "/" ? "/" : p.slice("/static".length);
+    const response = await env.ASSETS.fetch(new Request(asset, request));
+    const headers = new Headers(response.headers);
+    headers.set("Cache-Control", "no-store");
+    headers.set("X-Content-Type-Options", "nosniff");
+    headers.set("Referrer-Policy", "no-referrer");
+    headers.set(
+      "Content-Security-Policy",
+      "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+    );
+    return new Response(response.body, { status: response.status, headers });
+  }
+  if (p === "/auth/registration-info" && method === "GET")
+    return json({
+      services: SERVICES,
+      defaults: await store.defaults(),
+      email_verification: false,
+    });
+  if (p === "/auth/register" && method === "POST") {
+    const b = validate(await body(request), ["email", "password"]);
+    text(b.email, 3, 254);
+    text(b.password, 6, 128);
+    const email = b.email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(422, "邮箱格式无效");
+    await store.rateLimit(
+      request.headers.get("CF-Connecting-IP") || "local",
+      "register",
+    );
+    const user = await store.createUser(email, b.password, {
+      email,
+      must_change: 0,
+      ...(await store.defaults()),
+    });
+    return json({ user, message: "注册成功，请使用邮箱和密码登录" }, 201);
+  }
+  if (p === "/auth/login" && method === "POST") {
+    const b = validate(await body(request), ["username", "password"]);
+    text(b.username, 3, 254);
+    text(b.password, 1, 128);
+    const r = await store.login(
+      b.username,
+      b.password,
+      request.headers.get("CF-Connecting-IP") || "local",
+    );
+    return json(r.body, 200, {
+      "Set-Cookie": `${COOKIE}=${r.cookie}; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200`,
+    });
+  }
+  if (p === "/auth/refresh" && method === "POST") {
+    const b = validate(await body(request), ["refresh_token"]);
+    return json(await store.refresh(text(b.refresh_token, 20, 256)));
+  }
+  if (p === "/auth/logout" && method === "POST") {
+    const b = validate(await body(request), ["refresh_token"]);
+    if (b.refresh_token) {
+      const r = await store.first(
+        "SELECT family_id FROM refresh_tokens WHERE hash=?",
+        await digest(text(b.refresh_token, 20, 256)),
+      );
+      if (r) await store.revokeFamily(r.family_id);
+    } else {
+      const u = await userSession(request, store);
+      if (u.family) await store.revokeFamily(u.family);
+    }
+    return json({ ok: true }, 200, {
+      "Set-Cookie": `${COOKIE}=; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`,
+    });
+  }
+  const u = await userSession(
+    request,
+    store,
+    p.startsWith("/admin/") || p.startsWith("/account/keys"),
+  );
+  if (p === "/account/me" && method === "GET")
+    return json({ user: publicUser(u), csrf: bearer(request) ? null : u.csrf });
+  if (p === "/account/password" && method === "POST") {
+    const b = validate(await body(request), [
+      "current_password",
+      "new_password",
+    ]);
+    await store.changePassword(
+      u.id,
+      text(b.current_password, 1, 128),
+      text(b.new_password, 6, 128),
+    );
+    return json({ ok: true, message: "密码已修改，请重新登录" });
+  }
+  if (p === "/account/usage" && method === "GET")
+    return json(await store.usage(u.id));
+  if (p === "/admin/usage" && method === "GET") {
+    const uid = url.searchParams.get("user_id");
+    if (uid !== null && !/^[1-9]\d*$/.test(uid)) fail(422, "用户 ID 无效");
+    return json(await store.usage(uid ? Number(uid) : null));
+  }
+  if (p === "/admin/audit" && method === "GET")
+    return json(
+      await store.all("SELECT * FROM audit ORDER BY id DESC LIMIT 100"),
+    );
+  if (p === "/admin/registration-defaults") {
+    if (method === "GET") return json(await store.defaults());
+    if (method === "PATCH") {
+      const b = quotas(
+        validate(await body(request), ["rpm", "daily_requests", "concurrency"]),
+        true,
+      );
+      if (Object.keys(b).length !== 3) fail(422, "默认额度字段不完整");
+      await store.run(
+        "UPDATE settings SET value=? WHERE name='registration_defaults'",
+        JSON.stringify(b),
+      );
+      await store.audit(
+        u.id,
+        "update_registration_defaults",
+        "registration_defaults",
+      );
+      return json(b);
+    }
+  }
+  if (p === "/admin/users" && method === "GET")
+    return json(
+      (await store.all("SELECT * FROM users ORDER BY id")).map(publicUser),
+    );
+  if (p === "/admin/users" && method === "POST") {
+    const b = quotas(
+      validate(await body(request), [
+        "username",
+        "services",
+        "rpm",
+        "daily_requests",
+        "concurrency",
+      ]),
+    );
+    text(b.username, 3, 64);
+    if (!/^[a-zA-Z0-9_.-]+$/.test(b.username)) fail(422, "用户名无效");
+    if (b.services) services(b.services);
+    const temporary_password = token();
+    const user = await store.createUser(b.username, temporary_password, {
+      ...b,
+      actor: u.id,
+    });
+    return json({ user, temporary_password, message: "首次登录必须修改密码" });
+  }
+  const match = p.match(/^\/admin\/users\/(\d+)(\/reset-password)?$/);
+  if (match) {
+    const uid = Number(match[1]),
+      target = await store.first("SELECT * FROM users WHERE id=?", uid);
+    if (!target) fail(404, "账号不存在");
+    if (match[2] && method === "POST") {
+      if (uid === u.id) fail(400, "请使用修改密码功能");
+      const temporary_password = token();
+      const encoded = await passwordHash(temporary_password);
+      await store.db.batch([
+        store.stmt(
+          "UPDATE users SET password=?,must_change=1 WHERE id=?",
+          encoded,
+          uid,
+        ),
+        store.stmt("DELETE FROM sessions WHERE user_id=?", uid),
+        store.stmt("UPDATE auth_families SET revoked=1 WHERE user_id=?", uid),
+        store.stmt("UPDATE keys SET revoked=1 WHERE user_id=?", uid),
+      ]);
+      await store.audit(u.id, "reset_password", uid);
+      return json({
+        temporary_password,
+        message: "登录会话和所有 API Key 已撤销",
+      });
+    }
+    if (!match[2] && method === "PATCH") {
+      const b = quotas(
+        validate(await body(request), [
+          "enabled",
+          "services",
+          "rpm",
+          "daily_requests",
+          "concurrency",
+        ]),
+      );
+      if (b.services) services(b.services);
+      if (b.enabled !== undefined && typeof b.enabled !== "boolean")
+        fail(422, "enabled 必须为布尔值");
+      const keys = Object.keys(b);
+      if (!keys.length) fail(422, "没有更新字段");
+      const values = keys.map((k) =>
+        k === "services"
+          ? JSON.stringify(b[k])
+          : k === "enabled"
+            ? Number(b[k])
+            : b[k],
+      );
+      const statements = [
+        store.stmt(
+          `UPDATE users SET ${keys.map((k) => k + "=?").join(",")} WHERE id=?`,
+          ...values,
+          uid,
+        ),
+      ];
+      if (b.enabled === false)
+        statements.push(
+          store.stmt("DELETE FROM sessions WHERE user_id=?", uid),
+          store.stmt("UPDATE auth_families SET revoked=1 WHERE user_id=?", uid),
+        );
+      await store.db.batch(statements);
+      await store.audit(u.id, "update_user", uid);
+      return json(
+        publicUser(await store.first("SELECT * FROM users WHERE id=?", uid)),
+      );
+    }
+  }
+  const km = p.match(/^\/(account|admin)\/keys(?:\/(\d+))?$/);
+  if (km) {
+    const target = km[1] === "account" ? u.id : Number(km[2]);
+    if (method === "GET" && target) return json(await store.keys(target));
+    if (method === "POST" && target) {
+      const b = validate(await body(request), ["name", "services", "days"]);
+      text(b.name, 1, 80);
+      services(b.services);
+      if (!b.services.length) fail(422, "至少一个服务");
+      b.days ??= 90;
+      if (!Number.isInteger(b.days) || b.days < 1 || b.days > 365)
+        fail(422, "有效期无效");
+      return json(await store.createKey(u.id, target, b));
+    }
+    if (method === "DELETE" && km[2]) {
+      const r = await store.run(
+        "UPDATE keys SET revoked=1 WHERE id=?",
+        Number(km[2]),
+      );
+      if (!r.meta.changes) fail(404, "密钥不存在");
+      await store.audit(u.id, "revoke_key", km[2]);
+      return json({ ok: true });
+    }
+  }
+  fail(404, "接口不存在");
+}
+export default {
+  async fetch(request, env) {
+    try {
+      return await route(request, env);
+    } catch (e) {
+      if (e instanceof Denied)
+        return json(
+          { detail: e.message },
+          e.status,
+          e.status === 429 ? { "Retry-After": "60" } : {},
+        );
+      const message = String(e);
+      if (/quota_/.test(message))
+        return json({ detail: "账号请求或并发额度已用尽" }, 429, {
+          "Retry-After": "60",
+        });
+      if (/account_permission|key_permission/.test(message))
+        return json({ detail: "账号或密钥权限无效" }, 403);
+      if (/last_admin/.test(message))
+        return json({ detail: "不能禁用最后一个管理员" }, 409);
+      console.error("account request failed", e.name);
+      return json({ detail: "账号服务暂时不可用" }, 503);
+    }
+  },
+  async scheduled(event, env, ctx) {
+    const store = new Store(env.DB);
+    ctx.waitUntil(
+      env.DB.batch([
+        store.stmt(
+          "UPDATE requests SET ended=?,status=504 WHERE ended IS NULL AND started<?",
+          now(),
+          now() - 920,
+        ),
+        store.stmt("DELETE FROM login_attempts WHERE ts<?", now() - 300),
+        store.stmt(
+          "DELETE FROM registration_attempts WHERE ts<?",
+          now() - 3600,
+        ),
+        store.stmt(
+          "DELETE FROM inference_auth_failures WHERE ts<?",
+          now() - 60,
+        ),
+        store.stmt("DELETE FROM sessions WHERE expires<?", now()),
+      ]),
+    );
+  },
+};

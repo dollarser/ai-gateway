@@ -1,0 +1,27 @@
+{
+  "name": "waylens-accounts",
+  "main": "src/worker.mjs",
+  "compatibility_date": "2026-07-01",
+  "assets": {
+    "directory": "../accounts/static",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "accounts",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "vars": {
+    "ACCOUNT_ORIGIN": "https://accounts.sunlingzhang.com",
+  },
+  "limits": {
+    "cpu_ms": 1000,
+  },
+  "triggers": {
+    "crons": ["*/15 * * * *"],
+  },
+}
