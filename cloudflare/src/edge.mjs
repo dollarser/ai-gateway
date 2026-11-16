@@ -381,6 +381,7 @@ export async function edgeAPI(request, env, ctx) {
           service: "inference-gateway",
           storage: "d1",
           execution: "edge",
+          openai_transport: env.OPENAI_TRANSPORT ?? "worker",
         },
         200,
         { "X-Inference-Execution": "edge" },

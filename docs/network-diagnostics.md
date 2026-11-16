@@ -70,3 +70,5 @@ Worker事件使用schema=ai-gateway-log-v1：
 ## OpenAI 出站请求头
 
 聊天、识别和 Realtime 合成统一使用 `openaiHeaders`，不复制客户端请求头，并显式移除 CF-Connecting-IP、X-Forwarded-For、True-Client-IP、Forwarded、X-Real-IP、CF-IPCountry、CF-Ray。仅设置服务端 OpenAI 密钥和接口必要头；识别 multipart 的 Content-Type 由 fetch 自动生成。此过滤作用于应用提交的请求头，不能修改实际出口 IP，也不能据此保证上游地区判定结果。
+
+`OPENAI_TRANSPORT=local` 时，OpenAI 请求由本机发出；本页 Worker 参考出口不能代表本机出口，因此关闭这一路径的自动 Worker 出口抽样。后台入口地区仍描述客户端到 Worker 的链路。模式切换见 [出站配置](edge-api.md#openai-出站模式)。

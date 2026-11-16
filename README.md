@@ -32,7 +32,7 @@
 - 账号数据库：D1 `hilex-accounts`
 - 模型 API：https://api.hilex.me（Worker 边缘鉴权与云模型直连；仅自建模型和特殊识别输入的解码回源）
 
-本机网关使用 Worker 账号模式，SQLite 仅用于离线兼容与迁移。自建模型后端是否就绪需单独验证，后端不可达时请求可能返回 502。GPT-6 Luna 由 Worker 调用 OpenAI，不依赖本机模型进程；每账号默认每月 1000 万 tokens。
+本机网关使用 Worker 账号模式，SQLite 仅用于离线兼容与迁移。自建模型后端是否就绪需单独验证，后端不可达时请求可能返回 502。GPT-6 Luna 由 Worker 认证和结算，OpenAI 出站可选择本机转发（当前默认）或 Worker 直连，不依赖本机模型进程；每账号默认每月 1000 万 tokens。
 
 ## 部署 API 网关
 

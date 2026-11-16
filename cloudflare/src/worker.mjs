@@ -1,3 +1,4 @@
+import { openaiRoute } from "./openai-route.mjs";
 import {
   writeWorkerLog,
   accountPath,
@@ -162,11 +163,39 @@ async function internal(request, env, store, path, ctx) {
       ctx,
       await body(request, 4 * 1024 * 1024),
       path.endsWith("/responses"),
+      openaiRoute(
+        env,
+        request.headers.get("X-Gateway-Lease"),
+        request.headers.get("X-Request-ID") ??
+          request.headers.get("X-Gateway-Lease"),
+      ),
     );
   if (path === "/internal/openai/transcriptions")
-    return proxyTranscription(request, env, store, ctx);
+    return proxyTranscription(
+      request,
+      env,
+      store,
+      ctx,
+      null,
+      null,
+      openaiRoute(
+        env,
+        request.headers.get("X-Gateway-Lease"),
+        request.headers.get("X-Gateway-Lease"),
+      ),
+    );
   if (path === "/internal/openai/speech")
-    return proxySpeech(request, env, store, fetch, ctx);
+    return proxySpeech(
+      request,
+      env,
+      store,
+      openaiRoute(
+        env,
+        request.headers.get("X-Gateway-Lease"),
+        request.headers.get("X-Gateway-Lease"),
+      ),
+      ctx,
+    );
   const b = await body(request);
   if (path === "/internal/openai-models") {
     validate(b, ["lease"]);

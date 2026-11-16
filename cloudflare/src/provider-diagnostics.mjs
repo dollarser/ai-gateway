@@ -1,3 +1,4 @@
+import { openaiRoute } from "./openai-route.mjs";
 import { writeWorkerLog } from "./worker-logs.mjs";
 import { collectObservation } from "./network-observations.mjs";
 export { validIP } from "./network-observations.mjs";
@@ -21,11 +22,22 @@ export function providerTransport(
   transport = fetch,
   env = {},
 ) {
+  const routed = openaiRoute(env, lease, trace.request_id, transport);
   return async (url, options) => {
     trace.upstream_attempted = 1;
-    const r = await transport(url, options);
-    trace.upstream_request_id = safe(r.headers?.get("x-request-id"));
-    trace.upstream_cf_ray = safe(r.headers?.get("cf-ray"));
+    const r = await routed(url, options);
+    trace.upstream_request_id = safe(
+      r.headers?.get(
+        env.OPENAI_TRANSPORT === "local"
+          ? "x-openai-request-id"
+          : "x-request-id",
+      ),
+    );
+    trace.upstream_cf_ray = safe(
+      r.headers?.get(
+        env.OPENAI_TRANSPORT === "local" ? "x-openai-cf-ray" : "cf-ray",
+      ),
+    );
     const sample =
       r.status === 403
         ? "provider_403"
@@ -36,7 +48,7 @@ export function providerTransport(
           : r.status === 101 && env.PROVIDER_DIAGNOSTICS_ENABLED === "true"
             ? "upstream_accepted"
             : null;
-    if (sample && ctx)
+    if (sample && ctx && env.OPENAI_TRANSPORT !== "local")
       ctx.waitUntil(
         (async () => {
           const stamp = Math.floor(Date.now() / 1000),

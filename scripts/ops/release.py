@@ -40,6 +40,11 @@ def main():
     parser.add_argument(
         "--deploy", action="store_true", help="Without this flag only checks run"
     )
+    parser.add_argument(
+        "--openai-transport",
+        choices=["worker", "local"],
+        help="Override OpenAI egress route for this deployment",
+    )
     args = parser.parse_args()
     os.chdir(ROOT)
     os.umask(0o077)
@@ -158,8 +163,14 @@ def main():
                     "--var",
                     "RELEASE_SHA:" + sha,
                 ]
+                + (
+                    ["--var", "OPENAI_TRANSPORT:" + args.openai_transport]
+                    if args.openai_transport
+                    else []
+                )
                 + config,
             )
+            manifest["openai_transport_override"] = args.openai_transport
             match = re.search(
                 r"Current Version ID:\s*([a-f0-9-]+)",
                 (directory / "deploy.log").read_text(),

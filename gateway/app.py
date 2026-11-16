@@ -7,6 +7,7 @@ from gateway.errors import Denied
 from gateway.lifecycle import lifespan
 from gateway.middleware import security
 from gateway.router import router as inference_router
+from gateway.openai_relay import router as openai_relay_router
 from gateway.codec import router as codec_router
 from gateway.network_diagnostics import router as diagnostic_router
 from gateway.settings import Settings, settings
@@ -48,6 +49,7 @@ def create_app(config: Settings = settings) -> FastAPI:
         from accounts.router import router as accounts_router
 
         app.include_router(accounts_router)
+    app.include_router(openai_relay_router)
     app.include_router(codec_router)
     app.include_router(diagnostic_router)
     app.include_router(inference_router)

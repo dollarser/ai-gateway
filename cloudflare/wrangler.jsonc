@@ -19,6 +19,7 @@
     "ACCOUNT_ORIGIN": "https://accounts.hilex.me",
     "API_HOST": "api.hilex.me",
     "LOCAL_MODELS_ENABLED": "false",
+    "OPENAI_TRANSPORT": "local",
     "PROVIDER_DIAGNOSTICS_ENABLED": "false",
     "EMAIL_VERIFICATION_ENABLED": "true",
   },

@@ -76,7 +76,10 @@ export async function providerFailure(response, kind) {
   } catch {}
   const e = providerEventError(value, response.status, kind);
   e.validation_hint = schemaValidationHint(value?.message);
-  e.upstream_request_id = safe(response.headers?.get("x-request-id"));
+  e.upstream_request_id = safe(
+    response.headers?.get("x-openai-request-id") ??
+      response.headers?.get("x-request-id"),
+  );
   const retry = response.headers?.get("retry-after");
   if (e.retryable && /^\d{1,4}$/.test(retry ?? ""))
     e.retry_after = Math.min(3600, Math.max(1, Number(retry)));

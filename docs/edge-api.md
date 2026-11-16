@@ -1,8 +1,28 @@
-# API 边缘直连与语音路径
+# API 边缘认证与可选 OpenAI 出站路径
 
 `api.hilex.me/*` 由账号 Worker 的 Route 接入，底层 DNS 继续保留已有 Tunnel CNAME，作为受保护的本机源站。账号域名仍为 accounts.hilex.me。客户端域名、凭证、模型 ID 和请求格式保持兼容。
 
-## 调用链
+## OpenAI 出站模式
+
+生产默认 `OPENAI_TRANSPORT=local`：客户端 → Worker（认证、限频、预留额度）→ Tunnel → 本机私有转发 → OpenAI → Worker（流式处理、结算）→ 客户端。覆盖 Chat Completions、Responses、ASR HTTP/SSE 和 Realtime 合成；合成的 Realtime 协议及 PCM 转换仍由 Worker 控制。本机仅转发，不再次查询 D1，不改变客户端协议和额度。
+
+保留 `OPENAI_TRANSPORT=worker`：Worker 直接请求 OpenAI；下面表格描述此模式。两种模式都不会自动失败重试或切换出口，避免重复生成和计费。`GET https://api.hilex.me/healthz` 的 `openai_transport` 字段可确认部署模式。
+
+```bash
+# 常规发布默认采用 cloudflare/wrangler.jsonc 的配置（目前 local）
+.venv-accounts/bin/python -m scripts.ops.release --deploy
+# 显式选择本机或保留的 Worker 直连模式
+.venv-accounts/bin/python -m scripts.ops.release --deploy --openai-transport local
+.venv-accounts/bin/python -m scripts.ops.release --deploy --openai-transport worker
+```
+
+部署参数只覆盖本次发布；要持续保留模式，应修改并提交 wrangler.jsonc 的 `OPENAI_TRANSPORT`。直接 Wrangler 部署也可传 `--var OPENAI_TRANSPORT:worker`。旧配置缺省值为 worker，未知值拒绝调用。
+
+本机必须运行当前版本网关及 cloudflared，设置 `GATEWAY_EDGE_ONLY=1`，且 `ACCOUNTS_WORKER_SECRET` 与 Worker `INTERNAL_SECRET` 一致。`/__openai/v1/*` 仅允许固定 OpenAI 路径；拒绝公网用户凭证、错误内部密钥和非回环连接，不提供任意 URL 转发。HTTP、multipart、SSE、WebSocket 保持流式；提供方错误码原样返回给 Worker 统一处理。网络结果未知保留预留用量，不伪装成提供方明确拒绝而退款。
+
+OpenAI 密钥仍持久存于 Worker Secret，本机只短暂在内存使用。OpenAI 出站仅构造必要请求头，不携带用户凭据、IP 转发头或内部密钥。local 模式增加本机可用性依赖；实际出口由本机网络决定，不保证上游地区判定一定通过。旧 Worker 参考出口诊断不适用于 local 模式，自动抽样停用，手动 Worker 探测不能代表本机 OpenAI 出口。
+
+## worker 模式调用链
 
 | 请求 | 实际路径 | 是否需要本机 |
 |---|---|---|
