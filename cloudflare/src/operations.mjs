@@ -101,12 +101,20 @@ export async function monitor(store) {
 export async function maintenance(store) {
   const ts = now(),
     cutoff = ts - 90 * 86400;
-  const eligible =
-    "ended IS NOT NULL AND started<" +
+  const unlinked =
+    "NOT EXISTS(SELECT 1 FROM luna_usage l WHERE l.lease=r.id) AND NOT EXISTS(SELECT 1 FROM audio_usage a WHERE a.lease=r.id) AND NOT EXISTS(SELECT 1 FROM quota_adjustments q WHERE q.lease=r.id)";
+  const ids =
+    "SELECT r.id FROM requests r WHERE r.ended<" +
     Math.floor(cutoff) +
-    " AND id NOT IN(SELECT lease FROM luna_usage) AND id NOT IN(SELECT lease FROM audio_usage) AND id NOT IN(SELECT lease FROM quota_adjustments)";
+    " AND " +
+    unlinked +
+    " UNION SELECT r.id FROM requests r WHERE r.path='/v1/models' AND r.ended IS NOT NULL AND r.day<'" +
+    day() +
+    "' AND " +
+    unlinked +
+    " LIMIT 500";
   const selected =
-    "SELECT * FROM requests WHERE " + eligible + " ORDER BY started LIMIT 500";
+    "SELECT * FROM requests WHERE id IN(" + ids + ") ORDER BY started";
   await store.db.batch([
     store.stmt(
       "DELETE FROM access_tokens WHERE hash IN(SELECT hash FROM access_tokens WHERE expires<? LIMIT 1000)",

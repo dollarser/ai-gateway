@@ -115,3 +115,96 @@ class PublicAssetsTests(unittest.TestCase):
             self.assertEqual(
                 len(list(output.rglob("*"))), 11
             )  # static dir + 8 files + HTML + headers
+
+
+class WriteReductionTests(unittest.TestCase):
+    def database(self, through="0017"):
+        db = sqlite3.connect(":memory:")
+        for file in sorted((ROOT / "cloudflare/migrations").glob("*.sql")):
+            if file.name[:4] > through:
+                break
+            db.executescript(file.read_text())
+        db.execute(
+            "INSERT INTO users(username,password,role,services,rpm,daily_requests,concurrency,created,luna_monthly_tokens) VALUES('write-fixture','unused','user','[\"qwen\"]',0,0,10,0,10000000)"
+        )
+        return db
+
+    def test_legacy_cost_normalization_and_noop_settlement(self):
+        db = self.database()
+        try:
+            uid = db.execute("SELECT id FROM users").fetchone()[0]
+            db.execute(
+                "INSERT INTO requests(id,user_id,service,path,started,day) VALUES('legacy-write',?,'qwen','/v1/chat/completions',unixepoch(),'2026-11-16')",
+                (uid,),
+            )
+            db.execute(
+                "INSERT INTO luna_usage(lease,user_id,month,reserved_tokens,charged_tokens,prompt_tokens,completion_tokens) VALUES('legacy-write',?,'2026-11',100,100,50,50)",
+                (uid,),
+            )
+            self.assertEqual(
+                db.execute("SELECT cost_nanos,settled FROM luna_spend").fetchone(),
+                (31250, 0),
+            )
+            db.execute(
+                "UPDATE luna_usage SET charged_tokens=30,settled=1,prompt_tokens=20,completion_tokens=10 WHERE lease='legacy-write'"
+            )
+            self.assertEqual(
+                db.execute("SELECT cost_nanos,settled FROM luna_spend").fetchone(),
+                (7000, 1),
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT cost_nanos,reserved_cost_nanos FROM luna_spend_totals"
+                ).fetchone(),
+                (7000, 0),
+            )
+            before = db.total_changes
+            db.execute(
+                "UPDATE luna_usage SET settled=1,prompt_tokens=20,completion_tokens=10,charged_cost_nanos=7000 WHERE lease='legacy-write'"
+            )
+            self.assertEqual(
+                db.total_changes - before, 1
+            )  # only the explicitly requested usage update
+        finally:
+            db.close()
+
+    def test_catalog_migration_preserves_today_inflight_and_adjustment_linked_records(
+        self,
+    ):
+        db = self.database()
+        try:
+            uid = db.execute("SELECT id FROM users").fetchone()[0]
+            for name, ended, day in [
+                ("archive", 1, "2000-01-01"),
+                ("inflight", None, "2000-01-01"),
+                ("today", 1, db.execute("SELECT date('now','+8 hours')").fetchone()[0]),
+                ("protected", 1, "2000-01-01"),
+            ]:
+                db.execute(
+                    "INSERT INTO requests(id,user_id,service,path,started,day,ended,status,response_bytes) VALUES(?,?,'qwen','/v1/models',0,?,?,200,12)",
+                    (name, uid, day, ended),
+                )
+            db.execute(
+                "INSERT INTO quota_adjustments(id,kind,lease,actor,user_id,previous_units,new_units,reason,created) VALUES('protect','luna','protected',?,?,1,1,'fixture',0)",
+                (uid, uid),
+            )
+            db.executescript(
+                (
+                    ROOT / "cloudflare/migrations/0018_compact_legacy_catalog.sql"
+                ).read_text()
+            )
+            self.assertEqual(
+                {r[0] for r in db.execute("SELECT id FROM requests")},
+                {"inflight", "today", "protected"},
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT total,response_bytes FROM request_history"
+                ).fetchone(),
+                (1, 12),
+            )
+            self.assertEqual(
+                db.execute("SELECT count(*) FROM quota_adjustments").fetchone()[0], 1
+            )
+        finally:
+            db.close()

@@ -111,7 +111,7 @@ export class Store {
         const results = await this.db.batch([
           insert,
           this.stmt(
-            "UPDATE registration_codes SET state='consumed' WHERE email_hash=? AND id=? AND changes()=1",
+            "UPDATE registration_codes SET state='consumed',code_hash='' WHERE email_hash=? AND id=? AND changes()=1",
             verification.emailHash,
             verification.id,
           ),
@@ -455,7 +455,7 @@ export class Store {
         ? "EXISTS(SELECT 1 FROM access_tokens a JOIN auth_families f ON f.id=a.family_id WHERE a.hash=? AND a.expires>? AND f.expires>? AND f.revoked=0)"
         : "EXISTS(SELECT 1 FROM keys WHERE hash=? AND revoked=0 AND expires>?)";
     const result = await this.run(
-      "INSERT INTO requests(id,user_id,key_id,service,path,started,day,auth_type) SELECT ?,?,?,?,?,?,?,? WHERE " +
+      "INSERT INTO requests(id,user_id,key_id,service,path,started,day,auth_type,client_ip,user_agent,client_version,device_id) SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE " +
         check,
       id,
       u.id,
@@ -465,19 +465,15 @@ export class Store {
       ts,
       day(),
       auth,
+      metadata.client_ip ?? null,
+      metadata.user_agent ?? null,
+      metadata.client_version ?? null,
+      metadata.device_id ?? null,
       await digest(raw),
       ts,
       ...(auth === "access_token" ? [ts] : []),
     );
     if (!result.meta.changes) throw new Denied(401, "凭证已失效");
-    await this.run(
-      "UPDATE requests SET client_ip=?,user_agent=?,client_version=?,device_id=? WHERE id=?",
-      metadata.client_ip ?? null,
-      metadata.user_agent ?? null,
-      metadata.client_version ?? null,
-      metadata.device_id ?? null,
-      id,
-    );
     return id;
   }
   async remaining(lease) {
@@ -524,16 +520,12 @@ export class Store {
     const numeric = (k) =>
       Number.isSafeInteger(t[k]) && t[k] >= 0 ? t[k] : null;
     await this.run(
-      "UPDATE requests SET model=?,provider=?,protocol=?,failure_stage=?,error_code=?,upstream_error_code=?,upstream_error_param=?,upstream_request_id=?,compatibility=?,ingress_colo=?,client_country=?,ingress_ray=?,upstream_cf_ray=?,release_sha=?,upstream_attempted=?,upstream_status=?,duration_ms=?,first_byte_ms=? WHERE id=? AND ended IS NULL",
+      "UPDATE requests SET model=?,provider=?,protocol=?,failure_stage=?,error_code=?,upstream_error_code=?,upstream_error_param=?,upstream_request_id=?,compatibility=?,ingress_colo=?,client_country=?,ingress_ray=?,upstream_cf_ray=?,release_sha=?,upstream_attempted=?,upstream_status=?,duration_ms=?,first_byte_ms=?,ended=?,status=?,response_bytes=?,prompt_tokens=?,completion_tokens=?,request_id=?,client_request_id=?,helix_turn_id=?,helix_model_call_id=?,upstream_response_id=? WHERE id=? AND ended IS NULL",
       ...extra,
       t.upstream_attempted === 1 ? 1 : 0,
       numeric("upstream_status"),
       numeric("duration_ms"),
       numeric("first_byte_ms"),
-      b.lease,
-    );
-    await this.run(
-      "UPDATE requests SET ended=?,status=?,response_bytes=?,prompt_tokens=?,completion_tokens=?,request_id=?,client_request_id=?,helix_turn_id=?,helix_model_call_id=?,upstream_response_id=? WHERE id=? AND ended IS NULL",
       now(),
       b.status,
       b.size ?? 0,

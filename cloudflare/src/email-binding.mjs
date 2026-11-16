@@ -44,7 +44,7 @@ export async function bindAccountEmail(store, env, user, rawEmail, code) {
         ts,
       ),
       store.stmt(
-        "UPDATE account_email_codes SET state='consumed' WHERE user_id=? AND id=? AND changes()=1",
+        "UPDATE account_email_codes SET state='consumed',code_hash='' WHERE user_id=? AND id=? AND changes()=1",
         user.id,
         proof.id,
       ),

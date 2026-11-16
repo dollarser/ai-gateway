@@ -686,16 +686,16 @@ export default {
             now() - 920,
           ),
           store.stmt(
-            "DELETE FROM registration_codes WHERE email_hash IN (SELECT email_hash FROM registration_codes WHERE expires<? LIMIT 500)",
-            now() - 86400,
+            "DELETE FROM registration_codes WHERE email_hash IN (SELECT email_hash FROM registration_codes WHERE expires<? OR state IN ('consumed','failed') LIMIT 500)",
+            now(),
           ),
           store.stmt(
             "DELETE FROM email_send_attempts WHERE id IN (SELECT id FROM email_send_attempts WHERE ts<? LIMIT 1000)",
             now() - 3600,
           ),
           store.stmt(
-            "DELETE FROM account_email_codes WHERE user_id IN(SELECT user_id FROM account_email_codes WHERE expires<? LIMIT 500)",
-            now() - 86400,
+            "DELETE FROM account_email_codes WHERE user_id IN(SELECT user_id FROM account_email_codes WHERE expires<? OR state IN ('consumed','failed') LIMIT 500)",
+            now(),
           ),
           store.stmt("DELETE FROM login_attempts WHERE ts<?", now() - 300),
           store.stmt(

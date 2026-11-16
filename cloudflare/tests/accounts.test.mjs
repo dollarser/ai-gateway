@@ -244,6 +244,15 @@ test("registration, login, cookie CSRF and key ownership", async () => {
   assert.equal(r.status, 201);
   assert.ok(r.body.user.email_verified_at);
   assert.equal(
+    (
+      await new Store(db).first(
+        "SELECT code_hash FROM registration_codes WHERE email_hash=?",
+        await digest(email),
+      )
+    ).code_hash,
+    "",
+  );
+  assert.equal(
     (await call("/auth/registration-info")).body.email_verification,
     true,
   );
@@ -1792,6 +1801,13 @@ test("Maintenance preserves live refresh replay evidence and financial ledgers w
     old + 1,
   );
   await maintenance(store);
+  const historical = await call(
+    "/admin/overview?day=2026-01-01&q=retention-test",
+    undefined,
+    { access: admin },
+  );
+  assert.equal(historical.status, 200);
+  assert.equal(historical.body.users.find((u) => u.id === uid).day_requests, 1);
   assert.equal(
     await store.first("SELECT * FROM requests WHERE id='old-archive'"),
     null,
@@ -3173,4 +3189,55 @@ test("Global spend summary tables remain equal to ledger detail after quota, adj
       ),
       { used: row.used, reserved: row.reserved },
     );
+});
+
+test("Request completion is one atomic update and duplicate finish cannot rewrite metadata or counters", async () => {
+  const store = new Store(db),
+    { uid, key } = await lunaUser("atomic-request-finish");
+  const lease = await store.acquire(key, "qwen", "/v1/chat/completions", {
+    client_ip: "203.0.113.8",
+    client_version: "fixture/1",
+    device_id: "fixture-device",
+  });
+  assert.equal(
+    (await store.first("SELECT client_version FROM requests WHERE id=?", lease))
+      .client_version,
+    "fixture/1",
+  );
+  const original = store.run.bind(store);
+  let updates = 0;
+  store.run = (q, ...args) => {
+    if (q.startsWith("UPDATE requests")) updates++;
+    return original(q, ...args);
+  };
+  await store.finish({
+    lease,
+    status: 200,
+    size: 12,
+    prompt_tokens: 7,
+    completion_tokens: 3,
+    trace: {
+      model: "gpt-6-luna",
+      provider: "openai",
+      request_id: "atomic-finish-fixture",
+      duration_ms: 10,
+    },
+  });
+  assert.equal(updates, 1);
+  await store.finish({
+    lease,
+    status: 500,
+    prompt_tokens: 99,
+    trace: { model: "wrong" },
+  });
+  const r = await store.first(
+    "SELECT status,model,prompt_tokens,response_bytes FROM requests WHERE id=?",
+    lease,
+  );
+  assert.deepEqual(r, {
+    status: 200,
+    model: "gpt-6-luna",
+    prompt_tokens: 7,
+    response_bytes: 12,
+  });
 });
