@@ -611,11 +611,15 @@
       configured: false,
       deliveries: [],
     };
-    $("notification-status").textContent = notifications.configured
-      ? "外部告警：已配置 HTTPS Webhook（" +
-        notifications.destination_host +
-        "）"
-      : "外部告警：未配置接收端，目前仅后台和 Worker 日志可见";
+    $("notification-status").textContent =
+      "默认接收位置：站内告警中心 " +
+      (notifications.destination_url ?? "https://accounts.hilex.me/#alerts") +
+      (notifications.external_configured
+        ? "；另已配置外部 HTTPS Webhook（" +
+          notifications.destination_host +
+          "）"
+        : "；未启用外部推送");
+    await refreshInboxBadge();
     $("test-notification").disabled = !notifications.configured;
     $("notification-deliveries").textContent = JSON.stringify(
       notifications.deliveries,
@@ -663,7 +667,7 @@
     run(async () => {
       await api("/admin/notifications/test", "POST", {});
       await loadOperations();
-      message("测试通知已处理，请查看投递状态");
+      message("测试通知已处理，可到站内告警中心查看");
     }),
   );
   $("load-operations").addEventListener("click", run(loadOperations));
@@ -704,5 +708,125 @@
       await loadOperations();
     }),
   );
-  window.adminUI = { load };
+  const inboxState = { page: 1, items: [], timer: null };
+  const alertNames = {
+    provider_region_restricted: "上游地区限制",
+    provider_error_rate: "模型错误率偏高",
+    pending_usage: "存在待核对额度",
+    high_latency: "请求延迟偏高",
+    slow_first_audio: "首音频响应偏慢",
+    luna_budget: "Luna 预算接近上限",
+    test: "测试通知",
+  };
+  function inboxBadge(n) {
+    $("alert-badge").textContent = n > 999 ? "999+" : String(n);
+    $("alert-badge").hidden = !n;
+  }
+  function startInboxPolling() {
+    if (inboxState.timer) return;
+    inboxState.timer = setInterval(() => {
+      if (user?.role !== "admin" || user.must_change || document.hidden) return;
+      refreshInboxBadge().catch(() => {});
+    }, 60000);
+  }
+  async function refreshInboxBadge() {
+    if (user?.role !== "admin" || user.must_change) return;
+    try {
+      const data = await api("/admin/notifications?state=unread");
+      inboxBadge(data.unread);
+      startInboxPolling();
+    } catch (error) {
+      if (error.code === "request_rejected") {
+        clearInterval(inboxState.timer);
+        inboxState.timer = null;
+      }
+      throw error;
+    }
+  }
+  async function markInboxRead(ids) {
+    if (!ids.length) return;
+    await api("/admin/notifications/read", "POST", { ids });
+    inboxState.page = 1;
+    await loadInbox();
+  }
+  async function loadInbox() {
+    if (user?.role !== "admin" || user.must_change) return;
+    const state = $("inbox-filter").value,
+      data = await api(
+        "/admin/notifications?" +
+          new URLSearchParams({ page: String(inboxState.page), state }),
+      );
+    inboxState.items = data.items;
+    inboxBadge(data.unread);
+    startInboxPolling();
+    $("inbox-summary").textContent =
+      "共 " + num(data.total) + " 条通知，未读 " + num(data.unread) + " 条";
+    $("inbox-list").replaceChildren();
+    for (const item of data.items) {
+      const card = document.createElement("article"),
+        title = document.createElement("h3"),
+        meta = document.createElement("p"),
+        detail = document.createElement("pre");
+      card.className = "notification-card" + (item.read_at ? "" : " unread");
+      title.textContent =
+        (item.read_at ? "" : "未读 · ") +
+        (alertNames[item.kind] ?? "运行通知") +
+        (item.state === "resolved" ? " · 已恢复" : "");
+      meta.textContent = new Date(item.created * 1000).toLocaleString();
+      detail.textContent = JSON.stringify(item.payload?.details ?? {}, null, 2);
+      card.append(title, meta, detail);
+      if (!item.read_at)
+        card.append(action("标为已读", () => markInboxRead([item.id])));
+      $("inbox-list").append(card);
+    }
+    if (!data.items.length) {
+      const p = document.createElement("p");
+      p.textContent = "暂无匹配通知";
+      $("inbox-list").append(p);
+    }
+    $("inbox-page").textContent = "第 " + data.page + " 页";
+    $("inbox-prev").disabled = data.page <= 1;
+    const total = state === "unread" ? data.unread : data.total;
+    $("inbox-next").disabled = data.page * data.page_size >= total;
+    $("read-inbox-page").disabled = !data.items.some((n) => !n.read_at);
+  }
+  $("refresh-inbox").addEventListener("click", run(loadInbox));
+  $("inbox-filter").addEventListener(
+    "change",
+    run(async () => {
+      inboxState.page = 1;
+      await loadInbox();
+    }),
+  );
+  $("read-inbox-page").addEventListener(
+    "click",
+    run(() =>
+      markInboxRead(
+        inboxState.items.filter((n) => !n.read_at).map((n) => n.id),
+      ),
+    ),
+  );
+  $("inbox-prev").addEventListener(
+    "click",
+    run(async () => {
+      inboxState.page = Math.max(1, inboxState.page - 1);
+      await loadInbox();
+    }),
+  );
+  $("inbox-next").addEventListener(
+    "click",
+    run(async () => {
+      inboxState.page++;
+      await loadInbox();
+    }),
+  );
+  $("show-operational-alerts").addEventListener(
+    "click",
+    run(async () => {
+      await tab("admin");
+      $("operations-panel").open = true;
+      $("operations-panel").scrollIntoView({ behavior: "smooth" });
+    }),
+  );
+  window.adminUI = { load, loadInbox };
 })();

@@ -1,5 +1,6 @@
 import {
   notificationStatus,
+  siteInbox,
   enqueueTest,
   deliverNotifications,
 } from "./notifications.mjs";
@@ -160,6 +161,51 @@ export async function operationsRoute(
 ) {
   const p = new URL(request.url).pathname,
     m = request.method;
+  if (p === "/admin/notifications" && m === "GET") {
+    const u = new URL(request.url),
+      page = Number(u.searchParams.get("page") ?? 1),
+      state = u.searchParams.get("state") ?? "all";
+    if (
+      !Number.isSafeInteger(page) ||
+      page < 1 ||
+      page > 1000 ||
+      !["all", "unread"].includes(state)
+    )
+      throw new Denied(422, "通知筛选无效");
+    return reply(
+      await siteInbox(store, user, { page, unread: state === "unread" }),
+    );
+  }
+  if (p === "/admin/notifications/read" && m === "POST") {
+    const b = await readBody(request);
+    if (
+      !b ||
+      Object.keys(b).length !== 1 ||
+      !Array.isArray(b.ids) ||
+      !b.ids.length ||
+      b.ids.length > 100 ||
+      new Set(b.ids).size !== b.ids.length ||
+      b.ids.some(
+        (id) => typeof id !== "string" || !/^[a-zA-Z0-9_.:-]{1,128}$/.test(id),
+      )
+    )
+      throw new Denied(422, "通知 ID 无效");
+    const marks = b.ids.map(() => "?").join(",");
+    const count = await store.first(
+      "SELECT count(*) n FROM notification_inbox WHERE id IN(" + marks + ")",
+      ...b.ids,
+    );
+    if (count.n !== b.ids.length) throw new Denied(404, "部分通知已过期");
+    await store.run(
+      "INSERT OR IGNORE INTO notification_reads(notification_id,user_id,read_at) SELECT id,?,? FROM notification_inbox WHERE id IN(" +
+        marks +
+        ")",
+      user.id,
+      now(),
+      ...b.ids,
+    );
+    return reply(await siteInbox(store, user));
+  }
   if (p === "/admin/operations" && m === "GET")
     return reply({
       ...(await globalUsage(store)),
@@ -250,7 +296,7 @@ export async function operationsRoute(
     )
       throw new Denied(422, "测试通知不接受自定义内容");
     if (!(await notificationStatus(store, env)).configured)
-      throw new Denied(409, "尚未配置外部告警接收端");
+      throw new Denied(409, "通知接收端未就绪");
     const id = await enqueueTest(store, user);
     if (!id) throw new Denied(429, "测试通知每分钟最多一次");
     await deliverNotifications(store, env);

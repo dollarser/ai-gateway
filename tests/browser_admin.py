@@ -42,6 +42,7 @@ policy = {"enabled": True, "ip_hourly": 5, "global_hourly": 100, "global_minute"
 alert_state = ["open"]
 notification_enabled = [False]
 notification_deliveries = []
+site_notices = []
 mutations = []
 errors = []
 answers = []
@@ -95,7 +96,9 @@ def handle(route):
             {
                 "limits": limits,
                 "notifications": {
-                    "configured": notification_enabled[0],
+                    "configured": True,
+                    "external_configured": notification_enabled[0],
+                    "destination_url": "https://accounts.hilex.me/#alerts",
                     "destination_host": "alerts.example.test",
                     "deliveries": notification_deliveries,
                 },
@@ -179,8 +182,41 @@ def handle(route):
                 "limitations": ["reference only"],
             }
         )
+    if path == "/admin/notifications":
+        state = urllib.parse.parse_qs(urllib.parse.urlsplit(req.url).query).get(
+            "state", ["all"]
+        )[0]
+        unread = sum(n["read_at"] is None for n in site_notices)
+        return respond(
+            {
+                "total": len(site_notices),
+                "unread": unread,
+                "page": 1,
+                "page_size": 30,
+                "items": [
+                    n for n in site_notices if state != "unread" or n["read_at"] is None
+                ],
+            }
+        )
+    if path == "/admin/notifications/read":
+        for notice in site_notices:
+            if notice["id"] in data["ids"]:
+                notice["read_at"] = 1794700000
+        return respond({"ok": True})
     if path == "/admin/notifications/test":
-        notification_deliveries.append({"status": "sent", "kind": "test"})
+        notification_deliveries.append(
+            {"status": "sent", "kind": "test", "channel": "in_app"}
+        )
+        site_notices.append(
+            {
+                "id": "test-site-message",
+                "kind": "test",
+                "state": "open",
+                "created": 1794700000,
+                "read_at": None,
+                "payload": {"details": {}, "kind": "test"},
+            }
+        )
         return respond({"id": "test-delivery"})
     if path == "/admin/requests":
         return respond(
@@ -346,7 +382,7 @@ with sync_playwright() as p:
     page.locator("#operational-alerts button").click()
     page.wait_for_timeout(100)
     assert alert_state[0] == "acknowledged"
-    assert page.locator("#test-notification").is_disabled()
+    assert not page.locator("#test-notification").is_disabled()
     page.locator("#network-panel>summary").click()
     page.locator("#network-stats-form button").click()
     page.locator("#network-groups tr").nth(1).wait_for()
@@ -370,6 +406,18 @@ with sync_playwright() as p:
     page.locator("#test-notification").click()
     page.wait_for_timeout(100)
     assert notification_deliveries and notification_deliveries[0]["status"] == "sent"
+    page.locator("#alerts-tab").click()
+    page.locator("#inbox-list article").wait_for()
+    assert (
+        page.url.endswith("#alerts")
+        and "未读 1 条" in page.locator("#inbox-summary").inner_text()
+    )
+    page.locator("#inbox-list button").click()
+    page.wait_for_timeout(100)
+    assert "未读 0 条" in page.locator("#inbox-summary").inner_text()
+    page.reload()
+    page.locator("#alerts-panel").wait_for(state="visible")
+    assert "未读 0 条" in page.locator("#inbox-summary").inner_text()
     assert not errors, errors
     (ROOT / "artifacts").mkdir(exist_ok=True)
     page.screenshot(path=str(ROOT / "artifacts/admin-desktop.png"), full_page=True)

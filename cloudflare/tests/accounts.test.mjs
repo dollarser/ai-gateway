@@ -2136,7 +2136,7 @@ test("Alert deliveries are deduplicated, signed, retried and expose only safe st
   assert.equal(status.destination_host, "alerts.example.test");
   assert.equal(
     (await call("/admin/notifications/test", {}, { access: admin })).status,
-    409,
+    200,
   );
 });
 
@@ -2195,5 +2195,97 @@ test("Permanent webhook failures stop retries and acknowledgement expires after 
       )
     ).state,
     "open",
+  );
+});
+
+test("Project inbox is the default destination without self HTTP calls and read state is per administrator", async () => {
+  const { deliverNotifications, notificationStatus } =
+      await import("../src/notifications.mjs"),
+    store = new Store(db),
+    ts = Date.now() / 1000;
+  const status = await notificationStatus(store, {});
+  assert.equal(status.configured, true);
+  assert.equal(status.external_configured, false);
+  assert.equal(status.destination_url, "https://accounts.hilex.me/#alerts");
+  await store.run(
+    "INSERT INTO alert_deliveries(id,kind,episode,event_state,created,payload) VALUES('site-message-fixture','test',0,'open',?,?)",
+    ts,
+    JSON.stringify({
+      kind: "test",
+      details: { count: 1 },
+      dashboard: "https://accounts.hilex.me/#alerts",
+    }),
+  );
+  let posts = 0;
+  await deliverNotifications(store, {}, async () => {
+    posts++;
+    throw new Error("No HTTP for internal destination");
+  });
+  assert.equal(posts, 0);
+  const delivered = await store.first(
+    "SELECT status,channel FROM alert_deliveries WHERE id='site-message-fixture'",
+  );
+  assert.equal(delivered.status, "sent");
+  assert.equal(delivered.channel, "in_app");
+  assert.equal((await call("/admin/notifications")).status, 401);
+  const before = await call("/admin/notifications?state=unread", undefined, {
+    access: admin,
+  });
+  assert.ok(before.body.items.some((n) => n.id === "site-message-fixture"));
+  assert.equal(
+    (
+      await call(
+        "/admin/notifications/read",
+        { ids: ["site-message-fixture"] },
+        { access: admin },
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await call(
+        "/admin/notifications/read",
+        { ids: ["site-message-fixture"] },
+        { access: admin },
+      )
+    ).status,
+    200,
+  );
+  const after = await call("/admin/notifications?state=unread", undefined, {
+    access: admin,
+  });
+  assert.equal(after.body.unread, before.body.unread - 1);
+  const other = await store.createUser(
+    "inbox-admin-two",
+    "inbox-test-password",
+    { role: "admin", must_change: 0 },
+  );
+  const access = (
+    await store.login(
+      "inbox-admin-two",
+      "inbox-test-password",
+      "inbox-admin-ip",
+    )
+  ).body.access_token;
+  const theirs = await call("/admin/notifications?state=unread", undefined, {
+    access,
+  });
+  assert.ok(theirs.body.items.some((n) => n.id === "site-message-fixture"));
+  const normal = (
+    await store.login(
+      "network-normal",
+      "password-for-normal",
+      "inbox-normal-ip",
+    )
+  ).body.access_token;
+  assert.equal(
+    (await call("/admin/notifications", undefined, { access: normal })).status,
+    403,
+  );
+  assert.equal(
+    (await call("/admin/notifications/read", { ids: [] }, { access: admin }))
+      .status,
+    422,
   );
 });

@@ -1,6 +1,10 @@
-# 外部告警投递
+# 站内告警与外部投递
 
-默认未配置接收地址，不会向外发送。后台“全站预算、注册保护与告警”显示配置状态、投递记录和安全错误码；接收地址完整 URL 与签名密钥仅放 Worker Secret，不进入 D1、诊断包或前端。
+默认接收地址为 https://accounts.hilex.me/#alerts ，管理员登录后可查看站内告警、未读数量并逐条或按当前页标记已读。已读状态按管理员独立保存，不等于知悉故障；非管理员无权读取。站内投递直接写入 D1，不向自身发送 HTTP 请求，也不会产生邮件或手机推送。页面可见时每 60 秒刷新未读数量，告警检测由每 15 分钟的 Cron 执行。消息保留 30 天。
+
+GET /admin/notifications?page=1&state=all|unread 分页读取，每页 30 条；POST /admin/notifications/read 接收 {"ids":["投递ID"]}，一次最多 100 条。
+
+外部 Webhook 默认未配置，不会向外发送；配置后仍保留站内副本。后台“全站预算、注册保护与告警”显示配置状态、投递记录和安全错误码；接收地址完整 URL 与签名密钥仅放 Worker Secret，不进入 D1、诊断包或前端。
 
 当前支持通用 HTTPS JSON Webhook，适合自有告警接收服务。飞书/钉钉/企业微信等机器人的原生消息格式不同，不能直接把通用载荷当成它们的协议；需要在接收端适配或按指定渠道增加适配器。
 
@@ -19,7 +23,7 @@
 .venv-accounts/bin/python -m scripts.ops.configure_alerts --config .runtime/alert-webhook.json
 ```
 
-脚本仅安装 ALERT_WEBHOOK_URL 和可选 ALERT_WEBHOOK_SECRET，不打印值、不发送测试消息；未提供 secret 时保留现有签名配置。配置后管理员可点击“发送测试通知”，明确向已配置接收端发送合成消息。接收端未配置时按钮禁用。URL 必须为公共 HTTPS 端点；不支持本机/IP 字面量目标，不自动跟随重定向。
+脚本仅安装 ALERT_WEBHOOK_URL 和可选 ALERT_WEBHOOK_SECRET，不打印值、不发送测试消息；未提供 secret 时保留现有签名配置。配置后管理员可点击“发送测试通知”，明确向已配置接收端发送合成消息。未配置外部接收端时，测试消息仅投递到站内告警中心。URL 必须为公共 HTTPS 端点；不支持本机/IP 字面量目标，不自动跟随重定向。
 
 ## 接收协议
 
@@ -34,7 +38,7 @@ POST application/json，结构如下，details 仅包含允许的数值聚合信
   "episode": 1,
   "observed_at": "2026-11-16T00:00:00.000Z",
   "details": {"count": 2, "window_minutes": 15},
-  "dashboard": "https://accounts.hilex.me/"
+  "dashboard": "https://accounts.hilex.me/#alerts"
 }
 ```
 
@@ -45,4 +49,4 @@ POST application/json，结构如下，details 仅包含允许的数值聚合信
 - 同一告警事件最多每小时提醒一次；已知悉暂停提醒，持续异常满一小时会重新打开。恢复只对已送达过的事件发一次 resolved 通知；取消尚未发送的旧 open 消息，避免恢复后再补发过期告警。
 - 投递使用数据库租约避免并发处理同一记录。已完成/取消/达到重试上限的记录 30 天后分批清理。
 
-载荷不包含对话、音频、客户端 IP、账户、邮箱、设备、请求头或凭据。配置地址后开始发送真实运行告警；在接收地址未提供前，仍只保留后台和 Worker 日志。
+载荷不包含对话、音频、客户端 IP、账户、邮箱、设备、请求头或凭据。配置地址后开始发送真实运行告警；未配置外部地址时，使用站内告警中心和 Worker 日志。
