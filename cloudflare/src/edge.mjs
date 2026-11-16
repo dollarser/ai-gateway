@@ -1,3 +1,4 @@
+import { logInferenceFailure } from "./worker-logs.mjs";
 import {
   ingressDiagnostics,
   providerTransport,
@@ -215,6 +216,7 @@ async function track(response, store, lease, trace, ctx, start) {
   headers.set("X-Inference-Execution", "edge");
   headers.set("Cache-Control", "no-store");
   if (!response.body) {
+    logInferenceFailure(trace, null, response.status);
     await store.finish({ lease, status: response.status, size: 0, trace });
     return new Response(null, { status: response.status, headers });
   }
@@ -264,6 +266,7 @@ async function track(response, store, lease, trace, ctx, start) {
       try {
         accept(JSON.parse(body));
       } catch {}
+    logInferenceFailure(trace, null, status);
     await store.finish({
       lease,
       status,
@@ -363,6 +366,7 @@ export async function edgeAPI(request, env, ctx) {
     ...ingressDiagnostics(request),
     release_sha: env.RELEASE_SHA ?? null,
     request_id: id,
+    path,
     provider: "edge",
     protocol: "http",
     failure_stage: "authentication",
@@ -716,9 +720,8 @@ export async function edgeAPI(request, env, ctx) {
         : status < 500
           ? "request_rejected"
           : "edge_unavailable");
-    if (!(e instanceof Denied))
-      console.error("edge_request_failed", e.name, id);
     trace.duration_ms = Math.round(performance.now() - start);
+    logInferenceFailure(trace, e, status);
     if (lease) await store.finish({ lease, status, size: 0, trace });
     return json(
       {

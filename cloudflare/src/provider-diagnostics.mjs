@@ -1,3 +1,4 @@
+import { writeWorkerLog } from "./worker-logs.mjs";
 import { collectObservation } from "./network-observations.mjs";
 export { validIP } from "./network-observations.mjs";
 const safe = (s) =>
@@ -61,7 +62,10 @@ export function providerTransport(
           }
           await collectObservation(store, lease, trace, env, transport, sample);
         })().catch(() => {
-          console.error("network_observation_write_failed");
+          writeWorkerLog("network_observation_failure", {
+            request_id: trace.request_id,
+            error_code: "observation_write_failed",
+          });
         }),
       );
     return r;

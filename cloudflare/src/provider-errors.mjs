@@ -1,3 +1,4 @@
+import { schemaValidationHint } from "./worker-logs.mjs";
 import { Denied } from "./store.mjs";
 const safe = (v) =>
   typeof v === "string" && /^[a-zA-Z0-9_.\[\]-]{1,128}$/.test(v) ? v : null;
@@ -74,6 +75,7 @@ export async function providerFailure(response, kind) {
     value = JSON.parse(text)?.error;
   } catch {}
   const e = providerEventError(value, response.status, kind);
+  e.validation_hint = schemaValidationHint(value?.message);
   e.upstream_request_id = safe(response.headers?.get("x-request-id"));
   const retry = response.headers?.get("retry-after");
   if (e.retryable && /^\d{1,4}$/.test(retry ?? ""))

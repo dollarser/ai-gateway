@@ -3241,3 +3241,34 @@ test("Request completion is one atomic update and duplicate finish cannot rewrit
     response_bytes: 12,
   });
 });
+
+test("Operational console alerts omit unchanged open episodes and log a resolved episode reopening", async () => {
+  const { operationalAlert } = await import("../src/operations.mjs");
+  const store = new Store(db),
+    kind = "worker-log-episode-fixture",
+    ts = Date.now() / 1000;
+  await store.run(
+    "INSERT INTO operational_alerts(kind,first_seen,last_seen,occurrences,details) VALUES(?,?,?,3,'{}')",
+    kind,
+    ts - 60,
+    ts - 30,
+  );
+  const old = console.warn,
+    logs = [];
+  console.warn = (...parts) => logs.push(parts.join(" "));
+  try {
+    await operationalAlert(store, kind, { count: 2 });
+    assert.equal(logs.length, 0);
+    await store.run(
+      "UPDATE operational_alerts SET state='resolved' WHERE kind=?",
+      kind,
+    );
+    await operationalAlert(store, kind, { count: 3 });
+    assert.equal(logs.length, 1);
+    const event = JSON.parse(logs[0]);
+    assert.equal(event.event, "operational_alert");
+    assert.equal(event.episode, 2);
+  } finally {
+    console.warn = old;
+  }
+});

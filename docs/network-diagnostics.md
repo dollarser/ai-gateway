@@ -46,3 +46,23 @@
 均要求管理员登录凭证；Cookie 写操作保留 CSRF 校验，普通账号或模型 Key 无权访问。不要将原始凭据或模型内容写入排障包。
 
 迁移顺序：先备份并应用 0010_network_observability.sql，准备并确认源站就绪，再发布 Worker。标准发布入口已按此顺序执行。
+
+## Worker失败诊断日志
+
+必要失败事件写入Cloudflare Worker日志，不新增D1日志行；D1仍保留请求状态、财务账本、必要审计和原告警状态。自动调用日志保持关闭，不记录每次成功请求、正常匿名401/403、普通额度拒绝或主动取消，也不逐块记录SSE/音频。
+
+Worker事件使用schema=ai-gateway-log-v1：
+
+| event | 内容 |
+|---|---|
+| inference_failure | 请求ID、路径、模型、阶段、状态、提供方请求ID/错误代码/参数位置及固定诊断分类；包含流中断 |
+| account_internal_failure | 账号服务内部异常的生成请求ID、路由族、异常类别；不记录原异常消息/SQL/堆栈 |
+| mail_delivery_failure | 注册或绑定用途、随机诊断ID、发信通道类别、固定SMTP错误分类；不含收件邮箱或授权码 |
+| network_observation_failure | 网络参考探测写入失败及关联请求ID |
+| operational_alert | 新告警或已恢复后再次发生的事件；持续相同事件不重复输出，D1告警状态及通知流程照常更新 |
+
+上游指明 tools[n].parameters 或 tools[n].function.parameters 时，失败日志附带相应工具的序号、技术名称、strict、Schema结构摘要及validation_hint。结构最多20个节点、深度5，每节点字段列表有上限；单事件最大8KiB，截断有标记。保留类型、properties/required字段名、items是否存在、additionalProperties形态等，用于定位Schema错误；不保存聊天、音频、参数实参、描述、默认值、示例、枚举值、正则内容、引用字符串或原始上游错误正文。未识别的上游说明只保留通用分类，不冒险透传自由文本。
+
+在Cloudflare控制台 Workers & Pages → hilex-accounts → Observability → Logs，根据event或request_id筛选；可进一步按upstream_request_id关联供应商支持。即时排查也可用 `wrangler tail hilex-accounts --format=json`，但实时Tail可能附带平台请求元数据，不应把整份Tail输出公开上传。原始请求Schema不回填到历史日志，此功能仅覆盖新事件。
+
+日志写入消耗少量Worker CPU及独立Worker日志额度，不是零消耗，但不增加D1写入。当前免费日志额度/保留期以[官方计费](https://developers.cloudflare.com/workers/platform/pricing/)为准；2026-12-01起官方公告调整日志计量，届时需复核。控制日志总量靠失败限定、去重和大小上限，不通过新增D1日志表或关闭必要财务记录实现。

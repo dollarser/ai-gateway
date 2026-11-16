@@ -1,3 +1,4 @@
+import { writeWorkerLog } from "./worker-logs.mjs";
 import { digest, hex, now, token, equal } from "./crypto.mjs";
 import { Denied } from "./store.mjs";
 import { mailConfiguration } from "./smtp-core.mjs";
@@ -170,10 +171,13 @@ export async function requestRegistrationCode(
       emailHash,
       id,
     );
-    console.warn(
-      "registration_mail_failed",
-      JSON.stringify({
-        code: [
+    writeWorkerLog(
+      "mail_delivery_failure",
+      {
+        diagnostic_id: id,
+        operation: bindingUser ? "email_binding" : "registration",
+        smtp_provider: config.provider,
+        error_code: [
           "smtp_timeout",
           "smtp_auth_failed",
           "smtp_rejected",
@@ -184,7 +188,8 @@ export async function requestRegistrationCode(
         ].includes(e?.message)
           ? e.message
           : "smtp_transport_error",
-      }),
+      },
+      "warn",
     );
     failure(
       503,

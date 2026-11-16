@@ -1,3 +1,4 @@
+import { toolDiagnostic } from "./worker-logs.mjs";
 import { lunaCost, budgetError } from "./budgets.mjs";
 import { providerFailure } from "./provider-errors.mjs";
 import { Denied, day } from "./store.mjs";
@@ -370,6 +371,10 @@ export async function proxyLuna(
   if (!upstream.ok) {
     // A definitive non-success response never delivers a model completion.
     const failure = await providerFailure(upstream, "luna");
+    failure.tool_diagnostic = toolDiagnostic(
+      p.payload,
+      failure.upstream_error_param,
+    );
     await settle({ total: 0, input: 0, output: 0, cached: 0, writes: 0 });
     failure.compatibility = p.compatibility;
     throw failure;

@@ -1,3 +1,9 @@
+import {
+  writeWorkerLog,
+  accountPath,
+  logInferenceFailure,
+  failureCategory,
+} from "./worker-logs.mjs";
 import { accountEmailRoute } from "./email-binding.mjs";
 import {
   verificationEnabled,
@@ -642,15 +648,33 @@ export default {
     try {
       return await route(request, env, ctx);
     } catch (e) {
-      if (e instanceof Denied)
+      if (e instanceof Denied) {
+        const providerRequestId = Number.isInteger(e.upstream_status)
+          ? token()
+          : null;
+        if (providerRequestId)
+          logInferenceFailure(
+            {
+              request_id: providerRequestId,
+              path: accountPath(new URL(request.url).pathname),
+              provider: "openai",
+              failure_stage: "upstream_rejected",
+              error_code: e.code,
+              release_sha: env.RELEASE_SHA,
+            },
+            e,
+            e.status,
+          );
         return json(
           {
             detail: e.message,
             error_code: e.code ?? "request_rejected",
             retryable: e.retryable === true,
+            ...(providerRequestId ? { request_id: providerRequestId } : {}),
           },
           e.status,
           {
+            ...(providerRequestId ? { "X-Request-ID": providerRequestId } : {}),
             ...(e.status === 429 && e.retryable !== false
               ? { "Retry-After": String(e.retry_after ?? 60) }
               : {}),
@@ -662,6 +686,7 @@ export default {
               : {}),
           },
         );
+      }
       const message = String(e);
       if (/quota_/.test(message))
         return json({ detail: "账号请求或并发额度已用尽" }, 429, {
@@ -671,8 +696,22 @@ export default {
         return json({ detail: "账号或密钥权限无效" }, 403);
       if (/last_admin/.test(message))
         return json({ detail: "不能禁用最后一个管理员" }, 409);
-      console.error("account request failed", e.name);
-      return json({ detail: "账号服务暂时不可用" }, 503);
+      const requestId = token();
+      writeWorkerLog("account_internal_failure", {
+        request_id: requestId,
+        path: accountPath(new URL(request.url).pathname),
+        error_type: ["TypeError", "Error", "SyntaxError"].includes(e.name)
+          ? e.name
+          : "Error",
+        status: 503,
+        failure_category: failureCategory(e),
+        release_sha: env.RELEASE_SHA,
+      });
+      return json(
+        { detail: "账号服务暂时不可用", request_id: requestId },
+        503,
+        { "X-Request-ID": requestId },
+      );
     }
   },
   async scheduled(event, env, ctx) {

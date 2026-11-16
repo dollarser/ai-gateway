@@ -1,3 +1,4 @@
+import { writeWorkerLog } from "./worker-logs.mjs";
 import { mailConfiguration } from "./smtp-core.mjs";
 import {
   notificationStatus,
@@ -13,14 +14,21 @@ const reply = (v) =>
 export async function operationalAlert(store, kind, details) {
   const ts = now();
   // Resolved alerts reopen only when a later monitoring window is still unhealthy.
-  await store.run(
-    "INSERT INTO operational_alerts(kind,first_seen,last_seen,details) VALUES(?,?,?,?) ON CONFLICT(kind) DO UPDATE SET last_seen=excluded.last_seen,occurrences=occurrences+1,details=excluded.details,episode=CASE WHEN operational_alerts.state='resolved' THEN operational_alerts.episode+1 ELSE operational_alerts.episode END,first_seen=CASE WHEN operational_alerts.state='resolved' THEN excluded.first_seen ELSE operational_alerts.first_seen END,state=CASE WHEN operational_alerts.state='acknowledged' AND operational_alerts.acknowledged_at>excluded.last_seen-3600 THEN operational_alerts.state ELSE 'open' END",
-    kind,
-    ts,
-    ts,
-    JSON.stringify(details),
-  );
-  console.warn("operational_alert", JSON.stringify({ kind, ...details }));
+  const row = await store
+    .stmt(
+      "INSERT INTO operational_alerts(kind,first_seen,last_seen,details) VALUES(?,?,?,?) ON CONFLICT(kind) DO UPDATE SET last_seen=excluded.last_seen,occurrences=occurrences+1,details=excluded.details,episode=CASE WHEN operational_alerts.state='resolved' THEN operational_alerts.episode+1 ELSE operational_alerts.episode END,first_seen=CASE WHEN operational_alerts.state='resolved' THEN excluded.first_seen ELSE operational_alerts.first_seen END,state=CASE WHEN operational_alerts.state='acknowledged' AND operational_alerts.acknowledged_at>excluded.last_seen-3600 THEN operational_alerts.state ELSE 'open' END RETURNING first_seen,occurrences,episode",
+      kind,
+      ts,
+      ts,
+      JSON.stringify(details),
+    )
+    .first();
+  if (row.occurrences === 1 || row.first_seen === ts)
+    writeWorkerLog(
+      "operational_alert",
+      { kind, details, episode: row.episode, occurrences: row.occurrences },
+      "warn",
+    );
 }
 export async function monitor(store) {
   const ts = now(),
