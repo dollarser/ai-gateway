@@ -70,8 +70,7 @@
       $("admin-filter-form").elements.day.value = info.today;
       state.loaded = true;
     }
-    await loadOperations();
-    state.defaults = await api("/admin/quota-defaults");
+    if (!state.defaults) state.defaults = await api("/admin/quota-defaults");
     for (const k of quotaFields) {
       $("quota-defaults-form").elements[k].value = state.defaults[k];
       $("user-form").elements[k].value = state.defaults[k];
@@ -329,7 +328,13 @@
       await load();
     }),
   );
-  $("admin-refresh").addEventListener("click", run(load));
+  $("admin-refresh").addEventListener(
+    "click",
+    run(async () => {
+      state.defaults = null;
+      await load();
+    }),
+  );
   $("select-clear").onclick = () => {
     state.selected.clear();
     for (const box of $("users-list").querySelectorAll("input[type=checkbox]"))
@@ -619,7 +624,6 @@
           notifications.destination_host +
           "）"
         : "；未启用外部推送");
-    await refreshInboxBadge();
     $("test-notification").disabled = !notifications.configured;
     $("notification-deliveries").textContent = JSON.stringify(
       notifications.deliveries,
@@ -671,6 +675,16 @@
     }),
   );
   $("load-operations").addEventListener("click", run(loadOperations));
+  let operationsLoaded = false;
+  $("operations-panel").addEventListener(
+    "toggle",
+    run(async () => {
+      if ($("operations-panel").open && !operationsLoaded) {
+        await loadOperations();
+        operationsLoaded = true;
+      }
+    }),
+  );
   $("global-limits-form").addEventListener(
     "submit",
     run(async (e) => {
@@ -708,7 +722,7 @@
       await loadOperations();
     }),
   );
-  const inboxState = { page: 1, items: [], timer: null };
+  const inboxState = { page: 1, items: [] };
   const alertNames = {
     provider_region_restricted: "上游地区限制",
     provider_error_rate: "模型错误率偏高",
@@ -721,27 +735,6 @@
   function inboxBadge(n) {
     $("alert-badge").textContent = n > 999 ? "999+" : String(n);
     $("alert-badge").hidden = !n;
-  }
-  function startInboxPolling() {
-    if (inboxState.timer) return;
-    inboxState.timer = setInterval(() => {
-      if (user?.role !== "admin" || user.must_change || document.hidden) return;
-      refreshInboxBadge().catch(() => {});
-    }, 60000);
-  }
-  async function refreshInboxBadge() {
-    if (user?.role !== "admin" || user.must_change) return;
-    try {
-      const data = await api("/admin/notifications?state=unread");
-      inboxBadge(data.unread);
-      startInboxPolling();
-    } catch (error) {
-      if (error.code === "request_rejected") {
-        clearInterval(inboxState.timer);
-        inboxState.timer = null;
-      }
-      throw error;
-    }
   }
   async function markInboxRead(ids) {
     if (!ids.length) return;
@@ -758,7 +751,6 @@
       );
     inboxState.items = data.items;
     inboxBadge(data.unread);
-    startInboxPolling();
     $("inbox-summary").textContent =
       "共 " + num(data.total) + " 条通知，未读 " + num(data.unread) + " 条";
     $("inbox-list").replaceChildren();

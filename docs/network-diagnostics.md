@@ -12,7 +12,7 @@
 
 ## 参考连接
 
-自动采样上游 403 和已接受请求（HTTP 2xx / WebSocket 101），每入口节点、每种结果每 5 分钟最多一次；已接受只表示握手/HTTP 成功，不等同于生成最终完成。成功和失败都有机会采样，且不阻塞模型响应。
+节省免费额度的默认配置关闭已接受请求的自动探测（PROVIDER_DIAGNOSTICS_ENABLED=false），保留上游 403 的自动采样及管理员手动探测。403 按入口节点每五分钟最多一次，不阻塞模型响应。排障期间可临时将该开关改为 true，恢复 HTTP 2xx / WebSocket 101 的参照采样；已接受只表示握手/HTTP 成功，不等同于生成最终完成。
 
 1. 固定 IP 回显服务：优先 api64.ipify.org，失败后尝试 api.ipify.org；每个连接超时 3 秒，响应上限 256 字节，分别记录耗时、HTTP 状态和错误阶段。
 2. 自有接收端：Worker GET https://api.hilex.me/__diagnostics/network，经现有受保护隧道进入本机。新建请求只带临时 HMAC 签名、时间和随机 nonce，不发送 OpenAI Key、账号 token、Client ID、Cookie 或用户内容。接收端校验来源为回环隧道、签名有效且在 60 秒内，拒绝重放；仅返回允许的 CF/IP 元数据，以及敏感请求头是否存在的布尔值。

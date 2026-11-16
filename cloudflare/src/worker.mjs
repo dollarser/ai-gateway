@@ -124,6 +124,7 @@ async function userSession(request, store, admin = false) {
         .map((s) => s.trim())
         .find((s) => s.startsWith(COOKIE + "="))
         ?.slice(COOKIE.length + 1) || "";
+    if (!cookie) fail(401, "请先登录");
     u = await store.session(cookie);
     if (
       !["GET", "HEAD"].includes(request.method) &&
@@ -288,16 +289,38 @@ async function route(request, env, ctx) {
   ) {
     const asset = new URL(request.url);
     asset.pathname = p === "/" ? "/" : p.slice("/static".length);
-    const response = await env.ASSETS.fetch(new Request(asset, request));
+    const assetRequest = new Request(asset, request);
+    if (p === "/") {
+      assetRequest.headers.delete("If-None-Match");
+      assetRequest.headers.delete("If-Modified-Since");
+    }
+    const response = await env.ASSETS.fetch(assetRequest);
     const headers = new Headers(response.headers);
-    headers.set("Cache-Control", "no-store");
+    const release = /^[a-f0-9]{40}$/.test(env.RELEASE_SHA || "")
+      ? env.RELEASE_SHA
+      : null;
+    headers.set(
+      "Cache-Control",
+      p !== "/" && release && url.searchParams.get("v") === release
+        ? "public, max-age=31536000, immutable"
+        : "no-store",
+    );
+    let responseBody = response.body;
+    if (p === "/" && response.ok && release) {
+      responseBody = (await response.text()).replace(
+        /(\/static\/(?:app\.js|admin\.js|notices\.js|style\.css))(?=["'])/g,
+        "$1?v=" + release,
+      );
+      headers.delete("Content-Length");
+      headers.delete("ETag");
+    }
     headers.set("X-Content-Type-Options", "nosniff");
     headers.set("Referrer-Policy", "no-referrer");
     headers.set(
       "Content-Security-Policy",
       "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
     );
-    return new Response(response.body, { status: response.status, headers });
+    return new Response(responseBody, { status: response.status, headers });
   }
   if (p === "/auth/registration-info" && method === "GET")
     return json({

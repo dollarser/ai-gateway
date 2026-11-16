@@ -39,7 +39,7 @@ async function list(store, user, url, countOnly = false) {
     "SELECT count(*) total,coalesce(sum(r.read_at IS NULL),0) unread" + join,
     ...args,
   );
-  if (countOnly) return { unread: counts.unread };
+  if (countOnly) return { unread: counts.unread, poll_after_seconds: 86400 };
   const items = await store.all(
     "SELECT " +
       publicFields +
@@ -50,7 +50,7 @@ async function list(store, user, url, countOnly = false) {
     ...args,
     (page - 1) * 30,
   );
-  return { ...counts, page, page_size: 30, items };
+  return { ...counts, page, page_size: 30, items, poll_after_seconds: 86400 };
 }
 async function content(store, b) {
   object(b, [

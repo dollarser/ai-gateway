@@ -25,7 +25,7 @@ export async function monitor(store) {
   const ts = now(),
     window = ts - 900;
   const recent = await store.first(
-    "SELECT count(*) total,coalesce(sum(status>=500),0) failures,coalesce(sum(upstream_error_code='unsupported_country_region_territory'),0) regions FROM requests WHERE ended>?",
+    "SELECT count(*) total,coalesce(sum(status>=500),0) failures,coalesce(sum(upstream_error_code='unsupported_country_region_territory'),0) regions,coalesce(sum(duration_ms IS NOT NULL),0) samples,coalesce(sum(protocol='audio-stream' AND first_byte_ms IS NOT NULL),0) audio_samples FROM requests WHERE ended>?",
     window,
   );
   const pending = await store.first(
@@ -33,28 +33,24 @@ export async function monitor(store) {
     window,
     window,
   );
-  const samples = await store.first(
-    "SELECT count(*) n FROM requests WHERE ended>? AND duration_ms IS NOT NULL",
-    window,
-  );
-  const p95 = samples.n
-    ? await store.first(
-        "SELECT duration_ms n FROM requests WHERE ended>? AND duration_ms IS NOT NULL ORDER BY duration_ms LIMIT 1 OFFSET ?",
-        window,
-        Math.max(0, Math.ceil(samples.n * 0.95) - 1),
-      )
-    : null;
-  const audioSamples = await store.first(
-    "SELECT count(*) n FROM requests WHERE ended>? AND protocol='audio-stream' AND first_byte_ms IS NOT NULL",
-    window,
-  );
-  const audioP95 = audioSamples.n
-    ? await store.first(
-        "SELECT first_byte_ms n FROM requests WHERE ended>? AND protocol='audio-stream' AND first_byte_ms IS NOT NULL ORDER BY first_byte_ms LIMIT 1 OFFSET ?",
-        window,
-        Math.max(0, Math.ceil(audioSamples.n * 0.95) - 1),
-      )
-    : null;
+  const samples = { n: recent.samples };
+  const p95 =
+    samples.n >= 20
+      ? await store.first(
+          "SELECT duration_ms n FROM requests WHERE ended>? AND duration_ms IS NOT NULL ORDER BY duration_ms LIMIT 1 OFFSET ?",
+          window,
+          Math.max(0, Math.ceil(samples.n * 0.95) - 1),
+        )
+      : null;
+  const audioSamples = { n: recent.audio_samples };
+  const audioP95 =
+    audioSamples.n >= 10
+      ? await store.first(
+          "SELECT first_byte_ms n FROM requests WHERE ended>? AND protocol='audio-stream' AND first_byte_ms IS NOT NULL ORDER BY first_byte_ms LIMIT 1 OFFSET ?",
+          window,
+          Math.max(0, Math.ceil(audioSamples.n * 0.95) - 1),
+        )
+      : null;
   const budget = await globalUsage(store);
   const checks = [
     [

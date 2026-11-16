@@ -2400,6 +2400,12 @@ test("Customer notices isolate recipients, synchronize reads and enforce draft l
   );
   let listed = (await call("/account/notices", undefined, { access })).body;
   assert.equal(listed.unread, 1);
+  assert.equal(listed.poll_after_seconds, 86400);
+  assert.equal(
+    (await call("/account/notices/unread-count", undefined, { access })).body
+      .poll_after_seconds,
+    86400,
+  );
   assert.equal(listed.items[0].title, "已更新");
   assert.equal(listed.items[0].body, draft.body);
   assert.equal(listed.items[0].user_ids, undefined);
@@ -3059,4 +3065,49 @@ test("Legacy logins remind email binding; verified accounts skip reminders and b
     ).verified,
     1,
   );
+});
+
+test("Anonymous account checks reject without touching D1", async () => {
+  const anonymous = new Miniflare({
+    modules: true,
+    scriptPath: ".test-build/worker.js",
+    compatibilityDate: "2026-07-01",
+    bindings: {
+      ACCOUNT_ORIGIN: "https://accounts.test",
+      RELEASE_SHA: "a".repeat(40),
+    },
+    serviceBindings: {
+      ASSETS: async () =>
+        new Response('<script src="/static/app.js"></script>'),
+    },
+  });
+  try {
+    const root = await anonymous.dispatchFetch("https://accounts.test/");
+    assert.equal(root.headers.get("Cache-Control"), "no-store");
+    assert.match(
+      await root.text(),
+      new RegExp("app\\.js\\?v=" + "a".repeat(40)),
+    );
+    const asset = await anonymous.dispatchFetch(
+      "https://accounts.test/static/app.js?v=" + "a".repeat(40),
+    );
+    assert.match(asset.headers.get("Cache-Control"), /immutable/);
+    const stale = await anonymous.dispatchFetch(
+      "https://accounts.test/static/app.js?v=old",
+    );
+    assert.equal(stale.headers.get("Cache-Control"), "no-store");
+    // Deliberately omit DB: a database access would turn these into 503 responses.
+    for (const path of [
+      "/account/me",
+      "/account/notices/unread-count",
+      "/admin/notifications",
+    ]) {
+      const response = await anonymous.dispatchFetch(
+        "https://accounts.test" + path,
+      );
+      assert.equal(response.status, 401);
+    }
+  } finally {
+    await anonymous.dispose();
+  }
 });

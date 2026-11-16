@@ -14,16 +14,91 @@
     $("notice-badge").textContent = n > 999 ? "999+" : n;
     $("notice-badge").hidden = !n;
   }
-  async function poll() {
-    if (!user || user.must_change || document.hidden) return;
+  const DAY = 86400000,
+    memory = new Map();
+  let checking = false;
+  const cacheKey = (id) => "ai-gateway:notice-summary:v2:" + id;
+  function cached(id) {
     try {
-      badge((await api("/account/notices/unread-count")).unread);
+      const value = JSON.parse(localStorage.getItem(cacheKey(id)) || "null");
+      if (value && typeof value === "object") return value;
+    } catch {}
+    return memory.get(id) || {};
+  }
+  function save(id, value) {
+    memory.set(id, value);
+    try {
+      localStorage.setItem(cacheKey(id), JSON.stringify(value));
     } catch {}
   }
+  function summary(data) {
+    if (!user) return;
+    const unread = Number(data.unread) || 0;
+    save(user.id, { unread, checkedAt: Date.now(), retryAt: 0 });
+    badge(unread);
+    schedule();
+  }
+  function nextCheck(id) {
+    const value = cached(id),
+      now = Date.now();
+    const checked =
+      Number.isFinite(value.checkedAt) && value.checkedAt <= now + 60000
+        ? value.checkedAt
+        : 0;
+    const retry =
+      Number.isFinite(value.retryAt) && value.retryAt <= now + DAY + 60000
+        ? value.retryAt
+        : 0;
+    return Math.max(checked ? checked + DAY : 0, retry);
+  }
+  function schedule() {
+    clearTimeout(timer);
+    if (!user || user.must_change) return;
+    const delay = document.hidden
+      ? DAY
+      : Math.max(60000, nextCheck(user.id) - Date.now());
+    timer = setTimeout(() => poll().finally(schedule), Math.min(DAY, delay));
+  }
+  async function poll() {
+    if (
+      !user ||
+      user.must_change ||
+      document.hidden ||
+      navigator.onLine === false ||
+      checking
+    )
+      return;
+    const id = user.id;
+    const check = async () => {
+      if (Date.now() < nextCheck(id)) return;
+      checking = true;
+      // Persist the attempt before sending: errors/reloads must not turn into rapid retries.
+      save(id, { ...cached(id), retryAt: Date.now() + DAY });
+      try {
+        const data = await api("/account/notices/unread-count");
+        if (user?.id === id) summary(data);
+      } catch {
+      } finally {
+        checking = false;
+      }
+    };
+    if (navigator.locks?.request) {
+      try {
+        await navigator.locks.request(
+          cacheKey(id),
+          { ifAvailable: true },
+          (lock) => (lock ? check() : undefined),
+        );
+      } catch {
+        await check();
+      }
+    } else await check();
+  }
   function start() {
-    clearInterval(timer);
-    poll();
-    timer = setInterval(poll, 180000);
+    clearTimeout(timer);
+    if (!user) return;
+    badge(Number(cached(user.id).unread) || 0);
+    poll().finally(schedule);
   }
   const timestamp = (value) =>
     value ? new Date(value).getTime() / 1000 : null;
@@ -38,7 +113,7 @@
     const data = await api(
       "/account/notices?page=" + page + "&state=" + $("notice-filter").value,
     );
-    badge(data.unread);
+    summary(data);
     $("notice-items").replaceChildren();
     $("notice-summary").textContent =
       "共 " +
@@ -62,13 +137,38 @@
         date(n.published_at) + (n.read_at ? " · 已读" : " · 未读"),
       );
       show(card, "p", n.body).style.whiteSpace = "pre-wrap";
-      if (!n.read_at)
-        card.append(
-          action("标记已读", async () => {
-            await api("/account/notices/read", "POST", { ids: [n.id] });
-            await load();
-          }),
-        );
+      if (!n.read_at) {
+        const button = action("标记已读", async () => {
+          button.disabled = true;
+          try {
+            const result = await api("/account/notices/read", "POST", {
+              ids: [n.id],
+            });
+            summary(result);
+            data.unread = result.unread;
+            n.read_at = Date.now() / 1000;
+            card.querySelector("small").textContent =
+              date(n.published_at) + " · 已读";
+            card.classList.remove("unread");
+            button.remove();
+            if ($("notice-filter").value === "unread") card.remove();
+            $("notice-summary").textContent =
+              "共 " +
+              data.total +
+              " 条有效通告 · 未读 " +
+              data.unread +
+              " 条 · 第 " +
+              data.page +
+              " 页";
+            if (!$("notice-items").children.length)
+              show($("notice-items"), "p", "暂无通告");
+          } catch (error) {
+            button.disabled = false;
+            throw error;
+          }
+        });
+        card.append(button);
+      }
       $("notice-items").append(card);
     }
     if (!data.items.length) show($("notice-items"), "p", "暂无通告");
@@ -77,7 +177,7 @@
       page * 30 >=
       ($("notice-filter").value === "unread" ? data.unread : data.total);
     $("notice-management").hidden = user.role !== "admin";
-    if (user.role === "admin") await loadAdmin();
+    if (user.role === "admin" && $("notice-management").open) await loadAdmin();
   }
   async function loadAdmin() {
     const data = await api("/admin/notices?page=" + adminPage);
@@ -230,7 +330,21 @@
     }),
   );
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) poll();
+    if (!document.hidden) poll().finally(schedule);
   });
+  window.addEventListener("online", () => poll().finally(schedule));
+  window.addEventListener("storage", (event) => {
+    if (user && event.key === cacheKey(user.id)) {
+      badge(Number(cached(user.id).unread) || 0);
+      schedule();
+    }
+  });
+  $("notice-management").addEventListener(
+    "toggle",
+    run(async () => {
+      if ($("notice-management").open && user?.role === "admin")
+        await loadAdmin();
+    }),
+  );
   window.noticeUI = { load, start };
 })();

@@ -47,6 +47,8 @@ notification_deliveries = []
 site_notices = []
 customer_notices = []
 logged_in = [True]
+api_calls = []
+notice_failure = [False]
 mutations = []
 errors = []
 answers = []
@@ -88,10 +90,13 @@ def handle(route):
             status=status, content_type="application/json", body=json.dumps(body)
         )
 
+    api_calls.append((req.method, path))
     data = req.post_data_json if req.method in ["POST", "PATCH"] else None
     if data is not None:
         mutations.append((path, data))
     if path == "/account/notices/unread-count":
+        if notice_failure[0]:
+            return respond({"detail": "temporary failure"}, 503)
         return respond(
             {
                 "unread": sum(
@@ -104,7 +109,15 @@ def handle(route):
         for n in customer_notices:
             if n["id"] in data["ids"]:
                 n["read_at"] = 1794700100
-        return respond({"ok": True})
+        return respond(
+            {
+                "ok": True,
+                "unread": sum(
+                    n["state"] == "published" and not n.get("read_at")
+                    for n in customer_notices
+                ),
+            }
+        )
     if path == "/account/notices":
         active = [n for n in customer_notices if n["state"] == "published"]
         unread = sum(not n.get("read_at") for n in active)
@@ -405,8 +418,33 @@ with sync_playwright() as p:
         lambda d: d.accept(answers.pop(0)) if d.type == "prompt" else d.accept(),
     )
     page.route("https://accounts.test/**", handle)
+    page.clock.install()
     page.goto("https://accounts.test")
     page.locator("#users-list tr").nth(1).wait_for()
+    page.wait_for_timeout(100)
+    assert api_calls.count(("GET", "/account/notices/unread-count")) == 1
+    assert not any(
+        path in {"/admin/operations", "/admin/notifications"} for _, path in api_calls
+    )
+    page.reload()
+    page.locator("#users-list tr").nth(1).wait_for()
+    page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+    page.wait_for_timeout(100)
+    assert api_calls.count(("GET", "/account/notices/unread-count")) == 1
+    page.clock.fast_forward(86400000 + 1000)
+    page.wait_for_timeout(100)
+    assert api_calls.count(("GET", "/account/notices/unread-count")) == 2
+    notice_failure[0] = True
+    page.evaluate(
+        "localStorage.setItem('ai-gateway:notice-summary:v2:1','{}'); window.noticeUI.start()"
+    )
+    page.wait_for_timeout(100)
+    assert api_calls.count(("GET", "/account/notices/unread-count")) == 3
+    page.reload()
+    page.locator("#users-list tr").nth(1).wait_for()
+    page.wait_for_timeout(100)
+    assert api_calls.count(("GET", "/account/notices/unread-count")) == 3
+    notice_failure[0] = False
     assert page.locator("#admin-summary>div").count() == 6
     page.locator("#users-list tr").nth(1).get_by_role(
         "button", name="设置", exact=True
@@ -463,6 +501,9 @@ with sync_playwright() as p:
     page.wait_for_timeout(100)
     assert ledger["charged_units"] == 1 and ledger["settled"] == 1
     page.locator("#operations-panel>summary").click()
+    page.locator("#global-budget-summary").get_by_text(
+        "Luna 估算用量", exact=False
+    ).wait_for()
     page.locator("#global-limits-form [name=luna_monthly_usd]").fill("200")
     page.locator("#global-limits-form button").click()
     page.wait_for_timeout(100)
