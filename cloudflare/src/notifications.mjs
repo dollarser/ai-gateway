@@ -54,18 +54,9 @@ export async function enqueueAlerts(store, env) {
     "UPDATE alert_deliveries SET status='cancelled' WHERE event_state='open' AND status IN ('pending','failed') AND EXISTS(SELECT 1 FROM operational_alerts a WHERE a.kind=alert_deliveries.kind AND a.episode=alert_deliveries.episode AND a.state IN ('resolved','acknowledged'))",
   );
   const alerts = await store.all(
-    "SELECT * FROM operational_alerts WHERE state IN ('open','resolved')",
+    "SELECT * FROM operational_alerts WHERE state='open' AND notified_episode<episode AND kind NOT IN ('high_latency','slow_first_audio')",
   );
   for (const alert of alerts) {
-    if (
-      alert.state === "resolved" &&
-      !(await store.first(
-        "SELECT id FROM alert_deliveries WHERE kind=? AND episode=? AND event_state='open' AND status='sent' LIMIT 1",
-        alert.kind,
-        alert.episode,
-      ))
-    )
-      continue;
     let details = {};
     try {
       const raw = JSON.parse(alert.details);
@@ -87,19 +78,28 @@ export async function enqueueAlerts(store, env) {
       details,
       dashboard: "https://accounts.hilex.me/#alerts",
     };
-    await store.run(
-      "INSERT INTO alert_deliveries(id,kind,episode,event_state,created,payload) SELECT ?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM alert_deliveries WHERE kind=? AND episode=? AND event_state=? AND (created>? OR status IN ('pending','sending')))",
-      id,
-      alert.kind,
-      alert.episode,
-      alert.state,
-      now,
-      JSON.stringify(payload),
-      alert.kind,
-      alert.episode,
-      alert.state,
-      alert.state === "resolved" ? 0 : now - 3600,
-    );
+    // Queue and persistent episode marker commit atomically. Retention of inbox
+    // messages must never cause a continuing incident to notify again.
+    await store.db.batch([
+      store.stmt(
+        "INSERT INTO alert_deliveries(id,kind,episode,event_state,created,payload) SELECT ?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM operational_alerts WHERE kind=? AND episode=? AND state='open' AND notified_episode<episode)",
+        id,
+        alert.kind,
+        alert.episode,
+        alert.state,
+        now,
+        JSON.stringify(payload),
+        alert.kind,
+        alert.episode,
+      ),
+      store.stmt(
+        "UPDATE operational_alerts SET notified_episode=? WHERE kind=? AND episode=? AND EXISTS(SELECT 1 FROM alert_deliveries WHERE id=?)",
+        alert.episode,
+        alert.kind,
+        alert.episode,
+        id,
+      ),
+    ]);
   }
 }
 export async function deliverNotifications(store, env, transport = fetch) {

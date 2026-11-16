@@ -34,39 +34,20 @@ export async function monitor(store) {
   const ts = now(),
     window = ts - 900;
   const recent = await store.first(
-    "SELECT count(*) total,coalesce(sum(status>=500),0) failures,coalesce(sum(upstream_error_code='unsupported_country_region_territory'),0) regions,coalesce(sum(duration_ms IS NOT NULL),0) samples,coalesce(sum(protocol='audio-stream' AND first_byte_ms IS NOT NULL),0) audio_samples FROM requests WHERE ended>?",
+    "SELECT count(*) total,coalesce(sum(status>=500),0) failures,coalesce(sum(upstream_error_code='unsupported_country_region_territory'),0) regions FROM requests WHERE ended>?",
     window,
   );
-  const pending = await store.first(
-    "SELECT count(*) n FROM (SELECT l.lease FROM luna_usage l JOIN requests r ON r.id=l.lease WHERE l.settled=0 AND r.started<? UNION ALL SELECT a.lease FROM audio_usage a JOIN requests r ON r.id=a.lease WHERE a.settled=0 AND r.started<?)",
-    window,
-    window,
-  );
-  const samples = { n: recent.samples };
-  const p95 =
-    samples.n >= 20
+  // Reconciliation is actionable but not urgent: check once an hour.
+  const pending =
+    ts % 3600 < 900
       ? await store.first(
-          "SELECT duration_ms n FROM requests WHERE ended>? AND duration_ms IS NOT NULL ORDER BY duration_ms LIMIT 1 OFFSET ?",
+          "SELECT count(*) n FROM (SELECT l.lease FROM luna_usage l JOIN requests r ON r.id=l.lease WHERE l.settled=0 AND r.started<? UNION ALL SELECT a.lease FROM audio_usage a JOIN requests r ON r.id=a.lease WHERE a.settled=0 AND r.started<?)",
           window,
-          Math.max(0, Math.ceil(samples.n * 0.95) - 1),
-        )
-      : null;
-  const audioSamples = { n: recent.audio_samples };
-  const audioP95 =
-    audioSamples.n >= 10
-      ? await store.first(
-          "SELECT first_byte_ms n FROM requests WHERE ended>? AND protocol='audio-stream' AND first_byte_ms IS NOT NULL ORDER BY first_byte_ms LIMIT 1 OFFSET ?",
           window,
-          Math.max(0, Math.ceil(audioSamples.n * 0.95) - 1),
         )
       : null;
   const budget = await globalUsage(store);
   const checks = [
-    [
-      "slow_first_audio",
-      audioSamples.n >= 10 && audioP95.n > 10000,
-      { p95_ms: audioP95?.n ?? 0, samples: audioSamples.n },
-    ],
     [
       "provider_region_restricted",
       recent.regions > 0,
@@ -79,13 +60,8 @@ export async function monitor(store) {
     ],
     [
       "pending_usage",
-      pending.n > 0,
-      { count: pending.n, older_than_minutes: 15 },
-    ],
-    [
-      "high_latency",
-      samples.n >= 20 && p95.n > 120000,
-      { p95_ms: p95?.n ?? 0, samples: samples.n },
+      pending === null ? null : pending.n > 0,
+      { count: pending?.n ?? 0, older_than_minutes: 15 },
     ],
     [
       "luna_budget",
@@ -98,13 +74,14 @@ export async function monitor(store) {
     ],
   ];
   for (const [kind, active, details] of checks)
-    if (active) await operationalAlert(store, kind, details);
+    if (active === null) continue;
+    else if (active) await operationalAlert(store, kind, details);
     else
       await store.run(
         "UPDATE operational_alerts SET state='resolved' WHERE kind=? AND state!='resolved'",
         kind,
       );
-  return { recent, p95_ms: p95?.n ?? null, pending: pending.n, budget };
+  return { recent, p95_ms: null, pending: pending?.n ?? null, budget };
 }
 export async function maintenance(store) {
   const ts = now(),

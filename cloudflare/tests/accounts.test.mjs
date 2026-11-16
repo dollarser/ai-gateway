@@ -2192,6 +2192,64 @@ test("Alert deliveries are deduplicated, signed, retried and expose only safe st
   );
 });
 
+test("An incident notifies once across retention, recovery and concurrent cron runs", async () => {
+  const { enqueueAlerts } = await import("../src/notifications.mjs");
+  const { operationalAlert } = await import("../src/operations.mjs");
+  const store = new Store(db),
+    kind = "once_fixture";
+  await operationalAlert(store, kind, { count: 1 });
+  await Promise.all([enqueueAlerts(store, {}), enqueueAlerts(store, {})]);
+  assert.equal(
+    (
+      await store.first(
+        "SELECT count(*) n FROM alert_deliveries WHERE kind=?",
+        kind,
+      )
+    ).n,
+    1,
+  );
+  // Old notifications can expire; the incident marker survives their deletion.
+  await store.run("DELETE FROM alert_deliveries WHERE kind=?", kind);
+  await operationalAlert(store, kind, { count: 3 });
+  await enqueueAlerts(store, {});
+  assert.equal(
+    (
+      await store.first(
+        "SELECT count(*) n FROM alert_deliveries WHERE kind=?",
+        kind,
+      )
+    ).n,
+    0,
+  );
+  await store.run(
+    "UPDATE operational_alerts SET state='resolved' WHERE kind=?",
+    kind,
+  );
+  await enqueueAlerts(store, {});
+  assert.equal(
+    (
+      await store.first(
+        "SELECT count(*) n FROM alert_deliveries WHERE kind=?",
+        kind,
+      )
+    ).n,
+    0,
+  );
+  await operationalAlert(store, kind, { count: 1 });
+  await enqueueAlerts(store, {});
+  assert.equal(
+    (
+      await store.first(
+        "SELECT count(*) n FROM alert_deliveries WHERE kind=? AND episode=2",
+        kind,
+      )
+    ).n,
+    1,
+  );
+  await store.run("DELETE FROM alert_deliveries WHERE kind=?", kind);
+  await store.run("DELETE FROM operational_alerts WHERE kind=?", kind);
+});
+
 test("Permanent webhook failures stop retries and acknowledgement expires after one hour", async () => {
   const { deliverNotifications } = await import("../src/notifications.mjs"),
     { operationalAlert } = await import("../src/operations.mjs");
