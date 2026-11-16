@@ -1,3 +1,11 @@
+import {
+  verificationEnabled,
+  registrationEmail,
+  requestRegistrationCode,
+  verifyRegistrationCode,
+} from "./registration.mjs";
+import { mailConfiguration } from "./smtp-core.mjs";
+import { sendRegistrationEmail } from "./mail.mjs";
 import { noticesRoute } from "./notices.mjs";
 import { enqueueAlerts, deliverNotifications } from "./notifications.mjs";
 import { monitor, maintenance } from "./operations.mjs";
@@ -295,7 +303,8 @@ async function route(request, env, ctx) {
       services: SERVICES,
       today: day(),
       defaults: await store.defaults(),
-      email_verification: false,
+      email_verification: verificationEnabled(env),
+      email_verification_available: !!mailConfiguration(env),
       registration_enabled: JSON.parse(
         (
           await store.first(
@@ -304,12 +313,26 @@ async function route(request, env, ctx) {
         ).value,
       ).enabled,
     });
+  if (p === "/auth/registration-code" && method === "POST") {
+    const b = validate(await body(request), ["email"]);
+    return json(
+      await requestRegistrationCode(
+        store,
+        env,
+        b.email,
+        request.headers.get("CF-Connecting-IP") || "local",
+        sendRegistrationEmail,
+      ),
+    );
+  }
   if (p === "/auth/register" && method === "POST") {
-    const b = validate(await body(request), ["email", "password"]);
+    const b = validate(await body(request), ["email", "password", "code"]);
     text(b.email, 3, 254);
     text(b.password, 6, 128);
-    const email = b.email.trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(422, "邮箱格式无效");
+    const email = registrationEmail(b.email);
+    const emailVerification = verificationEnabled(env)
+      ? await verifyRegistrationCode(store, env, email, b.code)
+      : null;
     await store.rateLimit(
       request.headers.get("CF-Connecting-IP") || "local",
       "register",
@@ -317,6 +340,7 @@ async function route(request, env, ctx) {
     );
     const user = await store.createUser(email, b.password, {
       email,
+      emailVerification,
       must_change: 0,
       ...(await store.defaults()),
     });
@@ -642,6 +666,14 @@ export default {
             "UPDATE requests SET ended=?,status=504 WHERE ended IS NULL AND started<?",
             now(),
             now() - 920,
+          ),
+          store.stmt(
+            "DELETE FROM registration_codes WHERE email_hash IN (SELECT email_hash FROM registration_codes WHERE expires<? LIMIT 500)",
+            now() - 86400,
+          ),
+          store.stmt(
+            "DELETE FROM email_send_attempts WHERE id IN (SELECT id FROM email_send_attempts WHERE ts<? LIMIT 1000)",
+            now() - 3600,
           ),
           store.stmt("DELETE FROM login_attempts WHERE ts<?", now() - 300),
           store.stmt(

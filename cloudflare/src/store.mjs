@@ -80,8 +80,13 @@ export class Store {
     );
     let row;
     try {
-      row = await this.stmt(
-        "INSERT INTO users(username,password,role,services,rpm,daily_requests,concurrency,must_change,created,email,luna_monthly_tokens,openai_asr_daily_seconds,openai_tts_daily_characters) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *",
+      const verification = o.emailVerification;
+      const insert = this.stmt(
+        "INSERT INTO users(username,password,role,services,rpm,daily_requests,concurrency,must_change,created,email,luna_monthly_tokens,openai_asr_daily_seconds,openai_tts_daily_characters,email_verified_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?" +
+          (verification
+            ? " WHERE EXISTS(SELECT 1 FROM registration_codes WHERE email_hash=? AND id=? AND code_hash=? AND state='sent' AND expires>? AND attempts<=5)"
+            : "") +
+          " RETURNING *",
         username.toLowerCase(),
         encoded,
         o.role,
@@ -96,7 +101,27 @@ export class Store {
         o.openai_asr_daily_seconds ?? audioDefaults.openai_asr_daily_seconds,
         o.openai_tts_daily_characters ??
           audioDefaults.openai_tts_daily_characters,
-      ).first();
+        verification ? now() : null,
+        ...(verification
+          ? [verification.emailHash, verification.id, verification.hash, now()]
+          : []),
+      );
+      if (verification) {
+        const results = await this.db.batch([
+          insert,
+          this.stmt(
+            "UPDATE registration_codes SET state='consumed' WHERE email_hash=? AND id=? AND changes()=1",
+            verification.emailHash,
+            verification.id,
+          ),
+        ]);
+        row = results[0].results[0];
+        if (!row) {
+          const e = new Denied(400, "验证码无效或已使用，请重新获取");
+          e.code = "email_verification_invalid";
+          throw e;
+        }
+      } else row = await insert.first();
     } catch (e) {
       if (String(e).includes("UNIQUE")) throw new Denied(409, "账号已存在");
       throw e;

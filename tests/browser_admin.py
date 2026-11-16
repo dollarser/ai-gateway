@@ -44,6 +44,7 @@ notification_enabled = [False]
 notification_deliveries = []
 site_notices = []
 customer_notices = []
+logged_in = [True]
 mutations = []
 errors = []
 answers = []
@@ -150,9 +151,24 @@ def handle(route):
         n["version"] += 1
         return respond({"id": n["id"], "version": n["version"], "state": n["state"]})
     if path == "/account/me":
+        if not logged_in[0]:
+            return respond({"detail": "需要登录"}, 401)
         return respond({"user": users[0], "csrf": "test-csrf"})
     if path == "/auth/registration-info":
-        return respond({"today": "2026-11-15", "defaults": defaults})
+        return respond(
+            {"today": "2026-11-15", "defaults": defaults, "email_verification": True}
+        )
+    if path == "/auth/registration-code":
+        return respond(
+            {
+                "message": "验证码已发送，请检查邮箱",
+                "retry_after": 60,
+                "expires_in": 600,
+            }
+        )
+    if path == "/auth/register":
+        assert data["code"] == "123456"
+        return respond({"message": "注册成功，请登录"}, 201)
     if path == "/admin/operations":
         return respond(
             {
@@ -519,4 +535,21 @@ with sync_playwright() as p:
     print(
         "Browser: settings, bulk ban/unban, bulk quotas, user creation, IP/details, safe rendering and mobile layout passed"
     )
+    logged_in[0] = False
+    page.goto("https://accounts.test/")
+    page.locator("#show-register").click()
+    page.locator("#registration-code-fields").wait_for(state="visible")
+    page.locator("#register-form [name=email]").fill("synthetic@example.net")
+    page.locator("#send-registration-code").click()
+    page.get_by_text("验证码已发送，请检查邮箱", exact=True).wait_for()
+    assert page.locator("#send-registration-code").is_disabled()
+    page.locator("#register-form [name=code]").fill("123456")
+    page.locator("#register-form [name=password]").fill("test-password")
+    page.locator("#register-form [name=confirm_password]").fill("test-password")
+    page.locator("#register-form button").filter(has_text="注册账号").click()
+    page.get_by_text("注册成功，请登录", exact=True).wait_for()
+    assert any(
+        path == "/auth/register" and b.get("code") == "123456" for path, b in mutations
+    )
+    assert not errors, errors
     browser.close()

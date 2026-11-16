@@ -6,6 +6,18 @@ import { proxySpeech } from "../src/audio.mjs";
 import { edgeAPI } from "../src/edge.mjs";
 import { Store } from "../src/store.mjs";
 import { passwordHash, digest } from "../src/crypto.mjs";
+const registrationEnv = {
+  EMAIL_VERIFICATION_ENABLED: "true",
+  EMAIL_CODE_SECRET: "test-only-secret".repeat(4),
+  REGISTRATION_SMTP: JSON.stringify({
+    smtp_host: "smtp.qiye.aliyun.com",
+    smtp_port: 465,
+    smtp_secure: true,
+    smtp_username: "sender@example.com",
+    smtp_password: "fake",
+    from_email: "sender@example.com",
+  }),
+};
 let mf, db, admin;
 let openaiMode = "json",
   providerCalls = 0;
@@ -155,6 +167,7 @@ before(async () => {
     compatibilityDate: "2026-07-01",
     d1Databases: ["DB"],
     bindings: {
+      ...registrationEnv,
       INTERNAL_SECRET: secret,
       OPENAI_API_KEY: "test-openai-key",
       INFERENCE_CLIENT_IDS: JSON.stringify(["test-client-id"]),
@@ -215,7 +228,30 @@ test("registration, login, cookie CSRF and key ownership", async () => {
   });
   assert.equal(r.status, 422);
   r = await call("/auth/register", { email, password: "long-password" });
+  assert.equal(r.status, 422);
+  const { requestRegistrationCode } = await import("../src/registration.mjs");
+  let code;
+  await requestRegistrationCode(
+    new Store(db),
+    registrationEnv,
+    email,
+    "first-registration-ip",
+    async (_config, _email, value) => {
+      code = value;
+    },
+  );
+  r = await call("/auth/register", { email, password: "long-password", code });
   assert.equal(r.status, 201);
+  assert.ok(r.body.user.email_verified_at);
+  assert.equal(
+    (await call("/auth/registration-info")).body.email_verification,
+    true,
+  );
+  assert.equal(
+    (await call("/auth/registration-code", { email: "bad\r\n@example.com" }))
+      .status,
+    422,
+  );
   assert.equal(r.body.user.role, "user");
   assert.equal(r.body.user.must_change, 0);
   const login = await call("/auth/login", {
@@ -2548,4 +2584,222 @@ test("Customer notices isolate recipients, synchronize reads and enforce draft l
     new Set([...first.items, ...second.items].map((n) => n.id)).size,
     32,
   );
+});
+
+test("Email verification enforces expiry, attempts, resend cooldown and atomic one-time account creation", async () => {
+  const {
+    requestRegistrationCode,
+    verifyRegistrationCode,
+    codeHash,
+    registrationEmail,
+  } = await import("../src/registration.mjs");
+  const store = new Store(db),
+    env = {
+      EMAIL_VERIFICATION_ENABLED: "true",
+      EMAIL_CODE_SECRET: "test-only-secret".repeat(4),
+      REGISTRATION_SMTP: JSON.stringify({
+        smtp_host: "smtp.qiye.aliyun.com",
+        smtp_port: 465,
+        smtp_secure: true,
+        smtp_username: "sender@example.com",
+        smtp_password: "fake",
+        from_email: "sender@example.com",
+      }),
+    };
+  let captured;
+  const send = async (c, email, code) => {
+    captured = { email, code };
+  };
+  const email = "verify-code@example.net";
+  assert.equal(registrationEmail(" Verify-Code@Example.Net "), email);
+  for (const e of [
+    "bad\r\n@example.net",
+    "a..b@example.net",
+    "a@-bad.example",
+    "a@b",
+    "<a>@example.net",
+  ])
+    assert.throws(() => registrationEmail(e));
+  const response = await requestRegistrationCode(
+    store,
+    env,
+    email,
+    "email-code-ip",
+    send,
+  );
+  assert.equal(response.expires_in, 600);
+  assert.match(captured.code, /^\d{6}$/);
+  const emailHash = await digest(email),
+    row = await store.first(
+      "SELECT * FROM registration_codes WHERE email_hash=?",
+      emailHash,
+    );
+  assert.equal(row.state, "sent");
+  assert.notEqual(row.code_hash, captured.code);
+  assert.equal(
+    row.code_hash,
+    await codeHash(env, emailHash, row.id, captured.code),
+  );
+  await assert.rejects(
+    requestRegistrationCode(store, env, email, "another-ip", send),
+    { status: 429 },
+  );
+  await assert.rejects(verifyRegistrationCode(store, env, email, "bad"), {
+    status: 422,
+  });
+  await assert.rejects(
+    verifyRegistrationCode(
+      store,
+      env,
+      email,
+      captured.code === "000000" ? "000001" : "000000",
+    ),
+    { status: 400 },
+  );
+  const proof = await verifyRegistrationCode(store, env, email, captured.code);
+  const results = await Promise.allSettled([
+    store.createUser(email, "verification-password", {
+      email,
+      emailVerification: proof,
+      must_change: 0,
+    }),
+    store.createUser(email, "verification-password", {
+      email,
+      emailVerification: proof,
+      must_change: 0,
+    }),
+  ]);
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+  assert.ok(
+    (
+      await store.first(
+        "SELECT email_verified_at FROM users WHERE email=?",
+        email,
+      )
+    ).email_verified_at,
+  );
+  assert.equal(
+    (
+      await store.first(
+        "SELECT state FROM registration_codes WHERE email_hash=?",
+        emailHash,
+      )
+    ).state,
+    "consumed",
+  );
+  await assert.rejects(
+    verifyRegistrationCode(store, env, email, captured.code),
+    { status: 400 },
+  );
+  const locked = "verify-lock@example.net";
+  await requestRegistrationCode(store, env, locked, "email-lock-ip", send);
+  const correct = captured.code;
+  for (let i = 0; i < 5; i++)
+    await assert.rejects(
+      verifyRegistrationCode(
+        store,
+        env,
+        locked,
+        correct === "000000" ? "000001" : "000000",
+      ),
+      { status: 400 },
+    );
+  await assert.rejects(verifyRegistrationCode(store, env, locked, correct), {
+    status: 400,
+  });
+  const expired = "verify-expired@example.net";
+  await requestRegistrationCode(store, env, expired, "email-expired-ip", send);
+  await store.run(
+    "UPDATE registration_codes SET expires=0 WHERE email_hash=?",
+    await digest(expired),
+  );
+  await assert.rejects(
+    verifyRegistrationCode(store, env, expired, captured.code),
+    { status: 400 },
+  );
+  await assert.rejects(
+    requestRegistrationCode(
+      store,
+      env,
+      "verify-sendfail@example.net",
+      "email-fail-ip",
+      async () => {
+        throw new Error("private SMTP reply");
+      },
+    ),
+    { status: 503 },
+  );
+  assert.equal(
+    (
+      await store.first(
+        "SELECT state FROM registration_codes WHERE email_hash=?",
+        await digest("verify-sendfail@example.net"),
+      )
+    ).state,
+    "failed",
+  );
+  const previous = captured.code;
+  await store.run(
+    "UPDATE email_send_attempts SET ts=ts-61 WHERE email_hash=?",
+    await digest(locked),
+  );
+  await requestRegistrationCode(store, env, locked, "email-lock-ip", send);
+  assert.equal(
+    (
+      await store.first(
+        "SELECT attempts FROM registration_codes WHERE email_hash=?",
+        await digest(locked),
+      )
+    ).attempts,
+    0,
+  );
+  const fresh = await verifyRegistrationCode(store, env, locked, captured.code);
+  assert.ok(fresh.id);
+  // A newer challenge prevents using an earlier verified proof after password hashing.
+  await store.run(
+    "UPDATE registration_codes SET id=? WHERE email_hash=?",
+    "f".repeat(48),
+    await digest(locked),
+  );
+  await assert.rejects(
+    store.createUser(locked, "verification-password", {
+      email: locked,
+      emailVerification: fresh,
+    }),
+    { status: 400 },
+  );
+  const before = (
+    await store.first("SELECT count(*) n FROM email_send_attempts")
+  ).n;
+  await assert.rejects(
+    requestRegistrationCode(
+      store,
+      { ...env, REGISTRATION_SMTP: "" },
+      "unavailable@example.net",
+      "config-ip",
+      send,
+    ),
+    { status: 503 },
+  );
+  assert.equal(
+    (await store.first("SELECT count(*) n FROM email_send_attempts")).n,
+    before,
+  );
+  // Existing accounts receive the same response but no new email.
+  let sent = 0;
+  await store.run(
+    "UPDATE email_send_attempts SET ts=ts-61 WHERE email_hash=?",
+    await digest("person@example.com"),
+  );
+  const known = await requestRegistrationCode(
+    store,
+    env,
+    "person@example.com",
+    "known-mail-ip",
+    async () => {
+      sent++;
+    },
+  );
+  assert.equal(sent, 0);
+  assert.deepEqual(known, response);
 });

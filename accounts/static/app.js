@@ -1,6 +1,6 @@
 'use strict';
 const $=id=>document.getElementById(id);
-let csrf='',user=null,keyTarget=null;
+let csrf='',user=null,keyTarget=null,registrationRequiresCode=false,registrationCodeTimer=null;
 const lunaFields=f=>user?.luna_monthly_tokens===undefined?{}:Object.fromEntries(['luna_monthly_tokens','openai_asr_daily_seconds','openai_tts_daily_characters'].map(k=>[k,Number(f.elements[k].value)]));
 function message(text,error=false){$('message').textContent=text;$('message').classList.toggle('error',error);}
 async function api(path,method='GET',body){const response=await fetch(path,{method,headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:body===undefined?undefined:JSON.stringify(body)});const data=await response.json();if(!response.ok){const labels={provider_region_restricted:'OpenAI 拒绝当前地区访问，请联系管理员核查；不要自动重试',provider_auth_failed:'上游密钥异常，请联系管理员，无需重新登录',provider_credit_exhausted:'上游余额或账单限额不足',global_budget_exhausted:'全站模型预算已达到上限，不代表个人额度清零',global_cloud_disabled:'管理员已暂停云模型服务',account_luna_budget_exhausted:'个人 Luna 月额度不足',account_asr_budget_exhausted:'个人今日识别时长不足',account_tts_budget_exhausted:'个人今日合成字符不足',provider_stream_interrupted:'响应未完整结束，用量待核对，请勿自动重发'};const error=new Error((labels[data.error_code]??(typeof data.detail==='string'?data.detail:'请求失败'))+(data.request_id?' · 请求 ID：'+data.request_id:''));error.code=data.error_code;error.retryable=data.retryable===true;error.request_id=data.request_id;error.retry_after=response.headers.get('Retry-After');throw error;}return data;}
@@ -37,8 +37,16 @@ $('user-form').addEventListener('submit',run(async e=>{const f=e.target;const da
 $('edit-form').addEventListener('submit',run(async e=>{const f=e.target;await api('/admin/users/'+Number(f.elements.id.value),'PATCH',{services:selected(f),rpm:Number(f.elements.rpm.value),daily_requests:Number(f.elements.daily_requests.value),concurrency:Number(f.elements.concurrency.value),...lunaFields(f)});f.hidden=true;$('edit-container').hidden=true;await loadUsers();message('账号权限和限额已更新');}));
 refresh().catch(()=>{});
 
-$('show-register').addEventListener('click',run(async()=>{const info=await api('/auth/registration-info');if(info.registration_enabled===false)throw new Error('当前暂停公开注册');const q=info.defaults;$('registration-quotas').textContent='注册后每天可使用 '+q.daily_requests+' 次。';$('login').hidden=true;$('register').hidden=false;message('');}));
+$('show-register').addEventListener('click',run(async()=>{const info=await api('/auth/registration-info');if(info.registration_enabled===false)throw new Error('当前暂停公开注册');const q=info.defaults;registrationRequiresCode=info.email_verification===true;$('registration-code-fields').hidden=!registrationRequiresCode;$('register-form').elements.code.required=registrationRequiresCode;$('registration-quotas').textContent='注册后每天可使用 '+q.daily_requests+' 次。'+(registrationRequiresCode?'需要验证邮箱后完成注册。':'');$('login').hidden=true;$('register').hidden=false;message('');}));
 $('show-login').onclick=()=>{$('register').hidden=true;$('login').hidden=false;message('');};
-$('register-form').addEventListener('submit',run(async e=>{const f=e.target;const email=f.elements.email.value;if(f.elements.password.value!==f.elements.confirm_password.value)throw new Error('两次输入的密码不一致');const data=await api('/auth/register','POST',{email,password:f.elements.password.value});f.reset();$('register').hidden=true;$('login').hidden=false;$('login-form').elements.username.value=email;$('login-form').elements.password.focus();message(data.message);}));
+$('register-form').addEventListener('submit',run(async e=>{const f=e.target;const email=f.elements.email.value;if(f.elements.password.value!==f.elements.confirm_password.value)throw new Error('两次输入的密码不一致');const data=await api('/auth/register','POST',{email,password:f.elements.password.value,...(registrationRequiresCode?{code:f.elements.code.value.trim()}:{})});f.reset();$('register').hidden=true;$('login').hidden=false;$('login-form').elements.username.value=email;$('login-form').elements.password.focus();message(data.message);}));
 
 window.addEventListener('hashchange',run(async()=>{if(location.hash==='#alerts'&&user?.role==='admin'&&!user.must_change)await tab('alerts');if(location.hash==='#notices'&&user&&!user.must_change)await tab('notices');}));
+
+$('send-registration-code').addEventListener('click',run(async()=>{
+ const f=$('register-form'),button=$('send-registration-code');
+ if(!f.elements.email.reportValidity())return;
+ button.disabled=true;
+ try{const data=await api('/auth/registration-code','POST',{email:f.elements.email.value});message(data.message);let remaining=60;button.textContent=remaining+' 秒后重发';clearInterval(registrationCodeTimer);registrationCodeTimer=setInterval(()=>{remaining--;button.textContent=remaining>0?remaining+' 秒后重发':'发送验证码';if(remaining<=0){clearInterval(registrationCodeTimer);button.disabled=false;}},1000);f.elements.code.focus();}
+ catch(e){button.disabled=false;throw e;}
+}));
