@@ -27,6 +27,10 @@ npm test
 npm run deploy
 ```
 
+本机 Wrangler 的用户级登录授权保存在 `~/.config/.wrangler/`，当前实际配置文件为 `/home/lingzhang/.config/.wrangler/config/default.toml`。该文件包含 OAuth 授权信息，不要输出内容、提交 Git 或放入公开备份；文件权限应保持 600。此路径是当前 Linux 环境的实际位置，其他环境可能不同。
+
+项目根目录或 `cloudflare/` 下的 `.wrangler/` 是 Wrangler 自动生成的项目缓存、开发状态目录，与上述用户级授权目录不同。项目缓存可以重新生成；用户级授权配置不要按缓存清理，删除后通常需要重新登录。检查授权状态使用 `npx wrangler whoami`，需要重新授权时使用上面的 login 命令，无须读取令牌内容。`cloudflared` 的隧道授权位于独立配置中，不能替代 Wrangler 的 Worker/D1 授权。
+
 已登录且授权有效时可省略 login。修改账号静态页面、Worker 代码或绑定后用 deploy 更新；正常更新不要再次导入历史数据。
 
 ```bash
