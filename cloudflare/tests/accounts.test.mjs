@@ -2289,3 +2289,263 @@ test("Project inbox is the default destination without self HTTP calls and read 
     422,
   );
 });
+
+test("Customer notices isolate recipients, synchronize reads and enforce draft lifecycle", async () => {
+  const store = new Store(db),
+    password = "customer-notice-password";
+  const a = await store.createUser("notice-reader-a", password, {
+      must_change: 0,
+    }),
+    b = await store.createUser("notice-reader-b", password, { must_change: 0 });
+  const access = (await store.login(a.username, password, "notice-a-ip")).body
+      .access_token,
+    other = (await store.login(b.username, password, "notice-b-ip")).body
+      .access_token;
+  const draft = {
+    title: "服务公告 <script>",
+    body: "纯文本\n新功能已上线",
+    audience: "all",
+    priority: "important",
+  };
+  const create = await call("/admin/notices", draft, { access: admin });
+  assert.equal(create.status, 200);
+  const id = create.body.id;
+  assert.equal((await call("/account/notices")).status, 401);
+  assert.equal((await call("/admin/notices", draft, { access })).status, 403);
+  assert.equal(
+    (await call("/account/notices", undefined, { access })).body.total,
+    0,
+  );
+  const edit = await call(
+    "/admin/notices/" + id,
+    { ...draft, title: "已更新", version: 1 },
+    { access: admin, method: "PATCH" },
+  );
+  assert.equal(edit.body.version, 2);
+  assert.equal(
+    (
+      await call(
+        "/admin/notices/" + id,
+        { ...draft, version: 1 },
+        { access: admin, method: "PATCH" },
+      )
+    ).status,
+    409,
+  );
+  assert.equal(
+    (
+      await call(
+        "/admin/notices/" + id + "/publish",
+        { version: 1 },
+        { access: admin },
+      )
+    ).status,
+    409,
+  );
+  assert.equal(
+    (
+      await call(
+        "/admin/notices/" + id + "/publish",
+        { version: 2 },
+        { access: admin },
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await call(
+        "/admin/notices/" + id,
+        { ...draft, version: 3 },
+        { access: admin, method: "PATCH" },
+      )
+    ).status,
+    409,
+  );
+  let listed = (await call("/account/notices", undefined, { access })).body;
+  assert.equal(listed.unread, 1);
+  assert.equal(listed.items[0].title, "已更新");
+  assert.equal(listed.items[0].body, draft.body);
+  assert.equal(listed.items[0].user_ids, undefined);
+  for (let i = 0; i < 2; i++)
+    assert.equal(
+      (await call("/account/notices/read", { ids: [id] }, { access })).status,
+      200,
+    );
+  assert.equal(
+    (await call("/account/notices/unread-count", undefined, { access })).body
+      .unread,
+    0,
+  );
+  assert.equal(
+    (await call("/account/notices?state=unread", undefined, { access })).body
+      .items.length,
+    0,
+  );
+  assert.equal(
+    (await call("/account/notices/unread-count", undefined, { access: other }))
+      .body.unread,
+    1,
+  );
+  // New accounts also see still-active all-account notices.
+  const c = await store.createUser("notice-late-reader", password, {
+      must_change: 0,
+    }),
+    late = (await store.login(c.username, password, "notice-late-ip")).body
+      .access_token;
+  assert.equal(
+    (await call("/account/notices", undefined, { access: late })).body.total,
+    1,
+  );
+  const target = (
+    await call(
+      "/admin/notices",
+      { ...draft, audience: "users", user_ids: [a.id] },
+      { access: admin },
+    )
+  ).body.id;
+  await call(
+    "/admin/notices/" + target + "/publish",
+    { version: 1 },
+    { access: admin },
+  );
+  assert.equal(
+    (await call("/account/notices", undefined, { access })).body.total,
+    2,
+  );
+  assert.equal(
+    (await call("/account/notices", undefined, { access: other })).body.total,
+    1,
+  );
+  assert.equal(
+    (await call("/account/notices/read", { ids: [target] }, { access: other }))
+      .status,
+    404,
+  );
+  const future = (
+    await call(
+      "/admin/notices",
+      { ...draft, starts_at: Date.now() / 1000 + 3600 },
+      { access: admin },
+    )
+  ).body.id;
+  await call(
+    "/admin/notices/" + future + "/publish",
+    { version: 1 },
+    { access: admin },
+  );
+  assert.equal(
+    (await call("/account/notices/read", { ids: [future] }, { access })).status,
+    404,
+  );
+  const expires = (
+    await call(
+      "/admin/notices",
+      {
+        ...draft,
+        starts_at: Date.now() / 1000 - 100,
+        expires_at: Date.now() / 1000 + 10,
+      },
+      { access: admin },
+    )
+  ).body.id;
+  await call(
+    "/admin/notices/" + expires + "/publish",
+    { version: 1 },
+    { access: admin },
+  );
+  await store.run(
+    "UPDATE customer_notices SET expires_at=? WHERE id=?",
+    Date.now() / 1000 - 1,
+    expires,
+  );
+  assert.equal(
+    (await call("/account/notices", undefined, { access })).body.total,
+    2,
+  );
+  assert.equal(
+    (await call("/account/notices/read", { ids: [expires] }, { access }))
+      .status,
+    404,
+  );
+  assert.equal(
+    (
+      await call(
+        "/admin/notices/" + id + "/withdraw",
+        { version: 3 },
+        { access: admin },
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (await call("/account/notices", undefined, { access: other })).body.total,
+    0,
+  );
+  assert.equal(
+    (await call("/account/notices/read", { ids: [id] }, { access })).status,
+    404,
+  );
+  assert.equal(
+    (
+      await call(
+        "/admin/notices/" + id + "/publish",
+        { version: 4 },
+        { access: admin },
+      )
+    ).status,
+    409,
+  );
+  for (const bad of [
+    { ...draft, user_ids: [a.id] },
+    { ...draft, audience: "users", user_ids: [] },
+    { ...draft, audience: "users", user_ids: [9999999] },
+    { ...draft, priority: "critical" },
+    { ...draft, starts_at: 10, expires_at: 9 },
+    { ...draft, body: "x".repeat(8001) },
+  ])
+    assert.equal(
+      (await call("/admin/notices", bad, { access: admin })).status,
+      422,
+    );
+  assert.equal(
+    (await call("/account/notices?page=0", undefined, { access })).status,
+    422,
+  );
+  assert.equal(
+    (await call("/account/notices/read", { ids: [] }, { access })).status,
+    422,
+  );
+  const long = await call(
+    "/admin/notices",
+    { ...draft, body: "通知".repeat(4000) },
+    { access: admin },
+  );
+  assert.equal(long.status, 200);
+  assert.ok(
+    (
+      await store.first(
+        "SELECT count(*) n FROM audit WHERE action='publish_notice'",
+      )
+    ).n >= 3,
+  );
+  // Paging does not lose records with identical publication timestamps.
+  for (let i = 0; i < 32; i++)
+    await store.run(
+      "INSERT INTO customer_notices(id,title,body,state,starts_at,created,updated,published_at) VALUES(?,?,?,'published',0,0,0,1)",
+      i.toString(16).padStart(48, "0"),
+      "page " + i,
+      "text",
+    );
+  const first = (await call("/account/notices", undefined, { access: other }))
+      .body,
+    second = (
+      await call("/account/notices?page=2", undefined, { access: other })
+    ).body;
+  assert.equal(first.items.length, 30);
+  assert.equal(second.items.length, 2);
+  assert.equal(
+    new Set([...first.items, ...second.items].map((n) => n.id)).size,
+    32,
+  );
+});

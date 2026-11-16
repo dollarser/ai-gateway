@@ -43,6 +43,7 @@ alert_state = ["open"]
 notification_enabled = [False]
 notification_deliveries = []
 site_notices = []
+customer_notices = []
 mutations = []
 errors = []
 answers = []
@@ -87,6 +88,67 @@ def handle(route):
     data = req.post_data_json if req.method in ["POST", "PATCH"] else None
     if data is not None:
         mutations.append((path, data))
+    if path == "/account/notices/unread-count":
+        return respond(
+            {
+                "unread": sum(
+                    n["state"] == "published" and not n.get("read_at")
+                    for n in customer_notices
+                )
+            }
+        )
+    if path == "/account/notices/read":
+        for n in customer_notices:
+            if n["id"] in data["ids"]:
+                n["read_at"] = 1794700100
+        return respond({"ok": True})
+    if path == "/account/notices":
+        active = [n for n in customer_notices if n["state"] == "published"]
+        unread = sum(not n.get("read_at") for n in active)
+        state = urllib.parse.parse_qs(urllib.parse.urlsplit(req.url).query).get(
+            "state", ["all"]
+        )[0]
+        return respond(
+            {
+                "items": [
+                    n for n in active if state != "unread" or not n.get("read_at")
+                ],
+                "total": len(active),
+                "unread": unread,
+                "page": 1,
+                "page_size": 30,
+            }
+        )
+    if path == "/admin/notices":
+        if req.method == "POST":
+            n = dict(
+                data,
+                id="f" * 48,
+                state="draft",
+                version=1,
+                published_at=1794700000,
+                read_at=None,
+            )
+            customer_notices.append(n)
+            return respond({"id": n["id"], "version": 1, "state": "draft"})
+        return respond(
+            {
+                "items": customer_notices,
+                "total": len(customer_notices),
+                "page": 1,
+                "page_size": 30,
+            }
+        )
+    if path.startswith("/admin/notices/"):
+        n = customer_notices[0]
+        if path.endswith("/publish"):
+            n["state"] = "published"
+        elif path.endswith("/withdraw"):
+            n["state"] = "withdrawn"
+        else:
+            n.update(data)
+        n["version"] += 1
+        return respond({"id": n["id"], "version": n["version"], "state": n["state"]})
     if path == "/account/me":
         return respond({"user": users[0], "csrf": "test-csrf"})
     if path == "/auth/registration-info":
@@ -418,6 +480,36 @@ with sync_playwright() as p:
     page.reload()
     page.locator("#alerts-panel").wait_for(state="visible")
     assert "未读 0 条" in page.locator("#inbox-summary").inner_text()
+    page.locator('[data-tab="notices"]').click()
+    page.locator("#notices-panel").wait_for(state="visible")
+    page.locator("#notice-management>summary").click()
+    page.locator("#notice-form [name=title]").fill("通告 <img src=x onerror=alert(1)>")
+    page.locator("#notice-form [name=body]").fill("第一行\n<script>alert(1)</script>")
+    page.locator("#notice-form button").first.click()
+    page.locator("#notice-admin-items button").filter(has_text="发布").click()
+    page.locator("#notice-items article").wait_for()
+    assert "未读 1" in page.locator("#notice-summary").inner_text()
+    assert page.locator("#notice-items script,#notice-items img").count() == 0
+    page.locator("#notice-items button").click()
+    page.wait_for_timeout(100)
+    assert "未读 0" in page.locator("#notice-summary").inner_text()
+    page.reload()
+    page.locator("#notices-panel").wait_for(state="visible")
+    page.locator("#notice-items article").wait_for()
+    assert "已读" in page.locator("#notice-items").inner_text()
+    page.locator("#notice-management>summary").click()
+    page.locator("#notice-admin-items button").filter(has_text="撤回").click()
+    page.get_by_text("暂无通告", exact=True).wait_for()
+    users[0]["role"] = "user"
+    customer_notices[0]["state"] = "published"
+    page.reload()
+    page.locator("#notices-panel").wait_for(state="visible")
+    page.locator("#notice-items article").wait_for()
+    assert page.locator("#notice-management").is_hidden()
+    assert page.locator("#admin-tab").is_hidden()
+    users[0]["role"] = "admin"
+    page.reload()
+    page.locator("#notices-panel").wait_for(state="visible")
     assert not errors, errors
     (ROOT / "artifacts").mkdir(exist_ok=True)
     page.screenshot(path=str(ROOT / "artifacts/admin-desktop.png"), full_page=True)

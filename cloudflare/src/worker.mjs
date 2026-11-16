@@ -1,3 +1,4 @@
+import { noticesRoute } from "./notices.mjs";
 import { enqueueAlerts, deliverNotifications } from "./notifications.mjs";
 import { monitor, maintenance } from "./operations.mjs";
 import { Store, Denied, SERVICES, publicUser, day } from "./store.mjs";
@@ -273,7 +274,8 @@ async function route(request, env, ctx) {
     (p === "/" ||
       p === "/static/app.js" ||
       p === "/static/style.css" ||
-      p === "/static/admin.js")
+      p === "/static/admin.js" ||
+      p === "/static/notices.js")
   ) {
     const asset = new URL(request.url);
     asset.pathname = p === "/" ? "/" : p.slice("/static".length);
@@ -358,6 +360,12 @@ async function route(request, env, ctx) {
     store,
     p.startsWith("/admin/") || p.startsWith("/account/keys"),
   );
+  if (p.startsWith("/account/notices") || p.startsWith("/admin/notices")) {
+    const response = await noticesRoute(request, store, u, (r) =>
+      body(r, 65536),
+    );
+    if (response) return response;
+  }
   if (p.startsWith("/admin/")) {
     const response = await adminRoute(request, store, u, body, env);
     if (response) return response;

@@ -90,3 +90,7 @@ API 域名和请求格式不变。云文本、PCM 合成、标准 PCM WAV 识别
 | provider_stream_interrupted | 显示未完成和请求 ID，不自动重发 |
 
 只有真正的用户凭证过期/无效才进入登录刷新流程。保留 X-Request-ID 供管理员下载脱敏诊断包，不上传用户对话或音频作为默认排障材料。统计、参考探测和支持包的范围见 [网络诊断](network-diagnostics.md)。
+
+## 用户通告接入
+
+Worker 已提供 `/account/notices`、`/account/notices/unread-count` 和 `/account/notices/read`，均使用 **accounts.hilex.me** 的登录 access_token。客户端需要补充通知入口、角标、列表/详情和已读上报，登录及恢复前台时刷新，运行时约每三分钟检查并退避。撤回或过期后刷新列表应移除旧内容；正文按纯文本渲染。完整请求、响应、分页及状态说明见 [用户通告](customer-notices.md)。站内通告与管理员运维告警不同，也不等于系统推送。
