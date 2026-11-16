@@ -15,12 +15,13 @@ test("Probe validates IPv4/IPv6 and is explicitly a separate reference connectio
       async (url, options) => {
         assert.equal(url, "https://api64.ipify.org?format=json");
         assert.deepEqual(options.headers, { Accept: "application/json" });
-        assert.equal(options.redirect, "error");
+        assert.equal(options.redirect, "manual");
         return Response.json({ ip });
       },
     );
-    assert.equal(writes.length, 1);
-    const [sql, value, at, target, status, lease] = writes[0];
+    assert.equal(writes.length, 2);
+    const [sql, value, at, target, status] = writes[0];
+    const lease = writes[0].at(-1);
     assert.equal(value, ip);
     assert.ok(at > 0);
     assert.equal(target, "api64.ipify.org");

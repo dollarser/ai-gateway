@@ -13,6 +13,34 @@ let originCalls = 0,
   lastProviderPayload,
   lastAudioName;
 async function provider(request) {
+  if (new URL(request.url).hostname.endsWith("ipify.org")) {
+    assert.equal(request.headers.get("Authorization"), null);
+    return Response.json({ ip: "203.0.113.12" });
+  }
+  if (new URL(request.url).pathname === "/__diagnostics/network") {
+    assert.equal(request.headers.get("Authorization"), null);
+    assert.equal(request.headers.get("Cookie"), null);
+    assert.match(
+      request.headers.get("X-Diagnostic-Signature"),
+      /^[a-f0-9]{64}$/,
+    );
+    return Response.json({
+      schema: "network-reference-v1",
+      scope: "same_zone_tunnel",
+      observes_worker_tcp_source: false,
+      headers: {
+        "cf-ipcountry": "JP",
+        "cf-ray": "abc-NRT",
+        "cf-worker": "hilex.me",
+      },
+      sensitive_headers_present: {
+        authorization: false,
+        cookie: false,
+        "x-api-key": false,
+        "x-client-id": false,
+      },
+    });
+  }
   if (new URL(request.url).hostname === "api.hilex.me") {
     originCalls++;
     assert.equal(request.headers.get("X-Edge-Secret"), secret);
@@ -1935,4 +1963,237 @@ test("Optional global audio limits survive account usage deletion", async () => 
     );
     await store.run("DELETE FROM audio_spend WHERE day='2099-01-01'");
   }
+});
+
+test("Network statistics retain successful and failed cohorts and bundles exclude customer identifiers", async () => {
+  const store = new Store(db),
+    { uid } = await lunaUser("network-stats"),
+    ts = Date.now() / 1000;
+  for (let n = 0; n < 4; n++)
+    await store.run(
+      "INSERT INTO requests(id,user_id,service,path,started,ended,day,status,provider,model,protocol,request_id,upstream_status,upstream_error_code,ingress_colo,client_country,client_ip,user_agent,release_sha,upstream_attempted,egress_probe_ip) VALUES(?,?,'qwen','/v1/chat/completions',?,?,'2026-11-16',?,'openai','network-fixture','http',?,?,?,?,?,'203.0.113.77','PRIVATE_USER_AGENT','test-release',1,'203.0.113.77')",
+      "network-fixture-" + n,
+      uid,
+      ts - 10 + n,
+      ts - 9 + n,
+      n < 2 ? 200 : 502,
+      "network-safe-" + n,
+      n < 2 ? 200 : 403,
+      n < 2 ? null : "unsupported_country_region_territory",
+      n < 2 ? "NRT" : "LAX",
+      n < 2 ? "JP" : "HK",
+    );
+  await store.run(
+    "INSERT INTO network_observations(id,lease,created,trigger,result) VALUES('network-observation','network-fixture-2',?,'provider_403',?)",
+    Math.floor(ts),
+    JSON.stringify({
+      reference: {
+        ip: "203.0.113.77",
+        target: "api.ipify.org",
+        status: "observed_reference",
+      },
+      controlled: {
+        headers: { "cf-connecting-ip": "203.0.113.77", "cf-ipcountry": "HK" },
+      },
+    }),
+  );
+  assert.equal((await call("/admin/network-stats")).status, 401);
+  const response = await call(
+    "/admin/network-stats?hours=1&model=network-fixture",
+    undefined,
+    { access: admin },
+  );
+  assert.equal(response.status, 200);
+  assert.equal(response.body.summary.requests, 4);
+  assert.equal(
+    response.body.groups.find((r) => r.country === "JP").success_rate,
+    1,
+  );
+  assert.equal(
+    response.body.groups.find((r) => r.country === "HK").region_error_rate,
+    1,
+  );
+  assert.equal(
+    (await call("/admin/network-stats?hours=999", undefined, { access: admin }))
+      .status,
+    422,
+  );
+  const packet = await call(
+    "/admin/diagnostic-bundle?request_id=network-safe-2",
+    undefined,
+    { access: admin },
+  );
+  assert.equal(packet.status, 200);
+  const text = JSON.stringify(packet.body);
+  for (const value of ["203.0.113.77", "PRIVATE_USER_AGENT", "network-stats"])
+    assert.ok(!text.includes(value));
+  assert.equal(packet.body.request.release_sha, "test-release");
+  assert.equal(
+    packet.body.observation.result.controlled.ip_headers_present[
+      "cf-connecting-ip"
+    ],
+    true,
+  );
+  const normal = await store.createUser(
+    "network-normal",
+    "password-for-normal",
+    { must_change: 0 },
+  );
+  const login = await store.login(
+    "network-normal",
+    "password-for-normal",
+    "network-normal-ip",
+  );
+  assert.equal(
+    (
+      await call("/admin/network-stats", undefined, {
+        access: login.body.access_token,
+      })
+    ).status,
+    403,
+  );
+  const privateRoute = await mf.dispatchFetch(
+    "https://api.hilex.me/__diagnostics/network",
+  );
+  assert.equal(privateRoute.status, 404);
+  const probe = await call("/admin/network-probe", {}, { access: admin });
+  assert.equal(probe.status, 200);
+  assert.equal(
+    probe.body.result.controlled.status,
+    "observed_metadata",
+    JSON.stringify(probe.body),
+  );
+  assert.equal(
+    (await call("/admin/network-probe", {}, { access: admin })).status,
+    429,
+  );
+});
+
+test("Alert deliveries are deduplicated, signed, retried and expose only safe status", async () => {
+  const { enqueueAlerts, deliverNotifications, notificationStatus } =
+    await import("../src/notifications.mjs");
+  const store = new Store(db),
+    ts = Date.now() / 1000;
+  await store.run("DELETE FROM alert_deliveries");
+  await store.run("UPDATE operational_alerts SET state='resolved'");
+  await store.run(
+    "INSERT OR REPLACE INTO operational_alerts(kind,first_seen,last_seen,state,details,episode) VALUES('delivery_fixture',?,?,'open',?,1)",
+    ts,
+    ts,
+    JSON.stringify({ count: 3, private: "PRIVATE_SENTINEL" }),
+  );
+  const env = {
+    ALERT_WEBHOOK_URL: "https://alerts.example.test/ingest?token=PRIVATE_URL",
+    ALERT_WEBHOOK_SECRET: "test-webhook-signing-secret",
+  };
+  await enqueueAlerts(store, env);
+  await enqueueAlerts(store, env);
+  assert.equal(
+    (
+      await store.first(
+        "SELECT count(*) n FROM alert_deliveries WHERE kind='delivery_fixture'",
+      )
+    ).n,
+    1,
+  );
+  let attempts = 0,
+    deliveryId;
+  const transport = async (url, options) => {
+    attempts++;
+    assert.equal(options.headers["Content-Type"], "application/json");
+    assert.equal(options.redirect, "manual");
+    assert.ok(options.headers["X-Alert-Signature"]);
+    const body = JSON.parse(options.body);
+    assert.ok(!options.body.includes("PRIVATE_SENTINEL"));
+    assert.equal(body.details.count, 3);
+    if (!deliveryId) deliveryId = options.headers["Idempotency-Key"];
+    else assert.equal(options.headers["Idempotency-Key"], deliveryId);
+    if (attempts === 1) throw new DOMException("PRIVATE_URL", "TimeoutError");
+    return new Response(null, { status: 204 });
+  };
+  await deliverNotifications(store, env, transport);
+  assert.equal(
+    (
+      await store.first(
+        "SELECT error_code FROM alert_deliveries WHERE id=?",
+        deliveryId,
+      )
+    ).error_code,
+    "timeout",
+  );
+  await store.run(
+    "UPDATE alert_deliveries SET next_attempt=0 WHERE id=?",
+    deliveryId,
+  );
+  await Promise.all([
+    deliverNotifications(store, env, transport),
+    deliverNotifications(store, env, transport),
+  ]);
+  assert.equal(attempts, 2);
+  const status = await notificationStatus(store, env);
+  assert.equal(status.deliveries[0].status, "sent");
+  assert.ok(!JSON.stringify(status).includes("PRIVATE_URL"));
+  assert.equal(status.destination_host, "alerts.example.test");
+  assert.equal(
+    (await call("/admin/notifications/test", {}, { access: admin })).status,
+    409,
+  );
+});
+
+test("Permanent webhook failures stop retries and acknowledgement expires after one hour", async () => {
+  const { deliverNotifications } = await import("../src/notifications.mjs"),
+    { operationalAlert } = await import("../src/operations.mjs");
+  const store = new Store(db),
+    ts = Date.now() / 1000;
+  await store.run(
+    "INSERT INTO alert_deliveries(id,kind,episode,event_state,created,payload) VALUES('permanent-delivery','permanent_fixture',1,'open',?,'{}')",
+    ts,
+  );
+  let calls = 0;
+  const env = { ALERT_WEBHOOK_URL: "https://alerts.example.test/hook" };
+  const transport = async () => {
+    calls++;
+    return new Response(null, { status: 401 });
+  };
+  await deliverNotifications(store, env, transport);
+  await deliverNotifications(store, env, transport);
+  assert.equal(calls, 1);
+  const row = await store.first(
+    "SELECT attempts,error_code FROM alert_deliveries WHERE id='permanent-delivery'",
+  );
+  assert.equal(row.attempts, 3);
+  assert.equal(row.error_code, "http_401");
+  await operationalAlert(store, "acknowledgement_fixture", { count: 1 });
+  assert.equal(
+    (
+      await call(
+        "/admin/alerts/acknowledge",
+        { kind: "acknowledgement_fixture" },
+        { access: admin },
+      )
+    ).status,
+    200,
+  );
+  await operationalAlert(store, "acknowledgement_fixture", { count: 2 });
+  assert.equal(
+    (
+      await store.first(
+        "SELECT state FROM operational_alerts WHERE kind='acknowledgement_fixture'",
+      )
+    ).state,
+    "acknowledged",
+  );
+  await store.run(
+    "UPDATE operational_alerts SET acknowledged_at=? WHERE kind='acknowledgement_fixture'",
+    ts - 7200,
+  );
+  await operationalAlert(store, "acknowledgement_fixture", { count: 3 });
+  assert.equal(
+    (
+      await store.first(
+        "SELECT state FROM operational_alerts WHERE kind='acknowledgement_fixture'",
+      )
+    ).state,
+    "open",
+  );
 });

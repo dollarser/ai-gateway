@@ -321,11 +321,15 @@ export async function proxyLuna(
   } catch (e) {
     const global = budgetError(e);
     if (global) throw global;
-    if (String(e).includes("luna_budget_exhausted"))
-      throw new Denied(
+    if (String(e).includes("luna_budget_exhausted")) {
+      const error = new Denied(
         429,
         "GPT-6 Luna 本月余额不足以预留该请求，请降低输出上限或联系管理员",
       );
+      error.code = "account_luna_budget_exhausted";
+      error.retryable = false;
+      throw error;
+    }
     if (String(e).includes("UNIQUE"))
       throw new Denied(409, "该请求已提交，不能重复调用");
     throw e;

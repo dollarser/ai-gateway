@@ -469,6 +469,7 @@ export class Store {
       "client_country",
       "ingress_ray",
       "upstream_cf_ray",
+      "release_sha",
     ];
     const extra = fields.map((k) =>
       typeof t[k] === "string" && /^[a-zA-Z0-9_.:,/\[\]-]{1,256}$/.test(t[k])
@@ -478,8 +479,9 @@ export class Store {
     const numeric = (k) =>
       Number.isSafeInteger(t[k]) && t[k] >= 0 ? t[k] : null;
     await this.run(
-      "UPDATE requests SET model=?,provider=?,protocol=?,failure_stage=?,error_code=?,upstream_error_code=?,upstream_error_param=?,upstream_request_id=?,compatibility=?,ingress_colo=?,client_country=?,ingress_ray=?,upstream_cf_ray=?,upstream_status=?,duration_ms=?,first_byte_ms=? WHERE id=? AND ended IS NULL",
+      "UPDATE requests SET model=?,provider=?,protocol=?,failure_stage=?,error_code=?,upstream_error_code=?,upstream_error_param=?,upstream_request_id=?,compatibility=?,ingress_colo=?,client_country=?,ingress_ray=?,upstream_cf_ray=?,release_sha=?,upstream_attempted=?,upstream_status=?,duration_ms=?,first_byte_ms=? WHERE id=? AND ended IS NULL",
       ...extra,
+      t.upstream_attempted === 1 ? 1 : 0,
       numeric("upstream_status"),
       numeric("duration_ms"),
       numeric("first_byte_ms"),

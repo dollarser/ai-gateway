@@ -1,3 +1,8 @@
+import {
+  notificationStatus,
+  enqueueTest,
+  deliverNotifications,
+} from "./notifications.mjs";
 import { Denied, day } from "./store.mjs";
 import { now } from "./crypto.mjs";
 import { globalUsage, validateLimits } from "./budgets.mjs";
@@ -7,7 +12,7 @@ export async function operationalAlert(store, kind, details) {
   const ts = now();
   // Resolved alerts reopen only when a later monitoring window is still unhealthy.
   await store.run(
-    "INSERT INTO operational_alerts(kind,first_seen,last_seen,details) VALUES(?,?,?,?) ON CONFLICT(kind) DO UPDATE SET last_seen=excluded.last_seen,occurrences=occurrences+1,details=excluded.details,state=CASE WHEN operational_alerts.state='acknowledged' AND operational_alerts.last_seen>excluded.last_seen-3600 THEN operational_alerts.state ELSE 'open' END",
+    "INSERT INTO operational_alerts(kind,first_seen,last_seen,details) VALUES(?,?,?,?) ON CONFLICT(kind) DO UPDATE SET last_seen=excluded.last_seen,occurrences=occurrences+1,details=excluded.details,episode=CASE WHEN operational_alerts.state='resolved' THEN operational_alerts.episode+1 ELSE operational_alerts.episode END,first_seen=CASE WHEN operational_alerts.state='resolved' THEN excluded.first_seen ELSE operational_alerts.first_seen END,state=CASE WHEN operational_alerts.state='acknowledged' AND operational_alerts.acknowledged_at>excluded.last_seen-3600 THEN operational_alerts.state ELSE 'open' END",
     kind,
     ts,
     ts,
@@ -123,7 +128,15 @@ export async function maintenance(store) {
       ts - 86400,
     ),
     store.stmt("DELETE FROM identity_attempts WHERE ts<?", ts - 3600),
+    store.stmt(
+      "DELETE FROM alert_deliveries WHERE id IN(SELECT id FROM alert_deliveries WHERE created<? AND (status IN ('sent','cancelled') OR attempts>=3) LIMIT 1000)",
+      ts - 30 * 86400,
+    ),
     store.stmt("DELETE FROM diagnostic_probe_slots WHERE created<?", ts - 3600),
+    store.stmt(
+      "DELETE FROM network_observations WHERE id IN(SELECT id FROM network_observations WHERE created<? LIMIT 1000)",
+      ts - 7 * 86400,
+    ),
     store.stmt(
       "UPDATE requests SET client_ip=NULL,user_agent=NULL,device_id=NULL WHERE id IN(SELECT id FROM requests WHERE started<? AND (client_ip IS NOT NULL OR user_agent IS NOT NULL OR device_id IS NOT NULL) LIMIT 1000)",
       ts - 30 * 86400,
@@ -138,12 +151,19 @@ export async function maintenance(store) {
     ),
   ]);
 }
-export async function operationsRoute(request, store, user, readBody) {
+export async function operationsRoute(
+  request,
+  store,
+  user,
+  readBody,
+  env = {},
+) {
   const p = new URL(request.url).pathname,
     m = request.method;
   if (p === "/admin/operations" && m === "GET")
     return reply({
       ...(await globalUsage(store)),
+      notifications: await notificationStatus(store, env),
       registration: JSON.parse(
         (
           await store.first(
@@ -212,12 +232,29 @@ export async function operationsRoute(request, store, user, readBody) {
     )
       throw new Denied(422, "告警类型无效");
     const r = await store.run(
-      "UPDATE operational_alerts SET state='acknowledged' WHERE kind=? AND state='open'",
+      "UPDATE operational_alerts SET state='acknowledged',acknowledged_at=? WHERE kind=? AND state='open'",
+      now(),
       b.kind,
     );
     if (!r.meta.changes) throw new Denied(409, "告警已变更");
     await store.audit(user.id, "acknowledge_alert", b.kind);
     return reply({ ok: true });
+  }
+  if (p === "/admin/notifications/test" && m === "POST") {
+    const b = await readBody(request);
+    if (
+      !b ||
+      typeof b !== "object" ||
+      Array.isArray(b) ||
+      Object.keys(b).length
+    )
+      throw new Denied(422, "测试通知不接受自定义内容");
+    if (!(await notificationStatus(store, env)).configured)
+      throw new Denied(409, "尚未配置外部告警接收端");
+    const id = await enqueueTest(store, user);
+    if (!id) throw new Denied(429, "测试通知每分钟最多一次");
+    await deliverNotifications(store, env);
+    return reply({ id, ...(await notificationStatus(store, env)) });
   }
   return null;
 }

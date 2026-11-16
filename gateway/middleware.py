@@ -26,6 +26,7 @@ async def security(request, call_next):
         request.url.path.startswith("/v1/")
         or request.url.path == "/healthz"
         or request.url.path.startswith("/__codec/")
+        or request.url.path == "/__diagnostics/network"
     ):
         return JSONResponse(
             {"detail": f"账号和管理功能请使用 {PORTAL_HOST}"},

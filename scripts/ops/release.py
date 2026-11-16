@@ -111,6 +111,26 @@ def main():
             )
             manifest["status"] = "migrated"
             save()
+            run(
+                "origin-restart",
+                ["systemctl", "--user", "restart", "ai-gateway.service"],
+            )
+            import httpx
+            import time
+
+            for attempt in range(10):
+                try:
+                    ready = httpx.get(
+                        "http://127.0.0.1:18900/healthz", timeout=2, trust_env=False
+                    )
+                    ready.raise_for_status()
+                    if ready.json().get("ready") is True:
+                        break
+                except (httpx.HTTPError, ValueError):
+                    pass
+                time.sleep(0.5)
+            else:
+                raise RuntimeError("Protected origin did not become ready")
             assert_clean()
             run(
                 "deploy",
@@ -132,15 +152,9 @@ def main():
             )
             manifest["worker_version"] = match[1] if match else None
             run(
-                "origin-restart",
-                ["systemctl", "--user", "restart", "ai-gateway.service"],
-            )
-            run(
                 "deployment-check",
                 [sys.executable, "-m", "scripts.smoke.check_deployment"],
             )
-            import httpx
-
             for host in ("accounts", "api"):
                 response = httpx.get(
                     "https://" + host + ".hilex.me/healthz", timeout=30

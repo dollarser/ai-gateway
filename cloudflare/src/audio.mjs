@@ -192,13 +192,20 @@ async function reserve(store, lease, kind, units) {
   } catch (e) {
     const global = budgetError(e);
     if (global) throw global;
-    if (String(e).includes("audio_budget_exhausted"))
-      throw new Denied(
+    if (String(e).includes("audio_budget_exhausted")) {
+      const error = new Denied(
         429,
         kind === "asr"
           ? "今日 OpenAI 语音识别剩余时长不足"
           : "今日 OpenAI 语音合成剩余字符不足",
       );
+      error.code =
+        kind === "asr"
+          ? "account_asr_budget_exhausted"
+          : "account_tts_budget_exhausted";
+      error.retryable = false;
+      throw error;
+    }
     if (String(e).includes("UNIQUE"))
       throw new Denied(409, "该语音请求已提交，不能重复调用");
     throw e;

@@ -1,0 +1,15 @@
+ALTER TABLE requests ADD COLUMN upstream_attempted INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE requests ADD COLUMN release_sha TEXT;
+ALTER TABLE requests ADD COLUMN egress_probe_stage TEXT;
+ALTER TABLE requests ADD COLUMN egress_probe_error TEXT;
+ALTER TABLE requests ADD COLUMN egress_probe_http_status INTEGER;
+ALTER TABLE requests ADD COLUMN egress_probe_duration_ms INTEGER;
+CREATE INDEX idx_requests_provider_time ON requests(provider,started);
+CREATE TABLE network_observations(id TEXT PRIMARY KEY,lease TEXT,created INTEGER NOT NULL,trigger TEXT NOT NULL,ingress_colo TEXT,client_country TEXT,result TEXT NOT NULL);
+CREATE INDEX idx_network_observations_time ON network_observations(created);
+ALTER TABLE operational_alerts ADD COLUMN acknowledged_at REAL;
+UPDATE operational_alerts SET acknowledged_at=last_seen WHERE state='acknowledged';
+ALTER TABLE operational_alerts ADD COLUMN episode INTEGER NOT NULL DEFAULT 1;
+CREATE TABLE alert_deliveries(id TEXT PRIMARY KEY,kind TEXT NOT NULL,episode INTEGER NOT NULL,event_state TEXT NOT NULL,created REAL NOT NULL,last_attempt REAL,attempts INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'pending',next_attempt REAL NOT NULL DEFAULT 0,lease_until REAL NOT NULL DEFAULT 0,response_status INTEGER,error_code TEXT,delivered_at REAL,payload TEXT NOT NULL);
+CREATE INDEX idx_alert_delivery_queue ON alert_deliveries(status,next_attempt);
+CREATE INDEX idx_alert_delivery_cooldown ON alert_deliveries(kind,episode,event_state,created);

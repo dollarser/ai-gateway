@@ -326,6 +326,7 @@ export async function edgeAPI(request, env, ctx) {
   let lease = null;
   const trace = {
     ...ingressDiagnostics(request),
+    release_sha: env.RELEASE_SHA ?? null,
     request_id: id,
     provider: "edge",
     protocol: "http",
@@ -590,7 +591,7 @@ export async function edgeAPI(request, env, ctx) {
         ctx,
         form,
         measuredMs,
-        providerTransport(store, lease, trace, ctx),
+        providerTransport(store, lease, trace, ctx, fetch, env),
       );
       response.headers.set("X-Audio-Processing", measurement);
     } else {
@@ -631,7 +632,7 @@ export async function edgeAPI(request, env, ctx) {
           ),
           env,
           store,
-          providerTransport(store, lease, trace, ctx),
+          providerTransport(store, lease, trace, ctx, fetch, env),
           ctx,
         );
       } else if (payload.model === LUNA_MODEL) {
@@ -646,7 +647,7 @@ export async function edgeAPI(request, env, ctx) {
           ctx,
           payload,
           path === "/v1/responses",
-          providerTransport(store, lease, trace, ctx),
+          providerTransport(store, lease, trace, ctx, fetch, env),
         );
       } else {
         if (path === "/v1/responses")
@@ -676,8 +677,21 @@ export async function edgeAPI(request, env, ctx) {
     trace.upstream_request_id =
       e.upstream_request_id ?? trace.upstream_request_id;
     trace.compatibility = e.compatibility;
+    const quotaCodes = {
+      quota_rpm: "account_rate_limited",
+      quota_concurrency: "account_concurrency_limited",
+      quota_daily: "account_daily_limit",
+      quota_tokens: "key_token_budget_exhausted",
+    };
+    const quota = Object.keys(quotaCodes).find((k) => String(e).includes(k));
+    if (quota) e.retryable = ["quota_rpm", "quota_concurrency"].includes(quota);
     trace.error_code =
-      e.code ?? (status < 500 ? "request_rejected" : "edge_unavailable");
+      e.code ??
+      (quota
+        ? quotaCodes[quota]
+        : status < 500
+          ? "request_rejected"
+          : "edge_unavailable");
     if (!(e instanceof Denied))
       console.error("edge_request_failed", e.name, id);
     trace.duration_ms = Math.round(performance.now() - start);

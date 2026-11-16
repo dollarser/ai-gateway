@@ -72,7 +72,7 @@ npm run check
 .venv-accounts/bin/python -m scripts.ops.release --deploy
 ```
 
-依次运行 Python/Worker 测试、私有 D1 备份及内存恢复校验、增量迁移、Worker 发布、源站重启、部署检查及公网 SHA 核对。Worker 版本 tag/message 和 RELEASE_SHA 对应 Git 提交；healthz 返回 release。完整日志、备份、版本与步骤记录在忽略的 `.runtime/releases/`，权限受 umask 077 保护；发布加进程锁且要求干净工作区。
+依次运行 Python/Worker 测试、私有 D1 备份及内存恢复校验、增量迁移、源站重启与就绪检查、Worker 发布、部署检查及公网 SHA 核对。Worker 版本 tag/message 和 RELEASE_SHA 对应 Git 提交；healthz 返回 release。完整日志、备份、版本与步骤记录在忽略的 `.runtime/releases/`，权限受 umask 077 保护；发布加进程锁且要求干净工作区。
 
 失败后停止后续步骤，查看 release.json。Worker 回滚使用已验证旧版本的 wrangler rollback；增量 schema 保留向后兼容，不用旧备份覆盖仍有写入的生产 D1。账本修复另行审计处理。
 

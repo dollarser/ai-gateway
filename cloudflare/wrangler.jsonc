@@ -19,6 +19,7 @@
     "ACCOUNT_ORIGIN": "https://accounts.hilex.me",
     "API_HOST": "api.hilex.me",
     "LOCAL_MODELS_ENABLED": "false",
+    "PROVIDER_DIAGNOSTICS_ENABLED": "true",
   },
   "routes": [{"pattern": "accounts.hilex.me", "custom_domain": true}, {"pattern":"api.hilex.me/*", "zone_name":"hilex.me"}],
   "observability": {"enabled": true, "logs": {"enabled": true, "invocation_logs": false}},

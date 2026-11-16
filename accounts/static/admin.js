@@ -414,6 +414,87 @@
         : "没有匹配记录（未通过认证的请求只记录于安全日志）";
     }),
   );
+  $("download-diagnostic").addEventListener(
+    "click",
+    run(async () => {
+      const id = $("request-search-form").elements.request_id.value.trim();
+      if (!id) throw new Error("请填写服务端请求 ID");
+      const data = await api(
+        "/admin/diagnostic-bundle?request_id=" + encodeURIComponent(id),
+      );
+      const url = URL.createObjectURL(
+          new Blob([JSON.stringify(data, null, 2)], {
+            type: "application/json",
+          }),
+        ),
+        link = document.createElement("a");
+      link.href = url;
+      link.download =
+        "provider-diagnostic-" +
+        (data.request?.request_id ?? "request") +
+        ".json";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }),
+  );
+  $("network-stats-form").addEventListener(
+    "submit",
+    run(async (e) => {
+      const f = e.target,
+        params = new URLSearchParams({ hours: f.elements.hours.value });
+      for (const k of ["country", "colo", "model"])
+        if (f.elements[k].value.trim())
+          params.set(
+            k,
+            k === "model"
+              ? f.elements[k].value.trim()
+              : f.elements[k].value.trim().toUpperCase(),
+          );
+      const data = await api("/admin/network-stats?" + params);
+      $("network-summary").textContent =
+        "收到 " +
+        num(data.summary.requests) +
+        " 次，成功 " +
+        num(data.summary.successful) +
+        " 次，地区拒绝 " +
+        num(data.summary.region_restricted) +
+        " 次" +
+        (data.truncated ? "；仅显示前 200 组" : "");
+      $("network-groups").replaceChildren();
+      for (const r of data.groups) {
+        const tr = document.createElement("tr");
+        cell(tr, r.country + " / " + r.colo);
+        cell(tr, r.model + " / " + r.protocol);
+        cell(tr, r.requests + " / " + r.provider_attempts);
+        cell(tr, r.successful + " / " + r.failed + " / " + r.inflight);
+        cell(
+          tr,
+          (r.success_rate * 100).toFixed(1) +
+            "% / " +
+            (r.region_error_rate * 100).toFixed(1) +
+            "%" +
+            (r.requests < 20 ? "（样本少于 20）" : ""),
+        );
+        cell(tr, new Date(r.last_seen * 1000).toLocaleString());
+        $("network-groups").append(tr);
+      }
+      $("network-probe-result").textContent = JSON.stringify(
+        data.observations,
+        null,
+        2,
+      );
+    }),
+  );
+  $("run-network-probe").addEventListener(
+    "click",
+    run(async () => {
+      $("network-probe-result").textContent = JSON.stringify(
+        await api("/admin/network-probe", "POST", {}),
+        null,
+        2,
+      );
+    }),
+  );
   async function review() {
     const f = $("quota-review-filter");
     const params = new URLSearchParams({ state: f.elements.state.value });
@@ -526,6 +607,21 @@
       data.luna.reserved_usd.toFixed(4) +
       "，剩余 $" +
       data.luna.remaining_usd.toFixed(4);
+    const notifications = data.notifications ?? {
+      configured: false,
+      deliveries: [],
+    };
+    $("notification-status").textContent = notifications.configured
+      ? "外部告警：已配置 HTTPS Webhook（" +
+        notifications.destination_host +
+        "）"
+      : "外部告警：未配置接收端，目前仅后台和 Worker 日志可见";
+    $("test-notification").disabled = !notifications.configured;
+    $("notification-deliveries").textContent = JSON.stringify(
+      notifications.deliveries,
+      null,
+      2,
+    );
     $("operational-alerts").replaceChildren();
     const names = {
       provider_region_restricted: "上游地区限制",
@@ -562,6 +658,14 @@
       $("operational-alerts").append(p);
     }
   }
+  $("test-notification").addEventListener(
+    "click",
+    run(async () => {
+      await api("/admin/notifications/test", "POST", {});
+      await loadOperations();
+      message("测试通知已处理，请查看投递状态");
+    }),
+  );
   $("load-operations").addEventListener("click", run(loadOperations));
   $("global-limits-form").addEventListener(
     "submit",

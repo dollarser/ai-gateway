@@ -1,3 +1,4 @@
+import { enqueueAlerts, deliverNotifications } from "./notifications.mjs";
 import { monitor, maintenance } from "./operations.mjs";
 import { Store, Denied, SERVICES, publicUser, day } from "./store.mjs";
 import { digest, equal, now, token, passwordHash } from "./crypto.mjs";
@@ -358,7 +359,7 @@ async function route(request, env, ctx) {
     p.startsWith("/admin/") || p.startsWith("/account/keys"),
   );
   if (p.startsWith("/admin/")) {
-    const response = await adminRoute(request, store, u, body);
+    const response = await adminRoute(request, store, u, body, env);
     if (response) return response;
   }
   if (p === "/account/audio-usage" && method === "GET")
@@ -645,6 +646,8 @@ export default {
           ),
         ]);
         await monitor(store);
+        await enqueueAlerts(store, env);
+        await deliverNotifications(store, env);
         await maintenance(store);
       })(),
     );

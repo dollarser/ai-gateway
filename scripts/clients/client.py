@@ -6,6 +6,7 @@ import wave
 from pathlib import Path
 import httpx
 from scripts.clients.client_auth import client_id
+from scripts.clients.errors import require_success
 
 
 def headers():
@@ -61,7 +62,7 @@ def main():
                         )
                     },
                 )
-                response.raise_for_status()
+                require_success(response)
                 print(response.json()["text"])
         else:
             output = Path(args.output)
@@ -79,7 +80,7 @@ def main():
                         "stream": True,
                     },
                 ) as response:
-                    response.raise_for_status()
+                    require_success(response)
                     if not response.headers.get("Content-Type", "").startswith(
                         "audio/pcm"
                     ):

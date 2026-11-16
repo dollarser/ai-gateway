@@ -55,26 +55,7 @@ GitHub Actions 的 Gateway checks 对 push/PR 运行 Python 和 Worker 测试，
 
 ## 出口参考 IP 与地区拒绝排查
 
-公网 Worker 请求诊断新增以下字段，可在管理员“按请求 ID 诊断”中查看：
-
-| 字段 | 含义 |
-|---|---|
-| ingress_colo / ingress_ray | Cloudflare 请求入口节点与 Ray ID；不是保证的实际执行位置或出口 |
-| client_country | Cloudflare 对访问客户端的地区判定；不是 Worker 出口地区 |
-| upstream_cf_ray / upstream_request_id | OpenAI 响应携带的 CF-Ray / x-request-id，缺失时留空 |
-| egress_probe_ip | 独立诊断连接被目标服务观察到的参考 IP，不是 OpenAI 当次连接的确定出口 IP |
-| egress_probe_target / egress_probe_at | 探测目标 api64.ipify.org、探测开始的 Unix 秒时间 |
-| egress_probe_status | observed_reference、timeout、invalid_response、http_error、sampled_out 或 failed |
-
-仅当 OpenAI 返回 HTTP 403 时，Worker 在 waitUntil 后台尝试独立 IP 探测；同入口节点每 5 分钟最多一次，其余标记 sampled_out；正常请求不额外探测，也不等待探测结果。探测超时为 2 秒，限制响应体 256 字节，不重试；失败不覆盖原模型错误或改变额度结算。后台任务可能因运行环境终止而未完成，空字段不代表没有地区错误。
-
-探测请求新建，只显式设置 Accept，不复制模型请求的 API Key、Cookie、客户端请求头、对话或音频。它是独立连接，目的地址、IPv4/IPv6 和网络路由均可能与 OpenAI 不同，不能把测得的 IP 标成 OpenAI 实际看到的来源。跨 Cloudflare 区域的 IP 头还可能使用合成地址。准确来源需 OpenAI/Cloudflare 根据 Ray ID、请求 ID 和时间核查；现有历史错误无法补录当时的出口。
-
-这些信息保存在 D1 requests，仅管理员诊断展示；不放进普通客户端错误响应。先应用 0009_audio_spend.sql，再部署 Worker。此功能不固定出口、不改变路由，也不改变地区访问限制。
-
-参考：[ipify 的 IPv4/IPv6 接口](https://www.ipify.org/)、[Cloudflare 请求元数据](https://developers.cloudflare.com/workers/runtime-apis/request/)、[Cloudflare 请求头](https://developers.cloudflare.com/fundamentals/reference/http-headers/)。
-
-本次通过 37 项 Worker 测试，包含 403、后台探测成功/失败/超时、IPv4/IPv6 校验、探测失败不影响模型错误和额度退款。公网临时账号实际请求返回 200，入口节点及 OpenAI 的 Ray ID / request ID 已正常入库，成功请求没有额外 IP 探测；测试账号及关联数据已清理。公网此次未触发 403，因此真实参考 IP 字段须待后续 403 才会产生，不能将模拟测试 IP 视为线上出口。
+最新字段、成功/失败抽样、同 zone 签名接收端、分组统计与脱敏下载见 [网络诊断](network-diagnostics.md)。记录不等于 OpenAI 当次连接证据；之前 redirect:error 的兼容性问题已修正。
 
 ## 全站运行管理
 
@@ -84,7 +65,7 @@ GitHub Actions 的 Gateway checks 对 push/PR 运行 Python 和 Worker 测试，
 
 Cron 每 15 分钟根据真实请求更新告警：地区限制、15 分钟内至少 20 次请求且 5xx 占比达到 10%、P95 完整请求耗时大于 120 秒、至少 10 个音频流且 P95 首字节大于 10 秒、超过 15 分钟未结算额度、Luna 月预算达到 80%。首字节是网关输出首块的时间，不是客户端播放时间。告警在后台查看、知悉，恢复后自动解除；已知悉但持续一小时仍异常会重新打开。
 
-安全的聚合告警同时写 Worker console，并启用 Workers Logs、关闭自动 invocation 日志，避免收集原始请求头。没有配置外部邮件/IM 通知，不会向第三方发送告警。认证 timer 继续只验证匿名拒绝边界，不消耗模型额度。
+安全的聚合告警同时写 Worker console，并启用 Workers Logs、关闭自动 invocation 日志，避免收集原始请求头。默认未配置外部通知；可安装通用 HTTPS Webhook，见 [外部告警投递](alert-delivery.md)。未配置时不会向外发送。认证 timer 继续只验证匿名拒绝边界，不消耗模型额度。
 
 每轮清理最多 1000 个过期 token/session；已使用 refresh token 保留到过期后一天，以保留重放检测证据。清理无关联的过期 family，30 天后清除请求 IP/UA/设备标识。超过 90 天且无模型账本或核对记录的已结束请求，每轮最多归档 500 条到 request_history 再删除明细，归档与删除同批事务，重复运行不重复计数。财务账本及其请求、审计和全站成本不自动删除，不会批量退还未结算额度。
 

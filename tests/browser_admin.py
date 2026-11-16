@@ -40,6 +40,8 @@ limits = {
 }
 policy = {"enabled": True, "ip_hourly": 5, "global_hourly": 100, "global_minute": 15}
 alert_state = ["open"]
+notification_enabled = [False]
+notification_deliveries = []
 mutations = []
 errors = []
 answers = []
@@ -92,6 +94,11 @@ def handle(route):
         return respond(
             {
                 "limits": limits,
+                "notifications": {
+                    "configured": notification_enabled[0],
+                    "destination_host": "alerts.example.test",
+                    "deliveries": notification_deliveries,
+                },
                 "month": "2026-11",
                 "luna": {"used_usd": 1.2, "reserved_usd": 0.1, "remaining_usd": 198.8},
                 "registration": policy,
@@ -114,6 +121,67 @@ def handle(route):
     if path == "/admin/alerts/acknowledge":
         alert_state[0] = "acknowledged"
         return respond({"ok": True})
+    if path == "/admin/network-stats":
+        return respond(
+            {
+                "summary": {"requests": 4, "successful": 2, "region_restricted": 2},
+                "groups": [
+                    {
+                        "country": "JP",
+                        "colo": "NRT",
+                        "model": "gpt-6-luna",
+                        "protocol": "http",
+                        "requests": 2,
+                        "provider_attempts": 2,
+                        "successful": 2,
+                        "failed": 0,
+                        "inflight": 0,
+                        "success_rate": 1,
+                        "region_error_rate": 0,
+                        "last_seen": 1794700000,
+                    },
+                    {
+                        "country": "HK",
+                        "colo": "LAX",
+                        "model": "gpt-6-luna",
+                        "protocol": "sse",
+                        "requests": 2,
+                        "provider_attempts": 2,
+                        "successful": 0,
+                        "failed": 2,
+                        "inflight": 0,
+                        "success_rate": 0,
+                        "region_error_rate": 1,
+                        "last_seen": 1794700001,
+                    },
+                ],
+                "observations": [],
+                "truncated": False,
+            }
+        )
+    if path == "/admin/network-probe":
+        return respond(
+            {
+                "result": {
+                    "controlled": {
+                        "scope": "same_zone_tunnel",
+                        "observes_worker_tcp_source": False,
+                        "status": "observed_metadata",
+                    }
+                }
+            }
+        )
+    if path == "/admin/diagnostic-bundle":
+        return respond(
+            {
+                "schema": "provider-diagnostic-v1",
+                "request": {"request_id": "test-request", "model": "gpt-6-luna"},
+                "limitations": ["reference only"],
+            }
+        )
+    if path == "/admin/notifications/test":
+        notification_deliveries.append({"status": "sent", "kind": "test"})
+        return respond({"id": "test-delivery"})
     if path == "/admin/requests":
         return respond(
             [
@@ -278,6 +346,30 @@ with sync_playwright() as p:
     page.locator("#operational-alerts button").click()
     page.wait_for_timeout(100)
     assert alert_state[0] == "acknowledged"
+    assert page.locator("#test-notification").is_disabled()
+    page.locator("#network-panel>summary").click()
+    page.locator("#network-stats-form button").click()
+    page.locator("#network-groups tr").nth(1).wait_for()
+    assert (
+        "JP / NRT" in page.locator("#network-groups").inner_text()
+        and "HK / LAX" in page.locator("#network-groups").inner_text()
+    )
+    page.locator("#run-network-probe").click()
+    page.locator("#network-probe-result").get_by_text(
+        "same_zone_tunnel", exact=False
+    ).wait_for()
+    with page.expect_download() as download:
+        page.locator("#download-diagnostic").click()
+    artifact = ROOT / "artifacts/provider-diagnostic-test.json"
+    artifact.parent.mkdir(exist_ok=True)
+    download.value.save_as(artifact)
+    assert json.loads(artifact.read_text())["schema"] == "provider-diagnostic-v1"
+    notification_enabled[0] = True
+    page.locator("#load-operations").click()
+    page.wait_for_timeout(100)
+    page.locator("#test-notification").click()
+    page.wait_for_timeout(100)
+    assert notification_deliveries and notification_deliveries[0]["status"] == "sent"
     assert not errors, errors
     (ROOT / "artifacts").mkdir(exist_ok=True)
     page.screenshot(path=str(ROOT / "artifacts/admin-desktop.png"), full_page=True)

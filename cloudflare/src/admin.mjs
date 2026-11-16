@@ -1,3 +1,4 @@
+import { networkAdminRoute } from "./network-admin.mjs";
 import { operationsRoute } from "./operations.mjs";
 import { Denied, publicUser, day } from "./store.mjs";
 import { now } from "./crypto.mjs";
@@ -59,8 +60,10 @@ const result = (v) =>
       "X-Content-Type-Options": "nosniff",
     },
   });
-export async function adminRoute(request, store, u, readBody) {
-  const operational = await operationsRoute(request, store, u, readBody);
+export async function adminRoute(request, store, u, readBody, env = {}) {
+  const network = await networkAdminRoute(request, env, store, u, readBody);
+  if (network) return network;
+  const operational = await operationsRoute(request, store, u, readBody, env);
   if (operational) return operational;
   const diagnostic = await diagnosticsRoute(request, store, u, readBody);
   if (diagnostic) return diagnostic;

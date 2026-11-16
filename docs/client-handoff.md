@@ -73,3 +73,20 @@ API 域名和请求格式不变。云文本、PCM 合成、标准 PCM WAV 识别
 - 错误 JSON 提供 error_code、retryable，参数错误和地区限制不会通过重试修复。`provider_rate_limited` 可遵守 Retry-After；`provider_credit_exhausted`、`provider_auth_failed`、`provider_region_restricted`、`global_budget_exhausted` 应提示并停止自动重试。不得将提供方认证异常当成用户 token 失效而反复登录。
 - 账号每月 1000 万 tokens 额度保留；全站 Luna 另有每月 200 美元估算预算。管理员暂停云服务返回 global_cloud_disabled。预算按北京时间自然月重置；全站预算耗尽不代表个人额度被清零。
 - 默认示例客户端改用云 HTTP，老自建语音示例移至 `python -m scripts.clients.local_ws`。
+
+## 错误展示与重试决策补充
+
+本仓库 Python HTTP 示例已接入 scripts/clients/errors.py，网页错误对象保留 code、request_id、retryable、retry_after；均不会自动重放模型请求。外部 Android/其他客户端应按下表接入，不能只根据 HTTP 502/429 决策：
+
+| error_code | 展示和动作 |
+|---|---|
+| provider_region_restricted | 当前上游地区访问受限，联系管理员核查；不反复登录，不自动重试 |
+| provider_auth_failed | 上游密钥异常；不清除用户登录状态 |
+| provider_credit_exhausted | 上游账单/余额不足，联系管理员 |
+| global_budget_exhausted | 全站预算达到上限，不是个人额度被清零 |
+| account_luna_budget_exhausted / account_asr_budget_exhausted / account_tts_budget_exhausted | 明确展示对应个人额度不足 |
+| account_daily_limit / key_token_budget_exhausted | 个人请求数或当前 Key 的额度不足 |
+| provider_rate_limited / account_rate_limited / account_concurrency_limited | 可参考 Retry-After 稍后由调用方重试；避免重复执行工具副作用 |
+| provider_stream_interrupted | 显示未完成和请求 ID，不自动重发 |
+
+只有真正的用户凭证过期/无效才进入登录刷新流程。保留 X-Request-ID 供管理员下载脱敏诊断包，不上传用户对话或音频作为默认排障材料。统计、参考探测和支持包的范围见 [网络诊断](network-diagnostics.md)。
