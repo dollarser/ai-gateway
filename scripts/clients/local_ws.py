@@ -97,7 +97,7 @@ def main():
     parser.add_argument("mode", choices=["asr", "tts"])
     parser.add_argument("input", help="16kHz mono WAV for ASR; UTF-8 text file for TTS")
     parser.add_argument("--url", help="Override the public gateway WebSocket URL")
-    parser.add_argument("--output", default="artifacts/tts.wav")
+    parser.add_argument("--output", default=".runtime/tests/clients/tts.wav")
     parser.add_argument("--delay", type=float, default=0.2)
     parser.add_argument("--realtime", action="store_true")
     asyncio.run(run(parser.parse_args()))

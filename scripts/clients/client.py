@@ -45,7 +45,7 @@ def main():
     parser.add_argument("mode", choices=["asr", "tts"])
     parser.add_argument("input", help="audio file for ASR; UTF-8 text file for TTS")
     parser.add_argument("--base-url", default="https://api.hilex.me/v1")
-    parser.add_argument("--output", default="artifacts/tts.wav")
+    parser.add_argument("--output", default=".runtime/tests/clients/tts.wav")
     parser.add_argument("--voice", default="marin")
     args = parser.parse_args()
     with httpx.Client(timeout=240, headers=headers()) as client:

@@ -530,8 +530,8 @@ with sync_playwright() as p:
     ).wait_for()
     with page.expect_download() as download:
         page.locator("#download-diagnostic").click()
-    artifact = ROOT / "artifacts/provider-diagnostic-test.json"
-    artifact.parent.mkdir(exist_ok=True)
+    artifact = ROOT / ".runtime/tests/browser/provider-diagnostic-test.json"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
     download.value.save_as(artifact)
     assert json.loads(artifact.read_text())["schema"] == "provider-diagnostic-v1"
     notification_enabled[0] = True
@@ -583,10 +583,10 @@ with sync_playwright() as p:
     page.reload()
     page.locator("#notices-panel").wait_for(state="visible")
     assert not errors, errors
-    (ROOT / "artifacts").mkdir(exist_ok=True)
-    page.screenshot(path=str(ROOT / "artifacts/admin-desktop.png"), full_page=True)
+    (ROOT / ".runtime/tests/browser").mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(ROOT / ".runtime/tests/browser/admin-desktop.png"), full_page=True)
     page.set_viewport_size({"width": 390, "height": 844})
-    page.screenshot(path=str(ROOT / "artifacts/admin-mobile.png"), full_page=True)
+    page.screenshot(path=str(ROOT / ".runtime/tests/browser/admin-mobile.png"), full_page=True)
     assert page.evaluate("document.documentElement.scrollWidth") <= 390
     print(
         "Browser: settings, bulk ban/unban, bulk quotas, user creation, IP/details, safe rendering and mobile layout passed"

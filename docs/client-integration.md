@@ -21,7 +21,7 @@
 ```bash
 # 凭据通过 AI_ACCESS_TOKEN 或 AI_API_KEY 环境变量提供，不写入命令参数。
 .venv-accounts/bin/python -m scripts.clients.client asr recording.wav
-.venv-accounts/bin/python -m scripts.clients.client tts text.txt --output artifacts/tts.wav
+.venv-accounts/bin/python -m scripts.clients.client tts text.txt --output .runtime/tests/clients/tts.wav
 ```
 
 TTS CLI 接收 PCM 流、缓存跨分片的半个样本，在客户端封装 WAV；失败保留错误并删除临时文件，不把半截音频当成完整文件。长文本需由调用方切分到每次 2000 字符以内。
