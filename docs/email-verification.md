@@ -4,20 +4,20 @@
 
 ## 私有配置和上线
 
-私有文件 `.runtime/mail-config.json` 权限为 600、被 Git 忽略。包含 smtp_host、smtp_port（465）、smtp_secure（true）、smtp_username、smtp_password（客户端专用授权码）、from_email、from_name。登录账号和发件地址必须相同。不要将授权码、验证码或完整 SMTP 对话放进日志、工单或仓库。
+私有文件 `.runtime/config/mail-config.json` 权限为 600、被 Git 忽略。包含 smtp_host、smtp_port（465）、smtp_secure（true）、smtp_username、smtp_password（客户端专用授权码）、from_email、from_name。登录账号和发件地址必须相同。不要将授权码、验证码或完整 SMTP 对话放进日志、工单或仓库。
 
 ```bash
 # 仅验证 TLS 和 SMTP 登录，不发信、不修改 Worker
-.venv-accounts/bin/python -m scripts.ops.configure_mail --config .runtime/mail-config.json --check-only
+.venv-accounts/bin/python -m scripts.ops.configure_mail --config .runtime/config/mail-config.json --check-only
 
 # 可选：仅向配置中的发件邮箱发一封无验证码的测试邮件
-.venv-accounts/bin/python -m scripts.ops.configure_mail --config .runtime/mail-config.json --check-only --test-mail
+.venv-accounts/bin/python -m scripts.ops.configure_mail --config .runtime/config/mail-config.json --check-only --test-mail
 
 # 验证登录成功后安装 Worker Secret
-.venv-accounts/bin/python -m scripts.ops.configure_mail --config .runtime/mail-config.json
+.venv-accounts/bin/python -m scripts.ops.configure_mail --config .runtime/config/mail-config.json
 ```
 
-安装内容为 REGISTRATION_SMTP（完整 JSON）和 EMAIL_CODE_SECRET（独立随机 HMAC 密钥）。HMAC 密钥在本机 `.runtime/email-code-secret` 私有保存，重复配置复用；丢失后重新生成会使未使用验证码失效，应作为明确的密钥轮换处理。授权码轮换只需更新私有配置后重新执行安装命令。
+安装内容为 REGISTRATION_SMTP（完整 JSON）和 EMAIL_CODE_SECRET（独立随机 HMAC 密钥）。HMAC 密钥在本机 `.runtime/secrets/email-code-secret` 私有保存，重复配置复用；丢失后重新生成会使未使用验证码失效，应作为明确的密钥轮换处理。授权码轮换只需更新私有配置后重新执行安装命令。
 
 先完成 SMTP 验证与 Secret 安装，再按标准 release 流程备份、迁移 0013、部署 Worker 并验证注册。wrangler.jsonc 中 EMAIL_VERIFICATION_ENABLED=true；未设置时也默认要求验证，缺少有效邮件配置则关闭注册操作并返回 503，不会自动跳过验证码。显式 false 仅用于受控的兼容回退，不应作为生产发信故障的常规处理。
 
@@ -90,11 +90,11 @@
 
 建议在阿里云DirectMail验证发信域和地址，并为该发信地址设置**单独的SMTP密码**，不是企业邮箱授权码。可继续使用 noreply@helixai.cc，但应按DirectMail控制台要求验证DNS，不覆盖现有企业邮箱MX记录。地域与SMTP端点必须匹配：[DirectMail端点](https://www.alibabacloud.com/help/en/direct-mail/smtp-endpoints)、[专用SMTP密码](https://www.alibabacloud.com/help/en/direct-mail/user-guide/send-emails-using-smtp)。服务价格和账户发信额度由实际开通套餐决定。
 
-已创建私有模板 `.runtime/transactional-mail-config.json`（600，Git忽略），provider=alicloud-directmail，默认杭州端点smtpdm.aliyun.com、TLS465；其他地域按官方端点调整，填入专用SMTP密码后执行：
+已创建私有模板 `.runtime/config/transactional-mail-config.json`（600，Git忽略），provider=alicloud-directmail，默认杭州端点smtpdm.aliyun.com、TLS465；其他地域按官方端点调整，填入专用SMTP密码后执行：
 
 ```bash
-.venv-accounts/bin/python -m scripts.ops.configure_mail --config .runtime/transactional-mail-config.json --check-only
-.venv-accounts/bin/python -m scripts.ops.configure_mail --config .runtime/transactional-mail-config.json --test-mail
+.venv-accounts/bin/python -m scripts.ops.configure_mail --config .runtime/config/transactional-mail-config.json --check-only
+.venv-accounts/bin/python -m scripts.ops.configure_mail --config .runtime/config/transactional-mail-config.json --test-mail
 ```
 
 第二条先验证登录并只向发件邮箱自测，再安装Worker Secret，复用原HMAC密钥，不影响账号、邮箱验证状态和个人额度。configure_mail默认拒绝重新安装企业邮箱注册通道；如明确需要短期回退，可使用 --allow-legacy-enterprise，但这不代表供应商支持其用途。未提供provider的旧Secret继续兼容，避免上线过程中突然中断现有注册。

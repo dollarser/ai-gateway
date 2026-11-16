@@ -99,7 +99,20 @@ def main():
     )
     if args.check_only:
         return
-    pepper_file = ROOT / ".runtime/email-code-secret"
+    secret_dir = ROOT / ".runtime/secrets"
+    secret_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    pepper_file = secret_dir / "email-code-secret"
+    legacy_pepper = ROOT / ".runtime/email-code-secret"
+    if legacy_pepper.exists():
+        if (
+            pepper_file.exists()
+            and pepper_file.read_bytes() != legacy_pepper.read_bytes()
+        ):
+            raise SystemExit(
+                "Conflicting email-code-secret files; resolve before configuring mail"
+            )
+        if not pepper_file.exists():
+            legacy_pepper.rename(pepper_file)
     if not pepper_file.exists():
         fd = os.open(pepper_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as stream:

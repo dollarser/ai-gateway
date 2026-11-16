@@ -109,9 +109,7 @@ Wrangler 导出会打印有时效的下载签名 URL。完整导出日志也按�
 
 ## 7. 长期运行的边界
 
-当前本机网关和 API 隧道通过独立会话在后台运行，记录在 `.runtime/tunnel-processes.json`，不是开机自启。PID 可能复用，停止前要核对真实命令和工作目录，不能长期重放旧 PID 文件中的 kill 命令。
-
-后续如需开机恢复，应单独配置服务管理、进程所有权、健康检查和日志轮转。Worker 已发布不代表本机网关、隧道和 GPU 服务会在机器重启后自动恢复。
+当前本机网关和 API 隧道由 systemd 用户服务管理并自动重启，启用 linger 后可在无人登录时启动。使用 `systemctl --user status ai-gateway.service ai-gateway-tunnel.service` 查看状态，使用 journalctl 查询日志，详见 [可靠性运维](gateway-reliability.md)。旧会话 PID 清单已废弃并清理，不得重放历史 PID 的 kill 命令。Worker 已发布不代表本机网关、隧道和 GPU 服务一定可用，应分别检查。
 
 ## 相关手册
 

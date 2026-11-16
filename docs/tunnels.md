@@ -33,7 +33,7 @@ cloudflared tunnel --config deploy/cloudflared-api.yml ingress validate
 bash scripts/ops/serve-tunnel.sh api
 ```
 
-本机连接器由 `ai-gateway-tunnel.service` 管理，不要手动重复启动。使用 `systemctl --user status ai-gateway-tunnel.service` 和 `journalctl --user -u ai-gateway-tunnel.service` 查看状态与轮转日志。历史 `.runtime/tunnel-processes.json` 仅供迁移核对，当前自动启动说明见 [可靠性运维](gateway-reliability.md)。
+本机连接器由 `ai-gateway-tunnel.service` 管理，不要手动重复启动。使用 `systemctl --user status ai-gateway-tunnel.service` 和 `journalctl --user -u ai-gateway-tunnel.service` 查看状态与轮转日志。旧 PID 清单已废弃并清理，当前自动启动说明见 [可靠性运维](gateway-reliability.md)。
 
 ## 仅在需要新建时
 

@@ -31,3 +31,5 @@ git check-ignore -v .env .runtime/example.json deploy/backups/example.sql
 本次检查了已跟踪文件和待提交文件，未发现私钥 / 真实提供方 Key 的明显特征；生产备份、密钥及临时验证材料继续保留在本地忽略目录。特征检查不是对所有可能的秘密的形式化证明，实际新增配置仍需人工审阅。
 
 `.runtime/releases/` 含发布清单、私有日志和 D1 备份，继续忽略。浏览器回归脚本与合成测试数据跟踪，截图写入已忽略 artifacts/。
+
+本地运行文件的分类、配置新路径及保留规则见 [运行目录整理](runtime-layout.md)。

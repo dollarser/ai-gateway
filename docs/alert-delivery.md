@@ -20,7 +20,7 @@ GET /admin/notifications?page=1&state=all|unread 分页读取，每页 30 条；
 ```
 
 ```bash
-.venv-accounts/bin/python -m scripts.ops.configure_alerts --config .runtime/alert-webhook.json
+.venv-accounts/bin/python -m scripts.ops.configure_alerts --config .runtime/config/alert-webhook.json
 ```
 
 脚本仅安装 ALERT_WEBHOOK_URL 和可选 ALERT_WEBHOOK_SECRET，不打印值、不发送测试消息；未提供 secret 时保留现有签名配置。配置后管理员可点击“发送测试通知”，明确向已配置接收端发送合成消息。未配置外部接收端时，测试消息仅投递到站内告警中心。URL 必须为公共 HTTPS 端点；不支持本机/IP 字面量目标，不自动跟随重定向。
