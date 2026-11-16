@@ -9,7 +9,11 @@
     "db:local": "wrangler d1 migrations apply DB --local",
     "db:remote": "wrangler d1 migrations apply DB --remote",
     "check": "wrangler deploy --dry-run",
-    "test": "wrangler deploy --dry-run --outdir .test-build && node --test tests/*.test.mjs"
+    "test": "wrangler deploy --dry-run --outdir .test-build && node --test tests/*.test.mjs",
+    "predev": "python3 ../scripts/ops/build_assets.py",
+    "predeploy": "python3 ../scripts/ops/build_assets.py",
+    "precheck": "python3 ../scripts/ops/build_assets.py",
+    "pretest": "python3 ../scripts/ops/build_assets.py"
   },
   "dependencies": {
     "@noble/hashes": "^1.8.0"

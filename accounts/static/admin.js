@@ -612,6 +612,13 @@
       data.luna.reserved_usd.toFixed(4) +
       "，剩余 $" +
       data.luna.remaining_usd.toFixed(4);
+    if ($("email-delivery-status"))
+      $("email-delivery-status").textContent = data.email_delivery
+        ?.transactional
+        ? "验证码发信：事务邮件通道已配置（" +
+          data.email_delivery.provider +
+          "）"
+        : "验证码发信：仍为旧通道或未配置，待切换事务邮件服务";
     const notifications = data.notifications ?? {
       configured: false,
       deliveries: [],

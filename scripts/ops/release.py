@@ -22,6 +22,16 @@ def verify_backup(path):
         or db.execute("PRAGMA foreign_key_check").fetchall()
     ):
         raise RuntimeError("Backup restore integrity check failed")
+    if (
+        db.execute(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('luna_spend_totals','audio_spend_totals')"
+        ).fetchone()[0]
+        == 2
+    ):
+        from scripts.ops.check_spend_totals import QUERY
+
+        if db.execute(QUERY).fetchone()[0]:
+            raise RuntimeError("Backup spend totals differ from detailed ledgers")
     db.close()
 
 
@@ -108,6 +118,10 @@ def main():
             run(
                 "migrations",
                 wrangler + ["d1", "migrations", "apply", "DB", "--remote"] + config,
+            )
+            run(
+                "spend-reconciliation",
+                [sys.executable, "-m", "scripts.ops.check_spend_totals", "--remote"],
             )
             manifest["status"] = "migrated"
             save()

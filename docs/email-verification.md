@@ -82,3 +82,19 @@
 - 绑定记录随账号删除级联清理；Cron 分批清理过期一天以上的绑定挑战，发送限频记录保持原清理周期。
 
 外部客户端需要主动接入上述登录标记和表单；服务器不会强制拦截旧客户端的既有模型请求。
+
+
+## 事务邮件服务切换（待新凭据后执行）
+
+既有企业邮箱SMTP技术上能发送，但阿里官方不支持将企业邮箱用于注册验证等系统邮件：[用途说明](https://help.aliyun.com/zh/document_detail/189757.html)。技术测试成功不代表适合作为长期事务邮件通道。当前未擅自切换线上凭据或开通服务；后台运维区域会显示仍使用旧邮件通道。
+
+建议在阿里云DirectMail验证发信域和地址，并为该发信地址设置**单独的SMTP密码**，不是企业邮箱授权码。可继续使用 noreply@helixai.cc，但应按DirectMail控制台要求验证DNS，不覆盖现有企业邮箱MX记录。地域与SMTP端点必须匹配：[DirectMail端点](https://www.alibabacloud.com/help/en/direct-mail/smtp-endpoints)、[专用SMTP密码](https://www.alibabacloud.com/help/en/direct-mail/user-guide/send-emails-using-smtp)。服务价格和账户发信额度由实际开通套餐决定。
+
+已创建私有模板 `.runtime/transactional-mail-config.json`（600，Git忽略），provider=alicloud-directmail，默认杭州端点smtpdm.aliyun.com、TLS465；其他地域按官方端点调整，填入专用SMTP密码后执行：
+
+```bash
+.venv-accounts/bin/python -m scripts.ops.configure_mail --config .runtime/transactional-mail-config.json --check-only
+.venv-accounts/bin/python -m scripts.ops.configure_mail --config .runtime/transactional-mail-config.json --test-mail
+```
+
+第二条先验证登录并只向发件邮箱自测，再安装Worker Secret，复用原HMAC密钥，不影响账号、邮箱验证状态和个人额度。configure_mail默认拒绝重新安装企业邮箱注册通道；如明确需要短期回退，可使用 --allow-legacy-enterprise，但这不代表供应商支持其用途。未提供provider的旧Secret继续兼容，避免上线过程中突然中断现有注册。

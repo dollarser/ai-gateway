@@ -1,3 +1,4 @@
+import { mailConfiguration } from "./smtp-core.mjs";
 import {
   notificationStatus,
   siteInbox,
@@ -206,6 +207,13 @@ export async function operationsRoute(
     return reply({
       ...(await globalUsage(store)),
       notifications: await notificationStatus(store, env),
+      email_delivery: {
+        configured: !!mailConfiguration(env),
+        provider: mailConfiguration(env)?.provider ?? null,
+        transactional: ["alicloud-directmail", "generic-smtp"].includes(
+          mailConfiguration(env)?.provider,
+        ),
+      },
       registration: JSON.parse(
         (
           await store.first(

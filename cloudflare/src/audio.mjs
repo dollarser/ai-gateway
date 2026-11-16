@@ -69,6 +69,10 @@ export async function audioModels(store, env, lease) {
     lease,
   );
   if (!r) return [];
+  return audioModelsForUser(r, env);
+}
+export function audioModelsForUser(r, env) {
+  if (!env.OPENAI_API_KEY) return [];
   const permitted = (s) =>
     JSON.parse(r.services).includes(s) &&
     (!r.key_services || JSON.parse(r.key_services).includes(s));

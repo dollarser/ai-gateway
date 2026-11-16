@@ -5,11 +5,17 @@ import {
 import { compressedDuration } from "./audio-duration.mjs";
 import { Store, Denied } from "./store.mjs";
 import { digest, token, now } from "./crypto.mjs";
-import { LUNA_MODEL, lunaCatalog, proxyLuna } from "./luna.mjs";
+import {
+  LUNA_MODEL,
+  lunaCatalog,
+  lunaCatalogForUser,
+  proxyLuna,
+} from "./luna.mjs";
 import {
   ASR_MODEL,
   TTS_MODEL,
   audioModels,
+  audioModelsForUser,
   proxyTranscription,
   proxySpeech,
   wavDuration,
@@ -317,6 +323,35 @@ async function track(response, store, lease, trace, ctx, start) {
   });
   return new Response(stream, { status: response.status, headers });
 }
+function filterCatalog(data, url) {
+  const values = url.searchParams.getAll("output_modalities"),
+    selected = (values[0] ?? "text").split(",").map((v) => v.trim());
+  const valid = [
+    "text",
+    "image",
+    "embeddings",
+    "audio",
+    "video",
+    "rerank",
+    "decisions",
+    "speech",
+    "transcription",
+    "all",
+  ];
+  if (
+    values.length > 1 ||
+    selected.some((v) => !valid.includes(v)) ||
+    (selected.includes("all") && selected.length !== 1)
+  )
+    throw new Denied(400, "无效的 output_modalities");
+  if (!selected.includes("all"))
+    data = data.filter((m) =>
+      selected.some((v) =>
+        (m.architecture?.output_modalities ?? ["text"]).includes(v),
+      ),
+    );
+  return data;
+}
 export async function edgeAPI(request, env, ctx) {
   const store = new Store(env.DB),
     url = new URL(request.url),
@@ -371,6 +406,20 @@ export async function edgeAPI(request, env, ctx) {
     let raw;
     try {
       raw = credentials(request, env);
+      if (path === "/v1/models" && env.LOCAL_MODELS_ENABLED !== "true") {
+        const u = await store.catalogUser(raw);
+        const data = [
+          ...(u.permitted.includes("qwen")
+            ? lunaCatalogForUser(u, env).data
+            : []),
+          ...audioModelsForUser(u, env),
+        ];
+        return json({ object: "list", data: filterCatalog(data, url) }, 200, {
+          "X-Request-ID": id,
+          "X-Inference-Execution": "edge",
+          "Cache-Control": "no-store",
+        });
+      }
       lease = await store.acquire(raw, service, path, {
         client_ip: ip ?? null,
         user_agent: (request.headers.get("User-Agent") ?? "").slice(0, 512),
@@ -458,32 +507,7 @@ export async function edgeAPI(request, env, ctx) {
           })(),
         );
       }
-      const values = url.searchParams.getAll("output_modalities"),
-        selected = (values[0] ?? "text").split(",").map((v) => v.trim());
-      const valid = [
-        "text",
-        "image",
-        "embeddings",
-        "audio",
-        "video",
-        "rerank",
-        "decisions",
-        "speech",
-        "transcription",
-        "all",
-      ];
-      if (
-        values.length > 1 ||
-        selected.some((v) => !valid.includes(v)) ||
-        (selected.includes("all") && selected.length !== 1)
-      )
-        throw new Denied(400, "无效的 output_modalities");
-      if (!selected.includes("all"))
-        data = data.filter((m) =>
-          selected.some((v) =>
-            (m.architecture?.output_modalities ?? ["text"]).includes(v),
-          ),
-        );
+      data = filterCatalog(data, url);
       return track(
         json({ object: "list", data }),
         store,

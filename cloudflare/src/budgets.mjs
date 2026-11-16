@@ -38,11 +38,12 @@ export async function globalUsage(store) {
     ),
     month = day().slice(0, 7);
   const luna = await store.first(
-    "SELECT coalesce(sum(cost_nanos),0) charged,coalesce(sum(CASE WHEN settled=0 THEN cost_nanos ELSE 0 END),0) reserved FROM luna_spend WHERE month=?",
+    "SELECT coalesce((SELECT cost_nanos FROM luna_spend_totals WHERE month=?),0) charged,coalesce((SELECT reserved_cost_nanos FROM luna_spend_totals WHERE month=?),0) reserved",
+    month,
     month,
   );
   const audio = await store.all(
-    "SELECT kind,sum(units) used FROM audio_spend WHERE day=? GROUP BY kind",
+    "SELECT kind,units used FROM audio_spend_totals WHERE day=?",
     day(),
   );
   return {

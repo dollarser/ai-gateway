@@ -393,6 +393,25 @@ export class Store {
     );
     if (r.n >= 60) throw new Denied(429, "认证失败次数过多");
   }
+  async catalogUser(raw) {
+    const u = raw.startsWith("ai-at-")
+      ? await this.access(raw)
+      : await this.first(
+          "SELECT u.*,k.services key_services FROM keys k JOIN users u ON u.id=k.user_id WHERE k.hash=? AND k.revoked=0 AND k.expires>?",
+          await digest(raw),
+          now(),
+        );
+    if (!u) throw new Denied(401, "凭证无效或已过期");
+    if (!u.enabled || u.must_change)
+      throw new Denied(403, "账号已禁用或需要修改密码");
+    const permitted = SERVICES.filter(
+      (s) =>
+        JSON.parse(u.services).includes(s) &&
+        (!u.key_services || JSON.parse(u.key_services).includes(s)),
+    );
+    if (!permitted.length) throw new Denied(403, "没有模型服务权限");
+    return { ...u, permitted };
+  }
   async acquire(raw, service, path, metadata = {}) {
     if (!SERVICES.includes(service) && service !== "catalog")
       throw new Denied(400, "未知服务");

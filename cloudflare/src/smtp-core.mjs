@@ -140,7 +140,28 @@ export function mailConfiguration(env) {
       env.EMAIL_CODE_SECRET.length < 32
     )
       return null;
-    return c;
+    const provider =
+      c.provider ||
+      (c.smtp_host.includes("qiye.aliyun")
+        ? "legacy-enterprise"
+        : "generic-smtp");
+    if (
+      !["legacy-enterprise", "generic-smtp", "alicloud-directmail"].includes(
+        provider,
+      )
+    )
+      return null;
+    if (
+      provider === "alicloud-directmail" &&
+      ![
+        "smtpdm.aliyun.com",
+        "smtpdm-ap-southeast-1.aliyuncs.com",
+        "smtpdm-us-east-1.aliyuncs.com",
+        "smtpdm-eu-central-1.aliyuncs.com",
+      ].includes(c.smtp_host)
+    )
+      return null;
+    return { ...c, provider };
   } catch {
     return null;
   }

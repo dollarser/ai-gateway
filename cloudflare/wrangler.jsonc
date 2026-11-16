@@ -3,9 +3,9 @@
   "main": "src/worker.mjs",
   "compatibility_date": "2026-07-01",
   "assets": {
-    "directory": "../accounts/static",
+    "directory": "../.runtime/portal-assets",
     "binding": "ASSETS",
-    "run_worker_first": true,
+    "run_worker_first": ["/auth/*", "/account/*", "/admin/*", "/internal/*", "/healthz", "/v1/*", "/ws/*", "/__*"],
   },
   "d1_databases": [
     {

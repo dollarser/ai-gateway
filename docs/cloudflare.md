@@ -96,3 +96,10 @@ npm run check
 账号应返回 `storage: d1`。`npm test` 使用隔离的本地 D1，不修改生产库；`npm run check` 仅构建。模型后端不可达时，带有效凭证的模型请求可能返回 502，不代表账号鉴权失败。
 
 [官方 D1 API](https://developers.cloudflare.com/d1/worker-api/d1-database/) · [导入与导出](https://developers.cloudflare.com/d1/best-practices/import-export-data/) · [Worker 自定义域名](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)
+
+
+## 公共资产构建与账本汇总
+
+静态资源源文件仍在 accounts/static；部署目录改为 `.runtime/portal-assets`，只由 scripts/ops/build_assets.py 生成公开文件。npm dev/deploy/check/test 的前置脚本会自动构建；直接调用 Wrangler 前先运行 `python3 scripts/ops/build_assets.py`，不要将整个 .runtime 作为 assets.directory。标准release通过worker-tests构建后部署，版本不变时文件名稳定，内容改变自动变更哈希。
+
+迁移0016回填全站月消费、每日语音汇总及事务触发器。旧Worker的写入/结算仍会同步更新汇总，允许迁移和Worker发布之间存在在途请求。发布过程先私有备份、验证恢复、应用迁移，再运行 `python -m scripts.ops.check_spend_totals --remote`，通过才继续部署。发现差异停止并排查，不清空财务账本或盲目覆盖汇总。

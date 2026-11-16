@@ -1,11 +1,16 @@
 """Browser regressions against synthetic data; all network requests intercepted."""
 
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import json
 import urllib.parse
 from playwright.sync_api import sync_playwright
+from scripts.ops.build_assets import build
 
 ROOT = Path(__file__).resolve().parents[1]
+PUBLIC_ASSETS = build()
 defaults = dict(
     rpm=30,
     daily_requests=1000,
@@ -71,11 +76,7 @@ def handle(route):
     req = route.request
     path = urllib.parse.urlsplit(req.url).path
     if path == "/" or path.startswith("/static/"):
-        file = (
-            ROOT
-            / "accounts/static"
-            / ("index.html" if path == "/" else path.rsplit("/", 1)[1])
-        )
+        file = PUBLIC_ASSETS / ("index.html" if path == "/" else path.lstrip("/"))
         return route.fulfill(
             path=str(file),
             content_type="text/html"

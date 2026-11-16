@@ -21,6 +21,11 @@ def main():
         action="store_true",
         help="Send one test only to the configured sender mailbox",
     )
+    parser.add_argument(
+        "--allow-legacy-enterprise",
+        action="store_true",
+        help="Explicit temporary fallback only; Alibaba enterprise mail does not support registration verification use",
+    )
     args = parser.parse_args()
     os.umask(0o077)
     args.config.chmod(0o600)
@@ -33,6 +38,7 @@ def main():
         "smtp_password",
         "from_email",
         "from_name",
+        "provider",
     }
     if (
         set(c) - allowed
@@ -44,6 +50,30 @@ def main():
         raise SystemExit(
             "Expected TLS SMTP port 465, sender matching username and a nonempty authorization code"
         )
+    provider = c.get("provider") or (
+        "legacy-enterprise"
+        if "qiye.aliyun" in c.get("smtp_host", "")
+        else "generic-smtp"
+    )
+    directmail_hosts = {
+        "smtpdm.aliyun.com",
+        "smtpdm-ap-southeast-1.aliyuncs.com",
+        "smtpdm-us-east-1.aliyuncs.com",
+        "smtpdm-eu-central-1.aliyuncs.com",
+    }
+    if provider not in {"legacy-enterprise", "generic-smtp", "alicloud-directmail"} or (
+        provider == "alicloud-directmail" and c.get("smtp_host") not in directmail_hosts
+    ):
+        raise SystemExit("Invalid transactional SMTP provider or region endpoint")
+    if (
+        not args.check_only
+        and provider == "legacy-enterprise"
+        and not args.allow_legacy_enterprise
+    ):
+        raise SystemExit(
+            "Enterprise mailbox is not a supported registration-mail service; supply transactional SMTP credentials"
+        )
+    c["provider"] = provider
     try:
         with smtplib.SMTP_SSL(
             c["smtp_host"], 465, timeout=20, context=ssl.create_default_context()

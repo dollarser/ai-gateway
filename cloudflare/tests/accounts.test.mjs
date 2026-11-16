@@ -1395,7 +1395,7 @@ test("edge API authenticates directly, discovers cloud models without origin and
   const rows = (
     await db.prepare("SELECT * FROM requests WHERE user_id=?").bind(uid).all()
   ).results;
-  assert.equal(rows.length, 2);
+  assert.equal(rows.length, 1);
   assert.ok(rows.every((r) => r.ended));
   assert.equal(rows.find((r) => r.model === "gpt-6-luna").prompt_tokens, 100);
   assert.equal((await apiCall("/v1/models", "invalid")).status, 401);
@@ -3084,14 +3084,11 @@ test("Anonymous account checks reject without touching D1", async () => {
   try {
     const root = await anonymous.dispatchFetch("https://accounts.test/");
     assert.equal(root.headers.get("Cache-Control"), "no-store");
-    assert.match(
-      await root.text(),
-      new RegExp("app\\.js\\?v=" + "a".repeat(40)),
-    );
+    assert.match(await root.text(), /static\/app\.js/);
     const asset = await anonymous.dispatchFetch(
       "https://accounts.test/static/app.js?v=" + "a".repeat(40),
     );
-    assert.match(asset.headers.get("Cache-Control"), /immutable/);
+    assert.equal(asset.headers.get("Cache-Control"), "no-store");
     const stale = await anonymous.dispatchFetch(
       "https://accounts.test/static/app.js?v=old",
     );
@@ -3110,4 +3107,70 @@ test("Anonymous account checks reject without touching D1", async () => {
   } finally {
     await anonymous.dispose();
   }
+});
+
+test("Cloud catalog is read-only and immediately reflects key revocation and permission changes", async () => {
+  const { uid, key } = await lunaUser("read-only-catalog");
+  const store = new Store(db);
+  await store.run(
+    'UPDATE users SET services=\'["qwen","asr","tts"]\',daily_requests=1 WHERE id=?',
+    uid,
+  );
+  await store.run(
+    'UPDATE keys SET services=\'["qwen","asr","tts"]\' WHERE user_id=?',
+    uid,
+  );
+  for (let i = 0; i < 3; i++)
+    assert.equal(
+      (await apiCall("/v1/models?output_modalities=all", key)).status,
+      200,
+    );
+  assert.equal(
+    (await store.first("SELECT count(*) n FROM requests WHERE user_id=?", uid))
+      .n,
+    0,
+  );
+  await store.run("UPDATE keys SET services='[\"asr\"]' WHERE user_id=?", uid);
+  const restricted = await apiCall("/v1/models?output_modalities=all", key);
+  assert.deepEqual(
+    restricted.body.data.map((m) => m.id),
+    ["gpt-transcribe"],
+  );
+  await store.run("UPDATE users SET enabled=0 WHERE id=?", uid);
+  assert.equal((await apiCall("/v1/models", key)).status, 403);
+  await store.run("UPDATE users SET enabled=1 WHERE id=?", uid);
+  await store.run("UPDATE keys SET revoked=1 WHERE user_id=?", uid);
+  assert.equal((await apiCall("/v1/models", key)).status, 401);
+  assert.equal(
+    (await store.first("SELECT count(*) n FROM requests WHERE user_id=?", uid))
+      .n,
+    0,
+  );
+});
+
+test("Global spend summary tables remain equal to ledger detail after quota, adjustment and cleanup tests", async () => {
+  const store = new Store(db);
+  const luna = await store.all(
+    "SELECT month,sum(cost_nanos) cost,sum(CASE WHEN settled=0 THEN cost_nanos ELSE 0 END) reserved FROM luna_spend GROUP BY month",
+  );
+  for (const row of luna)
+    assert.deepEqual(
+      await store.first(
+        "SELECT cost_nanos cost,reserved_cost_nanos reserved FROM luna_spend_totals WHERE month=?",
+        row.month,
+      ),
+      { cost: row.cost, reserved: row.reserved },
+    );
+  const audio = await store.all(
+    "SELECT day,kind,sum(units) used,sum(CASE WHEN settled=0 THEN units ELSE 0 END) reserved FROM audio_spend GROUP BY day,kind",
+  );
+  for (const row of audio)
+    assert.deepEqual(
+      await store.first(
+        "SELECT units used,reserved_units reserved FROM audio_spend_totals WHERE day=? AND kind=?",
+        row.day,
+        row.kind,
+      ),
+      { used: row.used, reserved: row.reserved },
+    );
 });

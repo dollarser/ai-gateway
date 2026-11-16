@@ -50,6 +50,9 @@ async function activeLease(store, lease) {
 }
 export async function lunaCatalog(store, env, lease) {
   const r = await activeLease(store, lease);
+  return lunaCatalogForUser(r, env);
+}
+export function lunaCatalogForUser(r, env) {
   return {
     data:
       env.OPENAI_API_KEY && r.luna_monthly_tokens > 0
@@ -72,6 +75,7 @@ export async function lunaCatalog(store, env, lease) {
         : [],
   };
 }
+
 // No URL/file/image inputs, server-side tools, hidden conversation state, or paid
 // processing tiers: every billable input must be present in this bounded request.
 export function preparePayload(payload, responses) {
