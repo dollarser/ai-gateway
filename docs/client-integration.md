@@ -2,11 +2,12 @@
 
 当前协议以 [客户端交接](client-handoff.md) 为准；账号和 API 域名分别为 accounts.hilex.me、api.hilex.me。公网 `/docs` 已关闭，接口说明随项目版本维护。
 
-1. `POST https://accounts.hilex.me/auth/register`，提交 email、password。继续开放注册，不发送验证邮件；有 IP、账号标识和全站速率保护。
+1. `GET https://accounts.hilex.me/auth/registration-info` 检查注册状态；用户主动调用 `POST /auth/registration-code` 发送验证码，再向 `POST /auth/register` 提交 email、password、六位字符串 code。验证码十分钟有效，至少六十秒后重发。
 2. `POST /auth/login`，提交 username、password，保存 access_token、refresh_token 及有效期。
 3. 模型请求使用 `Authorization: Bearer <access_token>` 和客户端配置的 `X-Client-ID`。管理员 API Key 可以单独调用，不需要 Client ID。
 4. access token 过期后串行刷新并原子替换 token 对；不要并发复用旧 refresh token。
-5. 模型发现使用 `GET https://api.hilex.me/v1/models?output_modalities=all`，按 endpoints、architecture 和 audio 能力选择调用方式。
+5. 登录后若 user.must_change 为真（当前通常为1），先改初始密码并重新登录；user.email_binding_required=true 时展示可稍后处理的绑定提醒，流程见[邮箱验证](email-verification.md)。
+6. 模型发现使用 `GET https://api.hilex.me/v1/models?output_modalities=all`，按 endpoints、architecture 和 audio 能力选择调用方式。
 
 | 用途 | 接口 | 模型 / 响应 |
 |---|---|---|
@@ -30,3 +31,6 @@ TTS CLI 接收 PCM 流、缓存跨分片的半个样本，在客户端封装 WAV
 个人额度与全站预算同时生效。全站 Luna 默认每月 200 美元估算预算，预算耗尽返回 global_budget_exhausted，不应自动重试；管理员可调整。地区限制为 provider_region_restricted，密钥异常为 provider_auth_failed，不应当作用户登录过期。
 
 账号用量接口、完整示例及错误契约见 [客户端交接](client-handoff.md)、[Luna](luna-allowance.md)、[语音](audio-allowances.md)。旧域名迁移说明保留在 [历史单域名迁移](client-migration-single-api.md)，不作为新客户端的默认协议。
+
+
+云模型目录只读鉴权，不计入个人日请求数或并发名额。通知按账号持久化检查时间，每天最多自动检查一次，手动进入列表可刷新；不因重新登录或恢复前台无条件请求。历史明细可能归档，不用有限的请求数组计算完整累计用量。最新错误表、资源策略和验收清单统一见[客户端交接](client-handoff.md)。
