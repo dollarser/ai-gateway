@@ -170,12 +170,21 @@ def main():
                 [sys.executable, "-m", "scripts.smoke.check_deployment"],
             )
             for host in ("accounts", "api"):
-                response = httpx.get(
-                    "https://" + host + ".hilex.me/healthz", timeout=30
-                )
-                response.raise_for_status()
-                if response.json().get("release") != sha:
-                    raise RuntimeError("Public release SHA mismatch")
+                for attempt in range(5):
+                    response = httpx.get(
+                        "https://" + host + ".hilex.me/healthz",
+                        timeout=15,
+                        trust_env=False,
+                        headers={"Cache-Control": "no-cache"},
+                    )
+                    response.raise_for_status()
+                    if response.json().get("release") == sha:
+                        break
+                    if attempt == 4:
+                        raise RuntimeError(
+                            "Public release SHA mismatch after propagation retries"
+                        )
+                    time.sleep(2)
             manifest["status"] = "deployed_and_verified"
         except BaseException:
             manifest["status"] = "failed"
