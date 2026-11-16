@@ -22,6 +22,8 @@ users = [
         enabled=1,
         services=["qwen", "asr", "tts"],
         must_change=0,
+        email_binding_required=True,
+        email="admin@example.net" if i == 1 else None,
         last_request_ip="203.0.113.9",
         last_request_at=1794700000,
         day_requests=3,
@@ -150,6 +152,18 @@ def handle(route):
             n.update(data)
         n["version"] += 1
         return respond({"id": n["id"], "version": n["version"], "state": n["state"]})
+    if path == "/account/email/code":
+        return respond(
+            {"message": "绑定验证码已发送", "expires_in": 600, "retry_after": 60}
+        )
+    if path == "/account/email/bind":
+        assert data["code"] == "123456"
+        users[0]["email"] = data["email"]
+        users[0]["email_verified_at"] = 1794700100
+        users[0]["email_binding_required"] = False
+        return respond(
+            {"user": users[0], "message": "邮箱已验证并绑定，原登录名和密码保持不变"}
+        )
     if path == "/account/me":
         if not logged_in[0]:
             return respond({"detail": "需要登录"}, 401)
@@ -535,6 +549,25 @@ with sync_playwright() as p:
     print(
         "Browser: settings, bulk ban/unban, bulk quotas, user creation, IP/details, safe rendering and mobile layout passed"
     )
+    page.locator("#email-binding-reminder").wait_for(state="visible")
+    page.locator("#open-email-binding").click()
+    assert (
+        page.locator("#email-binding-form [name=email]").input_value()
+        == "admin@example.net"
+    )
+    page.locator("#defer-email-binding").click()
+    assert page.locator("#email-binding-form").is_hidden()
+    assert page.locator("#email-binding-reminder").is_visible()
+    page.locator("#open-email-binding").click()
+    page.locator("#send-binding-code").click()
+    page.get_by_text("绑定验证码已发送", exact=True).wait_for()
+    assert page.locator("#send-binding-code").is_disabled()
+    page.locator("#email-binding-form [name=code]").fill("123456")
+    page.locator("#email-binding-form button").filter(has_text="验证并绑定").click()
+    page.locator("#email-binding-reminder").wait_for(state="hidden")
+    page.reload()
+    page.locator("#notices-panel").wait_for(state="visible")
+    assert page.locator("#email-binding-reminder").is_hidden()
     logged_in[0] = False
     page.goto("https://accounts.test/")
     page.locator("#show-register").click()

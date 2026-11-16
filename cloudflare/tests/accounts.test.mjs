@@ -2803,3 +2803,260 @@ test("Email verification enforces expiry, attempts, resend cooldown and atomic o
   assert.equal(sent, 0);
   assert.deepEqual(known, response);
 });
+
+test("Legacy logins remind email binding; verified accounts skip reminders and binding proofs cannot cross users or purposes", async () => {
+  const { requestRegistrationCode, verifyRegistrationCode, codeHash } =
+    await import("../src/registration.mjs");
+  const store = new Store(db),
+    password = "binding-test-password",
+    email = "legacy-bind@example.net";
+  const a = await store.createUser(email, password, { email, must_change: 0 }),
+    b = await store.createUser("binding-other-user", password, {
+      must_change: 0,
+    });
+  const login = await call("/auth/login", { username: a.username, password });
+  assert.equal(login.body.user.email_binding_required, true);
+  assert.equal(login.body.user.email, email);
+  const access = login.body.access_token,
+    other = (await store.login(b.username, password, "binding-other-ip")).body
+      .access_token;
+  assert.equal(
+    (await call("/account/me", undefined, { access })).body.user
+      .email_binding_required,
+    true,
+  );
+  assert.equal((await call("/account/email/code", { email })).status, 401);
+  assert.equal(
+    (await call("/account/email/bind", { email, code: "123456" })).status,
+    401,
+  );
+  const cookie = login.headers.get("set-cookie").split(";")[0];
+  assert.equal(
+    (await call("/account/email/code", { email }, { cookie })).status,
+    403,
+  );
+  assert.equal(
+    (await call("/account/email/code", { email, role: "admin" }, { access }))
+      .status,
+    422,
+  );
+  const oldPolicy = (
+    await store.first(
+      "SELECT value FROM settings WHERE name='registration_policy'",
+    )
+  ).value;
+  await store.run(
+    "UPDATE settings SET value=? WHERE name='registration_policy'",
+    JSON.stringify({
+      ...JSON.parse(oldPolicy),
+      global_minute: 1000,
+      global_hourly: 1000,
+      ip_hourly: 100,
+      enabled: false,
+    }),
+  );
+  try {
+    let code;
+    await requestRegistrationCode(
+      store,
+      registrationEnv,
+      email,
+      "binding-send-ip",
+      async (_c, _e, value) => {
+        code = value;
+      },
+      a,
+    );
+    const record = await store.first(
+      "SELECT * FROM account_email_codes WHERE user_id=?",
+      a.id,
+    );
+    assert.equal(record.state, "sent");
+    assert.equal(
+      record.code_hash,
+      await codeHash(
+        registrationEnv,
+        "bind:" + a.id + ":" + (await digest(email)),
+        record.id,
+        code,
+      ),
+    );
+    await assert.rejects(
+      verifyRegistrationCode(store, registrationEnv, email, code, b),
+      { status: 400 },
+    );
+    assert.equal(
+      (await call("/account/email/bind", { email, code }, { access: other }))
+        .status,
+      409,
+    );
+    assert.equal(
+      (await call("/auth/register", { email, password, code })).status,
+      400,
+    );
+    const wrong = code === "000000" ? "000001" : "000000";
+    assert.equal(
+      (await call("/account/email/bind", { email, code: wrong }, { access }))
+        .status,
+      400,
+    );
+    const result = await call(
+      "/account/email/bind",
+      { email, code },
+      { access },
+    );
+    assert.equal(result.status, 200);
+    assert.equal(result.body.user.email_binding_required, false);
+    assert.ok(result.body.user.email_verified_at);
+    assert.equal(result.body.user.username, a.username);
+    assert.equal(
+      (
+        await store.first(
+          "SELECT state FROM account_email_codes WHERE user_id=?",
+          a.id,
+        )
+      ).state,
+      "consumed",
+    );
+    assert.equal(
+      (await call("/account/me", undefined, { access })).body.user
+        .email_binding_required,
+      false,
+    );
+    assert.equal(
+      (await call("/account/email/bind", { email, code }, { access })).status,
+      409,
+    );
+    assert.equal(
+      (await call("/account/email/code", { email }, { access })).status,
+      409,
+    );
+    const again = await store.login(
+      a.username,
+      password,
+      "binding-login-again",
+    );
+    assert.equal(again.body.user.email_binding_required, false);
+    assert.equal(
+      (await call("/account/email/code", { email }, { access: other })).status,
+      409,
+    );
+    assert.equal(
+      (await call("/account/email/bind", { email, code }, { access: other }))
+        .status,
+      409,
+    );
+    assert.ok(
+      await store.first(
+        "SELECT id FROM audit WHERE actor=? AND action='bind_email' AND target=?",
+        a.id,
+        String(a.id),
+      ),
+    );
+    // A registration challenge never authorizes binding, even with the same email/code.
+    const target = "binding-new@example.net",
+      id = "b".repeat(48),
+      emailHash = await digest(target),
+      registrationCode = "654321",
+      hash = await codeHash(registrationEnv, emailHash, id, registrationCode),
+      ts = Date.now() / 1000;
+    await store.run(
+      "INSERT INTO registration_codes(email_hash,id,code_hash,created,expires,state) VALUES(?,?,?,?,?,'sent')",
+      emailHash,
+      id,
+      hash,
+      ts,
+      ts + 600,
+    );
+    assert.equal(
+      (
+        await call(
+          "/account/email/bind",
+          { email: target, code: registrationCode },
+          { access: other },
+        )
+      ).status,
+      400,
+    );
+    const mandatory = await store.createUser("binding-must-change", password, {
+      must_change: 1,
+    });
+    const mandatoryToken = (
+      await store.login(mandatory.username, password, "binding-must-ip")
+    ).body.access_token;
+    assert.equal(
+      (
+        await call(
+          "/account/email/code",
+          { email: "mandatory@example.net" },
+          { access: mandatoryToken },
+        )
+      ).status,
+      403,
+    );
+    // Independent valid challenges for one target may race, but only one account wins.
+    const c = await store.createUser("binding-race-user", password, {
+        must_change: 0,
+      }),
+      cToken = (await store.login(c.username, password, "binding-race-ip")).body
+        .access_token,
+      raceEmail = "binding-race@example.net",
+      raceHash = await digest(raceEmail);
+    for (const u of [b, c]) {
+      const challenge = "c".repeat(44) + String(u.id).padStart(4, "0");
+      const proofHash = await codeHash(
+        registrationEnv,
+        "bind:" + u.id + ":" + raceHash,
+        challenge,
+        "123456",
+      );
+      await store.run(
+        "INSERT INTO account_email_codes(user_id,email_hash,id,code_hash,created,expires,state) VALUES(?,?,?,?,?,?,'sent')",
+        u.id,
+        raceHash,
+        challenge,
+        proofHash,
+        ts,
+        ts + 600,
+      );
+    }
+    const raced = await Promise.all([
+      call(
+        "/account/email/bind",
+        { email: raceEmail, code: "123456" },
+        { access: other },
+      ),
+      call(
+        "/account/email/bind",
+        { email: raceEmail, code: "123456" },
+        { access: cToken },
+      ),
+    ]);
+    assert.equal(raced.filter((r) => r.status === 200).length, 1);
+    assert.equal(raced.filter((r) => r.status === 409).length, 1);
+    assert.equal(
+      (
+        await store.first(
+          "SELECT count(*) n FROM users WHERE lower(email)=? AND email_verified_at IS NOT NULL",
+          raceEmail,
+        )
+      ).n,
+      1,
+    );
+  } finally {
+    await store.run(
+      "UPDATE settings SET value=? WHERE name='registration_policy'",
+      oldPolicy,
+    );
+  }
+  // The existing account fixture was email-verified at registration, regardless of later password/session tests.
+  assert.equal(
+    (
+      await store.first(
+        "SELECT email_verified_at IS NOT NULL verified FROM users WHERE username=?",
+        "person@example.com",
+      )
+    ).verified,
+    1,
+  );
+});

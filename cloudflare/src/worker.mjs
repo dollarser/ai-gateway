@@ -1,3 +1,4 @@
+import { accountEmailRoute } from "./email-binding.mjs";
 import {
   verificationEnabled,
   registrationEmail,
@@ -384,6 +385,17 @@ async function route(request, env, ctx) {
     store,
     p.startsWith("/admin/") || p.startsWith("/account/keys"),
   );
+  if (p.startsWith("/account/email/")) {
+    const response = await accountEmailRoute(
+      request,
+      store,
+      env,
+      u,
+      body,
+      sendRegistrationEmail,
+    );
+    if (response) return response;
+  }
   if (p.startsWith("/account/notices") || p.startsWith("/admin/notices")) {
     const response = await noticesRoute(request, store, u, (r) =>
       body(r, 65536),
@@ -674,6 +686,10 @@ export default {
           store.stmt(
             "DELETE FROM email_send_attempts WHERE id IN (SELECT id FROM email_send_attempts WHERE ts<? LIMIT 1000)",
             now() - 3600,
+          ),
+          store.stmt(
+            "DELETE FROM account_email_codes WHERE user_id IN(SELECT user_id FROM account_email_codes WHERE expires<? LIMIT 500)",
+            now() - 86400,
           ),
           store.stmt("DELETE FROM login_attempts WHERE ts<?", now() - 300),
           store.stmt(

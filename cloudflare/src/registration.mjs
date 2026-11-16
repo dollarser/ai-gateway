@@ -52,10 +52,17 @@ function randomCode() {
   } while (x[0] >= 4294000000);
   return String(x[0] % 1000000).padStart(6, "0");
 }
-export async function requestRegistrationCode(store, env, rawEmail, ip, send) {
+export async function requestRegistrationCode(
+  store,
+  env,
+  rawEmail,
+  ip,
+  send,
+  bindingUser = null,
+) {
   const email = registrationEmail(rawEmail),
     config = mailConfiguration(env);
-  if (!verificationEnabled(env) || !config)
+  if ((!bindingUser && !verificationEnabled(env)) || !config)
     failure(
       503,
       "邮箱验证服务暂不可用，请稍后重试",
@@ -68,20 +75,42 @@ export async function requestRegistrationCode(store, env, rawEmail, ip, send) {
       )
     ).value,
   );
-  if (!policy.enabled)
+  if (!policy.enabled && !bindingUser)
     failure(403, "当前暂停公开注册", "registration_disabled");
+  if (bindingUser) {
+    if (bindingUser.must_change)
+      failure(403, "请先修改初始密码", "password_change_required");
+    if (bindingUser.email_verified_at)
+      failure(409, "邮箱已验证绑定", "email_already_verified");
+    if (
+      await store.first(
+        "SELECT id FROM users WHERE id<>? AND (lower(email)=? OR lower(username)=?)",
+        bindingUser.id,
+        email,
+        email,
+      )
+    )
+      failure(409, "该邮箱已被其他账号占用", "email_in_use");
+  }
+  const table = bindingUser ? "account_email_codes" : "registration_codes";
   const ts = now(),
     emailHash = await digest(email),
     ipHash = await digest(ip),
     id = token(),
     code = randomCode(),
-    hash = await codeHash(env, emailHash, id, code);
+    hash = await codeHash(
+      env,
+      bindingUser ? "bind:" + bindingUser.id + ":" + emailHash : emailHash,
+      id,
+      code,
+    );
   const rows = await store.db.batch([
     store.stmt(
-      "INSERT INTO email_send_attempts(ip_hash,email_hash,ts) SELECT ?,?,? WHERE NOT EXISTS(SELECT 1 FROM email_send_attempts WHERE email_hash=? AND ts>?) AND (SELECT count(*) FROM email_send_attempts WHERE email_hash=? AND ts>?)<3 AND (SELECT count(*) FROM email_send_attempts WHERE ip_hash=? AND ts>?)<? AND (SELECT count(*) FROM email_send_attempts WHERE ts>?)<? AND (SELECT count(*) FROM email_send_attempts WHERE ts>?)<?",
+      "INSERT INTO email_send_attempts(ip_hash,email_hash,ts,user_id) SELECT ?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM email_send_attempts WHERE email_hash=? AND ts>?) AND (SELECT count(*) FROM email_send_attempts WHERE email_hash=? AND ts>?)<3 AND (SELECT count(*) FROM email_send_attempts WHERE ip_hash=? AND ts>?)<? AND (SELECT count(*) FROM email_send_attempts WHERE ts>?)<? AND (SELECT count(*) FROM email_send_attempts WHERE ts>?)<? AND (? IS NULL OR (SELECT count(*) FROM email_send_attempts WHERE user_id=? AND ts>?)<3)",
       ipHash,
       emailHash,
       ts,
+      bindingUser?.id ?? null,
       emailHash,
       ts - 60,
       emailHash,
@@ -93,9 +122,15 @@ export async function requestRegistrationCode(store, env, rawEmail, ip, send) {
       policy.global_hourly,
       ts - 60,
       policy.global_minute,
+      bindingUser?.id ?? null,
+      bindingUser?.id ?? null,
+      ts - 3600,
     ),
     store.stmt(
-      "INSERT INTO registration_codes(email_hash,id,code_hash,created,expires) SELECT ?,?,?,?,? WHERE changes()=1 ON CONFLICT(email_hash) DO UPDATE SET id=excluded.id,code_hash=excluded.code_hash,created=excluded.created,expires=excluded.expires,attempts=0,state='pending'",
+      bindingUser
+        ? "INSERT INTO account_email_codes(user_id,email_hash,id,code_hash,created,expires) SELECT ?,?,?,?,?,? WHERE changes()=1 ON CONFLICT(user_id) DO UPDATE SET email_hash=excluded.email_hash,id=excluded.id,code_hash=excluded.code_hash,created=excluded.created,expires=excluded.expires,attempts=0,state='pending'"
+        : "INSERT INTO registration_codes(email_hash,id,code_hash,created,expires) SELECT ?,?,?,?,? WHERE changes()=1 ON CONFLICT(email_hash) DO UPDATE SET id=excluded.id,code_hash=excluded.code_hash,created=excluded.created,expires=excluded.expires,attempts=0,state='pending'",
+      ...(bindingUser ? [bindingUser.id] : []),
       emailHash,
       id,
       hash,
@@ -106,19 +141,22 @@ export async function requestRegistrationCode(store, env, rawEmail, ip, send) {
   if (!rows[0].meta.changes)
     failure(429, "验证码发送过于频繁，请稍后重试", "email_rate_limited");
   const result = {
-    message: "若此邮箱可注册，验证码将发送到您的邮箱，请检查收件箱及垃圾邮件",
+    message: bindingUser
+      ? "验证码已发送，请检查收件箱及垃圾邮件"
+      : "若此邮箱可注册，验证码将发送到您的邮箱，请检查收件箱及垃圾邮件",
     expires_in: 600,
     retry_after: 60,
   };
   if (
-    await store.first(
+    !bindingUser &&
+    (await store.first(
       "SELECT id FROM users WHERE username=? OR email=?",
       email,
       email,
-    )
+    ))
   ) {
     await store.run(
-      "UPDATE registration_codes SET state='failed' WHERE email_hash=? AND id=?",
+      `UPDATE ${table} SET state='failed' WHERE email_hash=? AND id=?`,
       emailHash,
       id,
     );
@@ -128,7 +166,7 @@ export async function requestRegistrationCode(store, env, rawEmail, ip, send) {
     await send(config, email, code);
   } catch (e) {
     await store.run(
-      "UPDATE registration_codes SET state='failed' WHERE email_hash=? AND id=?",
+      `UPDATE ${table} SET state='failed' WHERE email_hash=? AND id=?`,
       emailHash,
       id,
     );
@@ -155,13 +193,19 @@ export async function requestRegistrationCode(store, env, rawEmail, ip, send) {
     );
   }
   await store.run(
-    "UPDATE registration_codes SET state='sent' WHERE email_hash=? AND id=? AND state='pending'",
+    `UPDATE ${table} SET state='sent' WHERE email_hash=? AND id=? AND state='pending'`,
     emailHash,
     id,
   );
   return result;
 }
-export async function verifyRegistrationCode(store, env, email, code) {
+export async function verifyRegistrationCode(
+  store,
+  env,
+  email,
+  code,
+  bindingUser = null,
+) {
   if (!mailConfiguration(env))
     failure(
       503,
@@ -174,9 +218,10 @@ export async function verifyRegistrationCode(store, env, email, code) {
     ts = now(),
     row = await store
       .stmt(
-        "UPDATE registration_codes SET attempts=attempts+1 WHERE email_hash=? AND state='sent' AND expires>? AND attempts<5 RETURNING id,code_hash",
+        `UPDATE ${bindingUser ? "account_email_codes" : "registration_codes"} SET attempts=attempts+1 WHERE email_hash=? AND state='sent' AND expires>? AND attempts<5 ${bindingUser ? "AND user_id=?" : ""} RETURNING id,code_hash`,
         emailHash,
         ts,
+        ...(bindingUser ? [bindingUser.id] : []),
       )
       .first();
   if (!row)
@@ -185,7 +230,12 @@ export async function verifyRegistrationCode(store, env, email, code) {
       "验证码无效、已过期或尝试次数过多，请重新获取",
       "email_verification_invalid",
     );
-  const hash = await codeHash(env, emailHash, row.id, code);
+  const hash = await codeHash(
+    env,
+    bindingUser ? "bind:" + bindingUser.id + ":" + emailHash : emailHash,
+    row.id,
+    code,
+  );
   if (!equal(hash, row.code_hash))
     failure(
       400,

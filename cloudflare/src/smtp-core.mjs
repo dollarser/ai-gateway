@@ -76,7 +76,7 @@ export async function smtpSession(socket, config, recipient, code) {
     await write("DATA");
     await reply(354);
     const body = base64(
-      "您的 Helix AI 注册验证码为：" +
+      "您的 Helix AI 邮箱验证码为：" +
         code +
         "\n验证码 10 分钟内有效，请勿向他人透露。\n如果不是您本人操作，请忽略此邮件。",
     )

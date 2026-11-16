@@ -98,3 +98,7 @@ Worker 已提供 `/account/notices`、`/account/notices/unread-count` 和 `/acco
 ## 注册邮箱验证
 
 启用邮箱验证后，客户端须先调用 accounts.hilex.me 的 `POST /auth/registration-code` 发送验证码，再在 `POST /auth/register` 中提交邮箱、密码和字符串 `code`。注册页面需要验证码输入、发送按钮、60 秒重发倒计时及错误提示；旧账号登录不变。六位验证码十分钟有效，最多五次尝试。不要自动循环发送邮件；详见 [邮箱验证协议与上线流程](email-verification.md)。
+
+## 历史账号绑定提醒
+
+登录响应 `user.email_binding_required=true` 或 `/account/me` 中该标记为 true 时，提示验证绑定邮箱，并允许稍后处理。预填 user.email；若为空且 user.username 是邮箱，可预填用户名。用户主动点击发送后调用 `POST /account/email/code`，再通过 `POST /account/email/bind` 提交 email 和字符串 code。成功后更新用户信息并隐藏提醒，不修改本地保存的原登录名。首次 must_change 账号先改初始密码。不要在每次登录时自动发验证码；提醒不影响已有模型权限。完整错误码、用途隔离与限频见 [邮箱验证与历史绑定](email-verification.md#历史账号登录后的绑定提醒)。

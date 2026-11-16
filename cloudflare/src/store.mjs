@@ -13,6 +13,7 @@ export function publicUser(r) {
   const { password, csrf, family, ...u } = r;
   return {
     ...u,
+    email_binding_required: !r.email_verified_at,
     luna_monthly_tokens: r.luna_monthly_tokens ?? 0,
     services: JSON.parse(r.services),
   };
