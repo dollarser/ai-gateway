@@ -1,3 +1,4 @@
+import { openaiHeaders } from "./openai-headers.mjs";
 import { toolDiagnostic } from "./worker-logs.mjs";
 import { lunaCost, budgetError } from "./budgets.mjs";
 import { providerFailure } from "./provider-errors.mjs";
@@ -358,10 +359,9 @@ export async function proxyLuna(
   try {
     upstream = await transport("https://api.openai.com" + expectedPath, {
       method: "POST",
-      headers: {
-        Authorization: "Bearer " + env.OPENAI_API_KEY,
+      headers: openaiHeaders(env.OPENAI_API_KEY, {
         "Content-Type": "application/json",
-      },
+      }),
       body: JSON.stringify(p.payload),
       signal: AbortSignal.any([abort.signal, AbortSignal.timeout(840000)]),
     });

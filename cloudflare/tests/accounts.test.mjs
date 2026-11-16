@@ -66,6 +66,16 @@ async function provider(request) {
     return Response.json({ text: "local" });
   }
   assert.equal(new URL(request.url).hostname, "api.openai.com");
+  for (const name of [
+    "CF-Connecting-IP",
+    "X-Forwarded-For",
+    "True-Client-IP",
+    "Forwarded",
+    "X-Real-IP",
+    "CF-IPCountry",
+    "CF-Ray",
+  ])
+    assert.equal(request.headers.get(name), null);
   assert.equal(request.headers.get("Authorization"), "Bearer test-openai-key");
   if (new URL(request.url).pathname === "/v1/audio/transcriptions") {
     const form = await request.formData();
@@ -1051,7 +1061,7 @@ async function ttsCall(lease, input = "你好🙂", mode = "success") {
     new Store(db),
     async (url, options) => {
       assert.match(url, /gpt-realtime-2.1-mini/);
-      assert.equal(options.headers.Upgrade, "websocket");
+      assert.equal(new Headers(options.headers).get("Upgrade"), "websocket");
       return { webSocket: ws };
     },
   );

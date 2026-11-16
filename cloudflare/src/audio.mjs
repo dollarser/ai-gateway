@@ -1,3 +1,4 @@
+import { openaiHeaders } from "./openai-headers.mjs";
 import { budgetError } from "./budgets.mjs";
 import { providerFailure, providerEventError } from "./provider-errors.mjs";
 import { Denied, day } from "./store.mjs";
@@ -341,7 +342,7 @@ export async function proxyTranscription(
       "https://api.openai.com/v1/audio/transcriptions",
       {
         method: "POST",
-        headers: { Authorization: "Bearer " + env.OPENAI_API_KEY },
+        headers: openaiHeaders(env.OPENAI_API_KEY),
         body: out,
         signal: AbortSignal.any([abort.signal, AbortSignal.timeout(180000)]),
       },
@@ -497,10 +498,7 @@ export async function synthesize(
     upstream = await transport(
       "https://api.openai.com/v1/realtime?model=" + TTS_MODEL,
       {
-        headers: {
-          Authorization: "Bearer " + env.OPENAI_API_KEY,
-          Upgrade: "websocket",
-        },
+        headers: openaiHeaders(env.OPENAI_API_KEY, { Upgrade: "websocket" }),
         signal: handshake.signal,
       },
     );

@@ -66,3 +66,7 @@ Worker事件使用schema=ai-gateway-log-v1：
 在Cloudflare控制台 Workers & Pages → hilex-accounts → Observability → Logs，根据event或request_id筛选；可进一步按upstream_request_id关联供应商支持。即时排查也可用 `wrangler tail hilex-accounts --format=json`，但实时Tail可能附带平台请求元数据，不应把整份Tail输出公开上传。原始请求Schema不回填到历史日志，此功能仅覆盖新事件。
 
 日志写入消耗少量Worker CPU及独立Worker日志额度，不是零消耗，但不增加D1写入。当前免费日志额度/保留期以[官方计费](https://developers.cloudflare.com/workers/platform/pricing/)为准；2026-12-01起官方公告调整日志计量，届时需复核。控制日志总量靠失败限定、去重和大小上限，不通过新增D1日志表或关闭必要财务记录实现。
+
+## OpenAI 出站请求头
+
+聊天、识别和 Realtime 合成统一使用 `openaiHeaders`，不复制客户端请求头，并显式移除 CF-Connecting-IP、X-Forwarded-For、True-Client-IP、Forwarded、X-Real-IP、CF-IPCountry、CF-Ray。仅设置服务端 OpenAI 密钥和接口必要头；识别 multipart 的 Content-Type 由 fetch 自动生成。此过滤作用于应用提交的请求头，不能修改实际出口 IP，也不能据此保证上游地区判定结果。
