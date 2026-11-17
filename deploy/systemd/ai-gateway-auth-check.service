@@ -1,8 +1,9 @@
 [Unit]
 Description=Verify AI Gateway authentication boundaries
 [Service]
+Environment="PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin"
 Type=oneshot
-WorkingDirectory=%h/workspace/ai-gateway
-ExecStart=%h/workspace/ai-gateway/.venv-accounts/bin/python -m scripts.smoke.check_deployment --auth-only
+WorkingDirectory=%h/workspace/ai-platform/ai-gateway
+ExecStart=%h/workspace/ai-platform/ai-gateway/.venv-accounts/bin/python -m scripts.smoke.check_deployment --auth-only
 UMask=0077
 NoNewPrivileges=true

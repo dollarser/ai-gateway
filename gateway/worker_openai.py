@@ -10,9 +10,9 @@ LUNA_MODEL_ENTRY = {
     "object": "model",
     "owned_by": "openai",
     "architecture": {
-        "input_modalities": ["text"],
+        "input_modalities": ["text", "image"],
         "output_modalities": ["text"],
-        "modality": "text->text",
+        "modality": "text+image->text",
     },
 }
 

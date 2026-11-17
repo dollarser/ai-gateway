@@ -18,10 +18,11 @@
   "vars": {
     "ACCOUNT_ORIGIN": "https://accounts.hilex.me",
     "API_HOST": "api.hilex.me",
-    "LOCAL_MODELS_ENABLED": "false",
+    "LOCAL_MODELS_ENABLED": "true",
     "OPENAI_TRANSPORT": "local",
     "PROVIDER_DIAGNOSTICS_ENABLED": "false",
     "EMAIL_VERIFICATION_ENABLED": "true",
+    "CAPTCHA_ENABLED": "true",
   },
   "routes": [{"pattern": "accounts.hilex.me", "custom_domain": true}, {"pattern":"api.hilex.me/*", "zone_name":"hilex.me"}],
   "observability": {"enabled": true, "logs": {"enabled": true, "invocation_logs": false}},

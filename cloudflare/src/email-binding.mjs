@@ -1,3 +1,4 @@
+import { verifyCaptcha } from "./captcha.mjs";
 import { Denied, publicUser } from "./store.mjs";
 import { now } from "./crypto.mjs";
 import {
@@ -76,7 +77,9 @@ export async function accountEmailRoute(request, store, env, user, body, send) {
     return null;
   if (request.method !== "POST") throw new Denied(405, "仅支持 POST");
   const b = await body(request),
-    fields = path.endsWith("/code") ? ["email"] : ["email", "code"];
+    fields = path.endsWith("/code")
+      ? ["email", "captcha_token"]
+      : ["email", "code"];
   if (
     !b ||
     typeof b !== "object" ||
@@ -84,6 +87,14 @@ export async function accountEmailRoute(request, store, env, user, body, send) {
     Object.keys(b).some((k) => !fields.includes(k))
   )
     throw new Denied(422, "无效邮箱绑定字段");
+  if (path.endsWith("/code"))
+    await verifyCaptcha(
+      request,
+      env,
+      store,
+      b.captcha_token,
+      "email_binding_code",
+    );
   const value = path.endsWith("/code")
     ? await requestRegistrationCode(
         store,

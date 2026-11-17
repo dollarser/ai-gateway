@@ -97,7 +97,9 @@ class PublicAssetsTests(unittest.TestCase):
     def test_only_public_files_built_with_hashes_and_security_headers(self):
         with tempfile.TemporaryDirectory() as directory:
             output = build(Path(directory) / "portal")
-            html = (output / "index.html").read_text()
+            html = (output / "index.html").read_text() + (
+                output / "captcha.html"
+            ).read_text()
             headers = (output / "_headers").read_text()
             for name in FILES:
                 self.assertNotIn("/static/" + name + '"', html)
@@ -113,8 +115,8 @@ class PublicAssetsTests(unittest.TestCase):
             self.assertIn("frame-ancestors", headers)
             self.assertIn("immutable", headers)
             self.assertEqual(
-                len(list(output.rglob("*"))), 11
-            )  # static dir + 8 files + HTML + headers
+                len(list(output.rglob("*"))), 18
+            )  # static dir + 14 public files + 2 HTML pages + headers
 
 
 class WriteReductionTests(unittest.TestCase):
@@ -208,3 +210,63 @@ class WriteReductionTests(unittest.TestCase):
             )
         finally:
             db.close()
+
+
+class PersonalCloudTotalsTests(unittest.TestCase):
+    def test_backfill_and_budget_enforcement_preserve_existing_balances(self):
+        from scripts.ops.check_spend_totals import PERSONAL_QUERY
+
+        db = sqlite3.connect(":memory:")
+        for file in sorted((ROOT / "cloudflare/migrations").glob("*.sql")):
+            if file.name.startswith("0023_"):
+                break
+            db.executescript(file.read_text())
+        db.execute(
+            "INSERT INTO users(id,username,password,role,services,rpm,daily_requests,concurrency,must_change,created,luna_monthly_tokens) VALUES(100,'summary-test','unused','user','[\"qwen\"]',0,0,10,0,unixepoch(),1000)"
+        )
+        period = db.execute("SELECT strftime('%Y-%m','now','+8 hours')").fetchone()[0]
+        for lease, charged, settled in [("first", 100, 0), ("second", 30, 1)]:
+            db.execute(
+                "INSERT INTO requests(id,user_id,service,path,started,day) VALUES(?,100,'qwen','/v1/chat/completions',unixepoch(),date('now','+8 hours'))",
+                (lease,),
+            )
+            db.execute(
+                "INSERT INTO luna_usage(lease,user_id,month,reserved_tokens,charged_tokens,settled,prompt_tokens) VALUES(?,100,?,?,?,?,?)",
+                (lease, period, charged, charged, settled, charged),
+            )
+        db.executescript(
+            (ROOT / "cloudflare/migrations/0023_resource_efficiency.sql").read_text()
+        )
+        self.assertEqual(
+            db.execute(
+                "SELECT used_tokens,reserved_tokens,requests FROM luna_user_month_totals WHERE user_id=100"
+            ).fetchone(),
+            (130, 100, 2),
+        )
+        self.assertEqual(db.execute(PERSONAL_QUERY).fetchone()[0], 0)
+        db.execute("UPDATE users SET luna_monthly_tokens=130 WHERE id=100")
+        db.execute(
+            "INSERT INTO requests(id,user_id,service,path,started,day) VALUES('over',100,'qwen','/v1/chat/completions',unixepoch(),date('now','+8 hours'))"
+        )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "luna_budget_exhausted"):
+            db.execute(
+                "INSERT INTO luna_usage(lease,user_id,month,reserved_tokens,charged_tokens,prompt_tokens) VALUES('over',100,?,1,1,1)",
+                (period,),
+            )
+        db.execute(
+            "UPDATE luna_usage SET charged_tokens=50,settled=1,prompt_tokens=50 WHERE lease='first'"
+        )
+        self.assertEqual(
+            db.execute(
+                "SELECT used_tokens,reserved_tokens FROM luna_user_month_totals WHERE user_id=100"
+            ).fetchone(),
+            (80, 0),
+        )
+        db.execute("UPDATE luna_usage SET month='2000-01' WHERE lease='first'")
+        self.assertEqual(db.execute(PERSONAL_QUERY).fetchone()[0], 0)
+        db.execute("DELETE FROM luna_usage WHERE lease='first'")
+        self.assertEqual(db.execute(PERSONAL_QUERY).fetchone()[0], 0)
+        self.assertIsNotNone(
+            db.execute("SELECT lease FROM luna_spend WHERE lease='first'").fetchone()
+        )
+        db.close()

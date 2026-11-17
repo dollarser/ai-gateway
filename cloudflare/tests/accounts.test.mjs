@@ -7,6 +7,7 @@ import { edgeAPI } from "../src/edge.mjs";
 import { Store } from "../src/store.mjs";
 import { passwordHash, digest } from "../src/crypto.mjs";
 const registrationEnv = {
+  CAPTCHA_ENABLED: "false",
   EMAIL_VERIFICATION_ENABLED: "true",
   EMAIL_CODE_SECRET: "test-only-secret".repeat(4),
   REGISTRATION_SMTP: JSON.stringify({
@@ -93,6 +94,29 @@ async function provider(request) {
   }
   const p = await request.json();
   lastProviderPayload = p;
+  if (new URL(request.url).pathname === "/v1/embeddings") {
+    providerCalls++;
+    if (openaiMode === "reject")
+      return new Response("private failure", { status: 401 });
+    if (openaiMode === "unknown") return new Response("invalid JSON");
+    const input =
+      typeof p.input === "string" || p.input.every?.(Number.isInteger)
+        ? [p.input]
+        : p.input;
+    return Response.json({
+      object: "list",
+      model: p.model,
+      data: input.map((_, index) => ({
+        object: "embedding",
+        index,
+        embedding:
+          p.encoding_format === "base64"
+            ? "AAAAAA=="
+            : Array(p.dimensions ?? 1536).fill(0.125),
+      })),
+      usage: { prompt_tokens: 1, total_tokens: 1 },
+    });
+  }
   assert.equal(p.model, "gpt-6-luna");
   assert.equal(p.service_tier, "default");
   assert.equal(p.store, false);
@@ -727,7 +751,7 @@ test("Luna reservations are atomic across keys and access tokens, zero disables,
   );
   openaiMode = "json";
 });
-test("Luna blocks bypass fields, non-text input and wrong service leases before calling provider", async () => {
+test("Luna blocks bypass fields, invalid image input and wrong service leases before calling provider", async () => {
   const { key } = await lunaUser("luna-validation");
   const lease = await lunaLease(key),
     before = providerCalls;
@@ -744,7 +768,7 @@ test("Luna blocks bypass fields, non-text input and wrong service leases before 
           content: [
             {
               type: "image_url",
-              image_url: { url: "https://example.com/img" },
+              image_url: { url: "file:///tmp/img" },
             },
           ],
         },
@@ -3339,4 +3363,1276 @@ test("Operational console alerts omit unchanged open episodes and log a resolved
   } finally {
     console.warn = old;
   }
+});
+
+test("Vision works through both edge endpoints and settles actual usage", async () => {
+  const { uid, key } = await lunaUser("edge-vision");
+  const catalog = await apiCall("/v1/models", key);
+  assert.deepEqual(catalog.body.data[0].architecture.input_modalities, [
+    "text",
+    "image",
+  ]);
+  for (const responses of [false, true]) {
+    const image = responses
+      ? {
+          type: "input_image",
+          image_url: "https://example.com/image.png",
+          detail: "high",
+        }
+      : {
+          type: "image_url",
+          image_url: { url: "data:image/png;base64,AAAA", detail: "high" },
+        };
+    const input = [{ role: "user", content: [image] }];
+    const r = await apiCall(
+      responses ? "/v1/responses" : "/v1/chat/completions",
+      key,
+      {
+        model: "gpt-6-luna",
+        [responses ? "input" : "messages"]: input,
+      },
+    );
+    assert.equal(r.status, 200);
+    assert.deepEqual(
+      lastProviderPayload[responses ? "input" : "messages"],
+      input,
+    );
+  }
+  const usage = await db
+    .prepare(
+      "SELECT reserved_tokens,charged_tokens,settled FROM luna_usage WHERE user_id=?",
+    )
+    .bind(uid)
+    .all();
+  assert.equal(usage.results.length, 2);
+  for (const row of usage.results) {
+    assert.ok(row.reserved_tokens > 100000);
+    assert.equal(row.charged_tokens, 120);
+    assert.equal(row.settled, 1);
+  }
+});
+
+test("Audio 429 distinguishes shared account concurrency from daily quota and releases completed leases", async () => {
+  const { uid, key } = await audioUser("audio-chat-concurrency", "tts");
+  await db.prepare("UPDATE users SET concurrency=2 WHERE id=?").bind(uid).run();
+  const leases = [await lunaLease(key), await lunaLease(key)];
+  const before = providerCalls;
+  const denied = await apiCall("/v1/audio/speech", key, {
+    model: "gpt-realtime-2.1-mini",
+    input: "hello",
+  });
+  assert.equal(denied.status, 429);
+  assert.equal(denied.body.error_code, "account_concurrency_limited");
+  assert.match(denied.body.detail, /并发/);
+  assert.equal(denied.body.retryable, true);
+  assert.equal(
+    denied.headers.get("X-Error-Code"),
+    "account_concurrency_limited",
+  );
+  assert.equal(denied.headers.get("Retry-After"), "1");
+  assert.equal(denied.headers.get("X-Request-ID"), denied.body.request_id);
+  assert.equal(providerCalls, before);
+  // Model discovery must remain usable even while the two inference slots are held.
+  assert.equal((await apiCall("/v1/models", key)).status, 200);
+  const store = new Store(db);
+  await store.finish({ lease: leases[0], status: 200, size: 0 });
+  const next = await audioLease(key, "tts");
+  await store.finish({ lease: next, status: 499, size: 0 });
+  await store.finish({ lease: leases[1], status: 200, size: 0 });
+});
+
+test("Cancelling a dialogue releases concurrency even when upstream cancellation stalls", async () => {
+  const { uid, key } = await lunaUser("chat-cancel-lease");
+  await db.prepare("UPDATE users SET concurrency=1 WHERE id=?").bind(uid).run();
+  const original = globalThis.fetch,
+    jobs = [];
+  let upstreamCancelled = false,
+    unblock;
+  const blocked = new Promise((resolve) => {
+    unblock = resolve;
+  });
+  globalThis.fetch = async () =>
+    new Response(
+      new ReadableStream({
+        start(c) {
+          c.enqueue(
+            new TextEncoder().encode(
+              'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n',
+            ),
+          );
+        },
+        cancel() {
+          upstreamCancelled = true;
+          return blocked;
+        },
+      }),
+      { headers: { "Content-Type": "text/event-stream" } },
+    );
+  try {
+    const r = await edgeAPI(
+      new Request("https://api.hilex.me/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + key,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-6-luna",
+          messages: [{ role: "user", content: "hi" }],
+          stream: true,
+        }),
+      }),
+      { DB: db, OPENAI_API_KEY: "test", INTERNAL_SECRET: secret },
+      {
+        waitUntil(p) {
+          jobs.push(p);
+        },
+      },
+    );
+    assert.equal(r.status, 200);
+    const reader = r.body.getReader();
+    await reader.read();
+    const cancelled = reader.cancel();
+    // The cancellation promise remains pending, but the lease must already finish.
+    for (let i = 0; i < 30; i++) {
+      const row = await db
+        .prepare("SELECT ended,status FROM requests WHERE user_id=?")
+        .bind(uid)
+        .first();
+      if (row.ended !== null) {
+        assert.equal(row.status, 499);
+        break;
+      }
+      if (i === 29) assert.fail("cancelled request still holds its slot");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(upstreamCancelled, true);
+    const next = await lunaLease(key);
+    await new Store(db).finish({ lease: next, status: 200, size: 0 });
+    unblock();
+    await cancelled;
+    await Promise.all(jobs);
+    const usage = await db
+      .prepare("SELECT settled FROM luna_usage WHERE user_id=?")
+      .bind(uid)
+      .first();
+    assert.equal(usage.settled, 0); // Unknown spend is not refunded when freeing a slot.
+  } finally {
+    unblock();
+    globalThis.fetch = original;
+  }
+});
+
+test("Completed JSON and SSE release slots before the client drains the response", async () => {
+  for (const mode of ["json", "chat", "responses"]) {
+    const { uid, key } = await lunaUser("backpressure-" + mode);
+    await db
+      .prepare("UPDATE users SET concurrency=1 WHERE id=?")
+      .bind(uid)
+      .run();
+    const original = globalThis.fetch,
+      jobs = [];
+    globalThis.fetch = async (url, options) =>
+      provider(new Request(url, { ...options, duplex: "half" }));
+    try {
+      const responses = mode === "responses";
+      const r = await edgeAPI(
+        new Request(
+          "https://api.hilex.me/v1/" +
+            (responses ? "responses" : "chat/completions"),
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer " + key,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model: "gpt-6-luna",
+              stream: mode !== "json",
+              ...(responses
+                ? { input: "hi" }
+                : { messages: [{ role: "user", content: "hi" }] }),
+            }),
+          },
+        ),
+        { DB: db, OPENAI_API_KEY: "test-openai-key", INTERNAL_SECRET: secret },
+        {
+          waitUntil(p) {
+            jobs.push(p);
+          },
+        },
+      );
+      assert.equal(r.status, 200);
+      // Deliberately do not drain this body. Its single queued chunk is complete.
+      for (let i = 0; i < 30; i++) {
+        const row = await db
+          .prepare(
+            "SELECT ended,status,prompt_tokens FROM requests WHERE user_id=?",
+          )
+          .bind(uid)
+          .first();
+        if (row.ended !== null) {
+          assert.equal(row.status, 200);
+          assert.equal(row.prompt_tokens, 100);
+          break;
+        }
+        if (i === 29) assert.fail("completed response still holds concurrency");
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      const next = await lunaLease(key);
+      await new Store(db).finish({ lease: next, status: 200, size: 0 });
+      await r.arrayBuffer();
+      await Promise.all(jobs);
+    } finally {
+      globalThis.fetch = original;
+    }
+  }
+});
+
+test("Email password reset revokes all sessions, preserves keys by default and consumes its code atomically", async () => {
+  const { requestPasswordReset, resetPassword } =
+    await import("../src/password-reset.mjs");
+  const store = new Store(db),
+    env = { ...registrationEnv },
+    jobs = [],
+    deliveries = [];
+  const ctx = {
+    waitUntil(p) {
+      jobs.push(p);
+    },
+  };
+  const send = async (config, email, code, purpose) => {
+    deliveries.push({ email, code, purpose });
+  };
+  const email = "reset-owner@example.net";
+  const user = await store.createUser("reset-original-login", "before1", {
+    email,
+    must_change: 0,
+    rpm: 0,
+    daily_requests: 0,
+    concurrency: 4,
+  });
+  await store.run(
+    "UPDATE users SET email_verified_at=unixepoch() WHERE id=?",
+    user.id,
+  );
+  const key = await store.createKey(user.id, user.id, {
+    name: "keep",
+    days: 1,
+    services: ["qwen"],
+  });
+  const sessions = [
+    await store.login(user.username, "before1", "reset-ip-1"),
+    await store.login(user.username, "before1", "reset-ip-2"),
+  ];
+  const response = await requestPasswordReset(
+    store,
+    env,
+    " RESET-OWNER@EXAMPLE.NET ",
+    "reset-send-ip",
+    send,
+    ctx,
+  );
+  assert.equal(response.expires_in, 600);
+  await Promise.all(jobs);
+  assert.equal(deliveries[0].purpose, "password-reset");
+  const code = deliveries[0].code;
+  const proof = await store.first(
+    "SELECT * FROM password_reset_codes WHERE user_id=?",
+    user.id,
+  );
+  assert.notEqual(proof.code_hash, code);
+  assert.equal(proof.state, "sent");
+  await assert.rejects(
+    resetPassword(
+      store,
+      env,
+      { email, code, new_password: "short" },
+      send,
+      ctx,
+    ),
+    { status: 422 },
+  );
+  await assert.rejects(
+    resetPassword(
+      store,
+      env,
+      { email, code, new_password: "after12", revoke_api_keys: "false" },
+      send,
+      ctx,
+    ),
+    { status: 422 },
+  );
+  const changed = await resetPassword(
+    store,
+    env,
+    { email, code, new_password: "after1" },
+    send,
+    ctx,
+  );
+  assert.equal(changed.api_keys_revoked, false);
+  await Promise.all(jobs);
+  for (const old of sessions) {
+    await assert.rejects(store.session(old.cookie), { status: 401 });
+    await assert.rejects(store.access(old.body.access_token), { status: 401 });
+    await assert.rejects(store.refresh(old.body.refresh_token), {
+      status: 401,
+    });
+  }
+  await assert.rejects(store.login(user.username, "before1", "reset-new-ip"), {
+    status: 401,
+  });
+  assert.equal(
+    (await store.login(user.username, "after1", "reset-new-ip")).body.user.id,
+    user.id,
+  );
+  const lease = await store.acquire(key.key, "qwen", "/v1/chat/completions");
+  await store.finish({ lease, status: 200, size: 0 });
+  assert.equal(
+    (
+      await store.first(
+        "SELECT state,code_hash FROM password_reset_codes WHERE user_id=?",
+        user.id,
+      )
+    ).code_hash,
+    "",
+  );
+  await assert.rejects(
+    resetPassword(
+      store,
+      env,
+      { email, code, new_password: "other1", revoke_api_keys: true },
+      send,
+      ctx,
+    ),
+    { status: 400 },
+  );
+  assert.equal(
+    (
+      await store.first(
+        "SELECT count(*) n FROM audit WHERE action='self_reset_password' AND target=?",
+        String(user.id),
+      )
+    ).n,
+    1,
+  );
+  assert.ok(
+    deliveries.some(
+      (d) => d.purpose === "password-changed" && d.code === "keys-retained",
+    ),
+  );
+});
+
+test("Password reset sending hides account existence, isolates code purpose, limits attempts and supports key revocation", async () => {
+  const { requestPasswordReset, resetPassword } =
+    await import("../src/password-reset.mjs");
+  const { requestRegistrationCode } = await import("../src/registration.mjs");
+  const store = new Store(db),
+    env = { ...registrationEnv },
+    jobs = [],
+    deliveries = [],
+    ctx = {
+      waitUntil(p) {
+        jobs.push(p);
+      },
+    };
+  const send = async (config, email, code, purpose) => {
+    deliveries.push({ email, code, purpose });
+  };
+  const owner = await store.createUser("reset-revoke", "before1", {
+    email: "reset-revoke@example.net",
+    must_change: 0,
+  });
+  await store.run(
+    "UPDATE users SET email_verified_at=unixepoch() WHERE id=?",
+    owner.id,
+  );
+  const unverified = await store.createUser("reset-unverified", "before1", {
+    email: "reset-unverified@example.net",
+    must_change: 0,
+  });
+  const disabled = await store.createUser("reset-disabled", "before1", {
+    email: "reset-disabled@example.net",
+    must_change: 0,
+  });
+  await store.run(
+    "UPDATE users SET email_verified_at=unixepoch(),enabled=0 WHERE id=?",
+    disabled.id,
+  );
+  const key = await store.createKey(owner.id, owner.id, {
+    name: "revoke",
+    days: 1,
+    services: ["qwen"],
+  });
+  let response;
+  for (const email of [
+    owner.email,
+    unverified.email,
+    disabled.email,
+    "reset-unknown@example.net",
+  ]) {
+    const r = await requestPasswordReset(
+      store,
+      env,
+      email,
+      "reset-enum-" + email,
+      send,
+      ctx,
+    );
+    if (response) assert.deepEqual(r, response);
+    response = r;
+  }
+  await Promise.all(jobs);
+  assert.equal(deliveries.length, 1);
+  await assert.rejects(
+    requestPasswordReset(store, env, owner.email, "reset-other-ip", send, ctx),
+    { status: 429 },
+  );
+  const code = deliveries[0].code;
+  for (let i = 0; i < 5; i++)
+    await assert.rejects(
+      resetPassword(
+        store,
+        env,
+        {
+          email: owner.email,
+          code: code === "000000" ? "000001" : "000000",
+          new_password: "after1",
+        },
+        send,
+        ctx,
+      ),
+      { status: 400 },
+    );
+  await assert.rejects(
+    resetPassword(
+      store,
+      env,
+      { email: owner.email, code, new_password: "after1" },
+      send,
+      ctx,
+    ),
+    { status: 400 },
+  );
+  // Age the send reservation for a deliberate second challenge in this test.
+  await store.run(
+    "DELETE FROM email_send_attempts WHERE email_hash=?",
+    await digest(owner.email),
+  );
+  await requestPasswordReset(
+    store,
+    env,
+    owner.email,
+    "reset-new-send",
+    send,
+    ctx,
+  );
+  await Promise.all(jobs);
+  const next = deliveries.at(-1).code;
+  const done = await resetPassword(
+    store,
+    env,
+    {
+      email: owner.email,
+      code: next,
+      new_password: "after1",
+      revoke_api_keys: true,
+    },
+    send,
+    ctx,
+  );
+  assert.equal(done.api_keys_revoked, true);
+  await Promise.all(jobs);
+  await assert.rejects(store.acquire(key.key, "qwen", "/v1/chat/completions"), {
+    status: 401,
+  });
+  assert.ok(
+    deliveries.some(
+      (d) => d.purpose === "password-changed" && d.code === "keys-revoked",
+    ),
+  );
+  // A binding/registration code does not authorize password reset.
+  let registration;
+  await requestRegistrationCode(
+    store,
+    env,
+    "reset-isolation@example.net",
+    "reset-register-ip",
+    async (c, e, code) => {
+      registration = code;
+    },
+  );
+  await assert.rejects(
+    resetPassword(
+      store,
+      env,
+      {
+        email: "reset-isolation@example.net",
+        code: registration,
+        new_password: "after1",
+      },
+      send,
+      ctx,
+    ),
+    { status: 400 },
+  );
+});
+
+test("Password reset expiry, SMTP failure, stale-password challenge and concurrent replay are safe", async () => {
+  const { requestPasswordReset, resetPassword } =
+    await import("../src/password-reset.mjs");
+  const store = new Store(db),
+    env = { ...registrationEnv },
+    jobs = [],
+    ctx = {
+      waitUntil(p) {
+        jobs.push(p);
+      },
+    };
+  const owner = await store.createUser("reset-races", "before1", {
+    email: "reset-races@example.net",
+    must_change: 0,
+  });
+  await store.run(
+    "UPDATE users SET email_verified_at=unixepoch() WHERE id=?",
+    owner.id,
+  );
+  let code;
+  async function issue(
+    send = async (c, e, value) => {
+      code = value;
+    },
+  ) {
+    await store.run(
+      "DELETE FROM email_send_attempts WHERE email_hash=?",
+      await digest(owner.email),
+    );
+    await requestPasswordReset(
+      store,
+      env,
+      owner.email,
+      "reset-race-send",
+      send,
+      ctx,
+    );
+    await Promise.all(jobs);
+  }
+  const reset = (p = {}) =>
+    resetPassword(
+      store,
+      env,
+      { email: owner.email, code, new_password: "after1", ...p },
+      async () => {},
+      ctx,
+    );
+  await issue();
+  await store.run(
+    "UPDATE password_reset_codes SET expires=unixepoch()-1 WHERE user_id=?",
+    owner.id,
+  );
+  await assert.rejects(reset(), { status: 400 });
+  await issue(async () => {
+    throw new Error("private SMTP details");
+  });
+  assert.equal(
+    (
+      await store.first(
+        "SELECT state FROM password_reset_codes WHERE user_id=?",
+        owner.id,
+      )
+    ).state,
+    "failed",
+  );
+  await assert.rejects(reset(), { status: 400 });
+  await issue();
+  await store.changePassword(owner.id, "before1", "before2");
+  await assert.rejects(reset(), { status: 400 });
+  await issue();
+  const r = await Promise.allSettled([
+    reset({ new_password: "after1" }),
+    reset({ new_password: "after2" }),
+  ]);
+  assert.equal(r.filter((x) => x.status === "fulfilled").length, 1);
+  assert.equal(
+    (
+      await store.first(
+        "SELECT count(*) n FROM audit WHERE action='self_reset_password' AND target=?",
+        String(owner.id),
+      )
+    ).n,
+    1,
+  );
+  await Promise.all(jobs);
+});
+
+test("Public password-reset endpoints validate input, origin and never accept registration codes", async () => {
+  assert.equal(
+    (await call("/auth/password-reset/code", { email: "bad" })).status,
+    422,
+  );
+  assert.equal(
+    (
+      await call("/auth/password-reset/code", {
+        email: "reset-endpoint@example.net",
+        extra: 1,
+      })
+    ).status,
+    422,
+  );
+  const requested = await call("/auth/password-reset/code", {
+    email: "reset-endpoint@example.net",
+  });
+  assert.equal(requested.status, 200);
+  assert.equal(requested.body.expires_in, 600);
+  const failed = await call("/auth/password-reset", {
+    email: "reset-endpoint@example.net",
+    code: "000000",
+    new_password: "after1",
+  });
+  assert.equal(failed.status, 400);
+  assert.equal(failed.body.error_code, "password_reset_invalid");
+  const denied = await mf.dispatchFetch(
+    "https://accounts.test/auth/password-reset/code",
+    {
+      method: "POST",
+      headers: {
+        Origin: "https://evil.example",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ email: "reset-origin@example.net" }),
+    },
+  );
+  assert.equal(denied.status, 403);
+});
+
+test("Turnstile validation binds hostname/action and atomically rejects replay before sending mail", async () => {
+  const { verifyCaptcha, captchaInfo } = await import("../src/captcha.mjs");
+  const store = new Store(db),
+    env = {
+      CAPTCHA_ENABLED: "true",
+      ACCOUNT_ORIGIN: "https://accounts.test",
+      TURNSTILE_SITE_KEY: "public-test-site",
+      TURNSTILE_SECRET_KEY: "private-test-secret",
+    };
+  assert.equal(captchaInfo(env).site_key, "public-test-site");
+  assert.equal(captchaInfo(env).secret, undefined);
+  const request = new Request(
+    "https://accounts.test/auth/password-reset/code",
+    { headers: { "CF-Connecting-IP": "192.0.2.82" } },
+  );
+  let calls = 0;
+  const verify = async (url, options) => {
+    calls++;
+    assert.equal(
+      url,
+      "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+    );
+    const b = JSON.parse(options.body);
+    assert.equal(b.secret, env.TURNSTILE_SECRET_KEY);
+    assert.equal(b.remoteip, "192.0.2.82");
+    return Response.json({
+      success: true,
+      hostname: "accounts.test",
+      action: "password_reset_code",
+    });
+  };
+  for (const token of [undefined, "", "x".repeat(2049)])
+    await assert.rejects(
+      verifyCaptcha(request, env, store, token, "password_reset_code", verify),
+      { status: 400, code: "captcha_required" },
+    );
+  const results = await Promise.allSettled(
+    [1, 2].map(() =>
+      verifyCaptcha(
+        request,
+        env,
+        store,
+        "captcha-once",
+        "password_reset_code",
+        verify,
+      ),
+    ),
+  );
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+  assert.equal(calls, 1);
+  await assert.rejects(
+    verifyCaptcha(
+      request,
+      env,
+      store,
+      "captcha-once",
+      "password_reset_code",
+      verify,
+    ),
+    { status: 400, code: "captcha_invalid" },
+  );
+  for (const [name, proof] of Object.entries({
+    wrong_host: {
+      success: true,
+      hostname: "evil.example",
+      action: "password_reset_code",
+    },
+    wrong_action: {
+      success: true,
+      hostname: "accounts.test",
+      action: "registration_code",
+    },
+    failed: { success: false },
+    forged: {
+      success: "true",
+      hostname: "accounts.test",
+      action: "password_reset_code",
+    },
+  })) {
+    await assert.rejects(
+      verifyCaptcha(
+        request,
+        env,
+        store,
+        "captcha-" + name,
+        "password_reset_code",
+        async () => Response.json(proof),
+      ),
+      { status: 400, code: "captcha_invalid" },
+    );
+  }
+  await assert.rejects(
+    verifyCaptcha(
+      request,
+      env,
+      store,
+      "captcha-outage",
+      "password_reset_code",
+      async () => {
+        throw new Error("private transport details");
+      },
+    ),
+    { status: 503, code: "captcha_unavailable" },
+  );
+  await assert.rejects(
+    verifyCaptcha(
+      request,
+      {},
+      store,
+      "captcha-no-config",
+      "password_reset_code",
+      verify,
+    ),
+    { status: 503, code: "captcha_unavailable" },
+  );
+  await verifyCaptcha(
+    request,
+    { CAPTCHA_ENABLED: "false" },
+    store,
+    undefined,
+    "password_reset_code",
+    verify,
+  );
+});
+
+test("Turnstile external validation has an atomic per-IP request limit", async () => {
+  const { verifyCaptcha } = await import("../src/captcha.mjs");
+  const store = new Store(db);
+  const env = {
+    ACCOUNT_ORIGIN: "https://accounts.test",
+    TURNSTILE_SITE_KEY: "public-test-site",
+    TURNSTILE_SECRET_KEY: "private-test-secret",
+  };
+  const request = new Request("https://accounts.test/auth/registration-code", {
+    headers: { "CF-Connecting-IP": "192.0.2.83" },
+  });
+  let calls = 0;
+  const verify = async () => {
+    calls++;
+    return Response.json({ success: false });
+  };
+  for (let i = 0; i < 20; i++)
+    await assert.rejects(
+      verifyCaptcha(
+        request,
+        env,
+        store,
+        "captcha-rate-" + i,
+        "registration_code",
+        verify,
+      ),
+      { status: 400 },
+    );
+  await assert.rejects(
+    verifyCaptcha(
+      request,
+      env,
+      store,
+      "captcha-rate-limit",
+      "registration_code",
+      verify,
+    ),
+    { status: 429, code: "captcha_rate_limited" },
+  );
+  assert.equal(calls, 20);
+});
+
+test("Public email code endpoints require a Turnstile proof and never expose the secret", async () => {
+  const locked = new Miniflare({
+    modules: true,
+    scriptPath: ".test-build/worker.js",
+    compatibilityDate: "2026-07-01",
+    bindings: {
+      ACCOUNT_ORIGIN: "https://accounts.test",
+      CAPTCHA_ENABLED: "true",
+      TURNSTILE_SITE_KEY: "public-test-site",
+      TURNSTILE_SECRET_KEY: "private-test-secret",
+    },
+    serviceBindings: {
+      ASSETS: async (request) => {
+        assert.equal(new URL(request.url).pathname, "/captcha");
+        return new Response("challenge page");
+      },
+    },
+  });
+  try {
+    const info = await locked.dispatchFetch(
+      "https://accounts.test/auth/captcha-info",
+    );
+    assert.equal(info.status, 200);
+    const body = await info.text();
+    assert.ok(body.includes("public-test-site"));
+    assert.ok(!body.includes("private-test-secret"));
+    for (const path of [
+      "/auth/registration-code",
+      "/auth/password-reset/code",
+    ]) {
+      const r = await locked.dispatchFetch("https://accounts.test" + path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "owner@example.net" }),
+      });
+      assert.equal(r.status, 400);
+      assert.equal((await r.json()).error_code, "captcha_required");
+    }
+    const page = await locked.dispatchFetch(
+      "https://accounts.test/auth/captcha?action=password_reset_code",
+    );
+    assert.equal(page.status, 200);
+    assert.ok(
+      page.headers
+        .get("Content-Security-Policy")
+        .includes("https://challenges.cloudflare.com"),
+    );
+  } finally {
+    await locked.dispose();
+  }
+});
+
+test("Small embeddings discovery, vector dimensions and model-specific pricing share atomic cloud quotas", async () => {
+  const { uid, key } = await lunaUser("cloud-embedding");
+  const models = await apiCall("/v1/models?output_modalities=embeddings", key);
+  assert.deepEqual(
+    models.body.data.map((x) => x.id),
+    ["text-embedding-3-small"],
+  );
+  for (const extra of [
+    {},
+    { dimensions: 256 },
+    { encoding_format: "base64" },
+  ]) {
+    const r = await apiCall("/v1/embeddings", key, {
+      model: "text-embedding-3-small",
+      input: ["hello", "world"],
+      ...extra,
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.data.length, 2);
+    if (extra.encoding_format !== "base64")
+      assert.equal(r.body.data[0].embedding.length, extra.dimensions ?? 1536);
+  }
+  const rows = (
+    await db.prepare("SELECT * FROM luna_usage WHERE user_id=?").bind(uid).all()
+  ).results;
+  assert.equal(rows.length, 3);
+  for (const r of rows) {
+    assert.equal(r.model, "text-embedding-3-small");
+    assert.equal(r.settled, 1);
+    assert.equal(r.charged_tokens, 1);
+    assert.equal(r.charged_cost_nanos, 20);
+    assert.equal(
+      (
+        await db
+          .prepare("SELECT cost_nanos FROM luna_spend WHERE lease=?")
+          .bind(r.lease)
+          .first()
+      ).cost_nanos,
+      20,
+    );
+  }
+  const { prepareEmbedding } = await import("../src/embeddings.mjs");
+  for (const extra of [
+    { model: "text-embedding-3-large" },
+    { input: "" },
+    { input: [] },
+    { input: "x".repeat(8193) },
+    { dimensions: 1537 },
+    { stream: true },
+  ])
+    assert.throws(() =>
+      prepareEmbedding({
+        model: "text-embedding-3-small",
+        input: "hello",
+        ...extra,
+      }),
+    );
+  const before = providerCalls;
+  assert.equal(
+    (
+      await apiCall("/v1/embeddings", key, {
+        model: "text-embedding-3-large",
+        input: "hello",
+      })
+    ).status,
+    422,
+  );
+  assert.equal(providerCalls, before);
+  await db
+    .prepare("UPDATE users SET luna_monthly_tokens=3 WHERE id=?")
+    .bind(uid)
+    .run();
+  assert.equal(
+    (
+      await apiCall("/v1/embeddings", key, {
+        model: "text-embedding-3-small",
+        input: "hello",
+      })
+    ).status,
+    429,
+  );
+  openaiMode = "reject";
+  await db
+    .prepare("UPDATE users SET luna_monthly_tokens=100000 WHERE id=?")
+    .bind(uid)
+    .run();
+  assert.equal(
+    (
+      await apiCall("/v1/embeddings", key, {
+        model: "text-embedding-3-small",
+        input: "hello",
+      })
+    ).status,
+    502,
+  );
+  openaiMode = "json";
+  const r = await db
+    .prepare(
+      "SELECT charged_tokens FROM luna_usage WHERE user_id=? ORDER BY rowid DESC LIMIT 1",
+    )
+    .bind(uid)
+    .first();
+  assert.equal(r.charged_tokens, 0);
+});
+
+test("Local model discovery works on first call without inference leases or free concurrency", async () => {
+  const { uid, key } = await lunaUser("local-first-catalog");
+  const store = new Store(db);
+  await db.prepare("UPDATE users SET concurrency=1 WHERE id=?").bind(uid).run();
+  const lease = await lunaLease(key);
+  const before = await db
+    .prepare("SELECT count(*) n FROM requests WHERE user_id=?")
+    .bind(uid)
+    .first();
+  const original = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (url, options) => {
+    calls++;
+    assert.equal(new URL(url).searchParams.get("output_modalities"), "all");
+    assert.equal(new Headers(options.headers).get("Authorization"), null);
+    assert.ok(new Headers(options.headers).get("X-Edge-Secret"));
+    return Response.json({
+      data: [
+        {
+          id: "Qwen3.8-27B",
+          architecture: {
+            input_modalities: ["text"],
+            output_modalities: ["text"],
+          },
+        },
+        {
+          id: "Qwen/Qwen3-Embedding-0.6B",
+          architecture: { output_modalities: ["embeddings"] },
+        },
+      ],
+    });
+  };
+  try {
+    const r = await edgeAPI(
+      new Request("https://api.hilex.me/v1/models?output_modalities=all", {
+        headers: { Authorization: "Bearer " + key },
+      }),
+      {
+        DB: db,
+        OPENAI_API_KEY: "fake",
+        INTERNAL_SECRET: secret,
+        LOCAL_MODELS_ENABLED: "true",
+      },
+      { waitUntil() {} },
+    );
+    assert.equal(r.status, 200);
+    const ids = (await r.json()).data.map((x) => x.id);
+    assert.ok(ids.includes("Qwen3.8-27B"));
+    assert.ok(ids.includes("text-embedding-3-small"));
+    assert.equal(calls, 1);
+    const after = await db
+      .prepare("SELECT count(*) n FROM requests WHERE user_id=?")
+      .bind(uid)
+      .first();
+    assert.equal(after.n, before.n);
+  } finally {
+    globalThis.fetch = original;
+    await store.finish({ lease, status: 200, size: 0 });
+  }
+});
+
+test("Original username and password can change password anonymously, revoke sessions and retain API keys", async () => {
+  const store = new Store(db);
+  const user = await store.createUser("credential-change", "before1", {
+    must_change: 0,
+    rpm: 0,
+    daily_requests: 0,
+  });
+  const login = await store.login(
+    user.username,
+    "before1",
+    "credential-initial",
+  );
+  const key = await store.createKey(user.id, user.id, {
+    name: "retained",
+    services: ["qwen"],
+    days: 1,
+  });
+  const bad = await call("/auth/password", {
+    username: user.username,
+    current_password: "wrong",
+    new_password: "after1",
+  });
+  assert.equal(bad.status, 401);
+  const r = await call("/auth/password", {
+    username: " CREDENTIAL-CHANGE ",
+    current_password: "before1",
+    new_password: "after1",
+  });
+  assert.equal(r.status, 200);
+  assert.ok(r.headers.get("Set-Cookie").includes("Max-Age=0"));
+  await assert.rejects(store.access(login.body.access_token), { status: 401 });
+  await assert.rejects(store.refresh(login.body.refresh_token), {
+    status: 401,
+  });
+  await assert.rejects(store.session(login.cookie), { status: 401 });
+  await assert.rejects(
+    store.login(user.username, "before1", "credential-old-login"),
+    { status: 401 },
+  );
+  assert.equal(
+    (await store.login(user.username, "after1", "credential-new-login")).body
+      .user.id,
+    user.id,
+  );
+  const lease = await store.acquire(key.key, "qwen", "/v1/chat/completions");
+  await store.finish({ lease, status: 200, size: 0 });
+  for (let i = 0; i < 10; i++)
+    assert.equal(
+      (
+        await call(
+          "/auth/password",
+          {
+            username: "credential-missing",
+            current_password: "wrong",
+            new_password: "after1",
+          },
+          { headers: { "CF-Connecting-IP": "credential-guess-ip" } },
+        )
+      ).status,
+      401,
+    );
+  assert.equal(
+    (
+      await call(
+        "/auth/password",
+        {
+          username: "credential-missing",
+          current_password: "wrong",
+          new_password: "after1",
+        },
+        { headers: { "CF-Connecting-IP": "credential-guess-ip" } },
+      )
+    ).status,
+    429,
+  );
+});
+
+test("Personal cloud summaries follow settlement, reconciliation, month moves and deletion without refunding global spend", async () => {
+  const store = new Store(db);
+  const { uid, key } = await lunaUser("personal-rollup");
+  const lease = await lunaLease(key);
+  await lunaCall(lease);
+  await store.finish({ lease, status: 200, size: 0 });
+  let t = await store.first(
+    "SELECT * FROM luna_user_month_totals WHERE user_id=?",
+    uid,
+  );
+  assert.equal(t.used_tokens, 120);
+  assert.equal(t.reserved_tokens, 0);
+  assert.equal(t.requests, 1);
+  await store.run(
+    "UPDATE luna_usage SET charged_tokens=150,settled=0 WHERE lease=?",
+    lease,
+  );
+  t = await store.first(
+    "SELECT * FROM luna_user_month_totals WHERE user_id=?",
+    uid,
+  );
+  assert.equal(t.used_tokens, 150);
+  assert.equal(t.reserved_tokens, 150);
+  await store.run(
+    "UPDATE luna_usage SET month='2000-01',prompt_tokens=130,completion_tokens=20 WHERE lease=?",
+    lease,
+  );
+  const moved = await store.first(
+    "SELECT * FROM luna_user_month_totals WHERE user_id=? AND month='2000-01'",
+    uid,
+  );
+  assert.equal(moved.used_tokens, 150);
+  assert.equal(moved.prompt_tokens, 130);
+  const old = await store.first(
+    "SELECT * FROM luna_user_month_totals WHERE user_id=? AND month<>'2000-01'",
+    uid,
+  );
+  assert.equal(old.used_tokens, 0);
+  assert.equal(old.requests, 0);
+  const spend = await store.first(
+    "SELECT cost_nanos FROM luna_spend WHERE lease=?",
+    lease,
+  );
+  await store.run("DELETE FROM luna_usage WHERE lease=?", lease);
+  t = await store.first(
+    "SELECT * FROM luna_user_month_totals WHERE user_id=? AND month='2000-01'",
+    uid,
+  );
+  assert.equal(t.used_tokens, 0);
+  assert.equal(t.requests, 0);
+  assert.equal(
+    (
+      await store.first(
+        "SELECT cost_nanos FROM luna_spend WHERE lease=?",
+        lease,
+      )
+    ).cost_nanos,
+    spend.cost_nanos,
+  );
+});
+
+test("Usage snapshot matches separate authenticated endpoints and rejects anonymous callers", async () => {
+  const { key } = await lunaUser("usage-snapshot");
+  assert.equal((await call("/account/usage-snapshot")).status, 401);
+  const store = new Store(db);
+  const user = await store.catalogUser(key); // use a real login for account-only endpoint
+  await store.run(
+    "UPDATE users SET password=? WHERE id=?",
+    await passwordHash("snapshot-pass"),
+    user.id,
+  );
+  const session = await store.login(
+    user.username,
+    "snapshot-pass",
+    "snapshot-ip",
+  );
+  const access = session.body.access_token;
+  const result = await call("/account/usage-snapshot", undefined, { access });
+  assert.equal(result.status, 200);
+  assert.deepEqual(
+    result.body.usage,
+    (await call("/account/usage", undefined, { access })).body,
+  );
+  assert.deepEqual(
+    result.body.luna,
+    (await call("/account/luna-usage", undefined, { access })).body,
+  );
+  assert.deepEqual(
+    result.body.audio,
+    (await call("/account/audio-usage", undefined, { access })).body,
+  );
+});
+
+test("Cloud monthly lookups and empty privacy cleanup remain bounded with a large personal ledger", async () => {
+  const store = new Store(db);
+  const { uid } = await lunaUser("rollup-load");
+  await store.run(
+    "UPDATE users SET concurrency=10000,luna_monthly_tokens=1000000000 WHERE id=?",
+    uid,
+  );
+  const ts = Date.now() / 1000,
+    period = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
+  await store.run(
+    "WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1000) INSERT INTO requests(id,user_id,service,path,started,day,client_ip) SELECT 'rollup-load-'||x,?,'qwen','/v1/chat/completions',?,?,'192.0.2.100' FROM n",
+    uid,
+    ts,
+    period,
+  );
+  await store.run(
+    "INSERT INTO luna_usage(lease,user_id,month,reserved_tokens,charged_tokens,prompt_tokens) SELECT id,user_id,?,1,1,1 FROM requests WHERE user_id=?",
+    period.slice(0, 7),
+    uid,
+  );
+  const old = await store
+    .stmt(
+      "SELECT sum(charged_tokens) n FROM luna_usage WHERE user_id=? AND month=?",
+      uid,
+      period.slice(0, 7),
+    )
+    .all();
+  const current = await store
+    .stmt(
+      "SELECT used_tokens n FROM luna_user_month_totals WHERE user_id=? AND month=?",
+      uid,
+      period.slice(0, 7),
+    )
+    .all();
+  assert.equal(current.results[0].n, 1000);
+  assert.equal(old.results[0].n, 1000);
+  assert.ok(old.meta.rows_read >= 1000);
+  assert.ok(current.meta.rows_read <= 2);
+  const privacy = await store.run(
+    "UPDATE requests SET client_ip=NULL,user_agent=NULL,device_id=NULL WHERE id IN(SELECT id FROM requests WHERE started<? AND (client_ip IS NOT NULL OR user_agent IS NOT NULL OR device_id IS NOT NULL) LIMIT 1000)",
+    ts - 30 * 86400,
+  );
+  assert.equal(privacy.meta.changes, 0);
+  assert.ok(privacy.meta.rows_read < 50, JSON.stringify(privacy.meta));
+  console.log(
+    JSON.stringify({
+      benchmark: "personal_cloud_query",
+      ledger_rows: 1000,
+      old_rows_read: old.meta.rows_read,
+      new_rows_read: current.meta.rows_read,
+      empty_privacy_rows_read: privacy.meta.rows_read,
+    }),
+  );
+});
+
+test("Concurrent cloud requests cannot overspend a one-token personal balance", async () => {
+  const { uid, key } = await lunaUser("summary-concurrent-budget", 1);
+  const replies = await Promise.all(
+    [1, 2, 3, 4].map(() =>
+      apiCall("/v1/embeddings", key, {
+        model: "text-embedding-3-small",
+        input: "x",
+      }),
+    ),
+  );
+  assert.deepEqual(replies.map((r) => r.status).sort(), [200, 429, 429, 429]);
+  for (const r of replies.filter((r) => r.status === 429))
+    assert.equal(r.body.error_code, "account_luna_budget_exhausted");
+  const row = await db
+    .prepare(
+      "SELECT used_tokens,reserved_tokens,requests FROM luna_user_month_totals WHERE user_id=?",
+    )
+    .bind(uid)
+    .first();
+  assert.deepEqual(row, { used_tokens: 1, reserved_tokens: 0, requests: 1 });
 });

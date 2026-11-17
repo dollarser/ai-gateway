@@ -29,6 +29,7 @@ test("OpenAI transport preserves direct route and forwards HTTP and realtime onl
   for (const path of [
     "chat/completions",
     "responses",
+    "embeddings",
     "audio/transcriptions",
     "realtime?model=gpt-realtime-2.1-mini",
   ]) {

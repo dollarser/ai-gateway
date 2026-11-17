@@ -46,12 +46,42 @@ export async function codeHash(env, emailHash, id, code) {
     ),
   );
 }
-function randomCode() {
+export function randomCode() {
   const x = new Uint32Array(1);
   do {
     crypto.getRandomValues(x);
   } while (x[0] >= 4294000000);
   return String(x[0] % 1000000).padStart(6, "0");
+}
+export function emailSendReservation(
+  store,
+  policy,
+  ipHash,
+  emailHash,
+  ts,
+  userId = null,
+) {
+  return store.stmt(
+    "INSERT INTO email_send_attempts(ip_hash,email_hash,ts,user_id) SELECT ?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM email_send_attempts WHERE email_hash=? AND ts>?) AND (SELECT count(*) FROM email_send_attempts WHERE email_hash=? AND ts>?)<3 AND (SELECT count(*) FROM email_send_attempts WHERE ip_hash=? AND ts>?)<? AND (SELECT count(*) FROM email_send_attempts WHERE ts>?)<? AND (SELECT count(*) FROM email_send_attempts WHERE ts>?)<? AND (? IS NULL OR (SELECT count(*) FROM email_send_attempts WHERE user_id=? AND ts>?)<3)",
+    ipHash,
+    emailHash,
+    ts,
+    userId,
+    emailHash,
+    ts - 60,
+    emailHash,
+    ts - 3600,
+    ipHash,
+    ts - 3600,
+    policy.ip_hourly,
+    ts - 3600,
+    policy.global_hourly,
+    ts - 60,
+    policy.global_minute,
+    userId,
+    userId,
+    ts - 3600,
+  );
 }
 export async function requestRegistrationCode(
   store,
@@ -106,26 +136,13 @@ export async function requestRegistrationCode(
       code,
     );
   const rows = await store.db.batch([
-    store.stmt(
-      "INSERT INTO email_send_attempts(ip_hash,email_hash,ts,user_id) SELECT ?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM email_send_attempts WHERE email_hash=? AND ts>?) AND (SELECT count(*) FROM email_send_attempts WHERE email_hash=? AND ts>?)<3 AND (SELECT count(*) FROM email_send_attempts WHERE ip_hash=? AND ts>?)<? AND (SELECT count(*) FROM email_send_attempts WHERE ts>?)<? AND (SELECT count(*) FROM email_send_attempts WHERE ts>?)<? AND (? IS NULL OR (SELECT count(*) FROM email_send_attempts WHERE user_id=? AND ts>?)<3)",
+    emailSendReservation(
+      store,
+      policy,
       ipHash,
       emailHash,
       ts,
       bindingUser?.id ?? null,
-      emailHash,
-      ts - 60,
-      emailHash,
-      ts - 3600,
-      ipHash,
-      ts - 3600,
-      policy.ip_hourly,
-      ts - 3600,
-      policy.global_hourly,
-      ts - 60,
-      policy.global_minute,
-      bindingUser?.id ?? null,
-      bindingUser?.id ?? null,
-      ts - 3600,
     ),
     store.stmt(
       bindingUser

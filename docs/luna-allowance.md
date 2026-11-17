@@ -44,7 +44,7 @@ OpenAI SDK 的 base URL 为 `https://api.hilex.me/v1`，模型选择 `gpt-6-luna
 
 上述 JSON POST 到 `/v1/chat/completions`。Responses POST `/v1/responses`，使用 `input` 和 `max_output_tokens`。`GET /v1/models` 会列出可配置使用的 Luna，自建模型后端停机也不影响 Luna 的发现和调用。
 
-首版支持文本和客户端自定义 function 工具，拒绝图片/文件/音频、OpenAI 托管工具、隐藏历史会话引用、后台执行、多候选和自行指定付费处理档位。单次输出默认上限 4096、最大 16384 tokens；输入采用 UTF-8 字节数加协议余量估计上界，超过 250,000 的估计输入上界拒绝。这些限制让每次请求可在发出前预留完整预算。模型本身支持的更多能力见 [OpenAI 官方模型说明](https://developers.openai.com/api/docs/models/gpt-6-luna)。
+支持文本、图片输入和客户端自定义 function 工具，拒绝文件/音频、OpenAI 托管工具、隐藏历史会话引用、后台执行、多候选和自行指定付费处理档位。单次输出默认上限 4096、最大 16384 tokens；文本输入采用 UTF-8 字节数加协议余量估计上界；图片按每张 100,000 tokens 保守预留（不是精确图片 tokenizer），Base64 图片字节不按文本计费。估计输入总量超过 250,000 时拒绝，完成后统一按提供方实际 usage 结算。这些限制让每次请求可在发出前预留完整预算。模型本身支持的更多能力见 [OpenAI 官方模型说明](https://developers.openai.com/api/docs/models/gpt-6-luna)。
 
 ## 计量和故障处理
 
@@ -81,3 +81,13 @@ Luna 的 Chat Completions 工具调用要求 `reasoning_effort:"none"`，省略�
 `luna_spend` 独立于账号和请求表，删除账号或请求不释放已计成本。管理员核对用量时可同时填写美元成本，记录审计并检查旧值；旧 API 未传成本时，非零 token 修正不会自动释放美元预留，修正为 0 才同步归零。
 
 这是网关已记录请求的估算成本控制，不是 OpenAI 发票总额：独立使用同一上游 Key、此前已删除的用量、税费或上游价格变更不在自动计量内。历史现存账本按当前已核对标准价格回填，不修改个人额度；模型价格变化时应先更新估算器和测试再发布。
+
+## 图片输入
+
+Chat Completions 使用 user.content 中的 `{"type":"image_url","image_url":{"url":"https://example.com/image.png","detail":"auto"}}`；Responses 使用 `{"type":"input_image","image_url":"https://example.com/image.png","detail":"auto"}`。可以与 text / input_text 混合。
+
+图片接受不含凭据的 HTTPS URL，或 PNG/JPEG/WebP/GIF 的 Base64 data URL。远程图片由 OpenAI 获取，网关不下载用户 URL；file_id、SVG、音频和文件输入仍不开放。每请求最多 2 张图片（包括历史消息），JSON 请求体仍限 4 MiB；detail 支持 auto / low / high / original，上游最终校验模型支持范围和图片内容。图片不写入日志或账本。
+
+`GET /v1/models` 的 Luna 条目现在声明 `architecture.input_modalities=["text","image"]`、`output_modalities=["text"]`。客户端刷新模型列表后可启用图片入口，账号认证和 API 地址不变。图片预留较保守，剩余额度不足时可能被拒绝；未知用量继续保留预留，不能因为客户端取消就退款。
+
+标准图片字段参考 [OpenAI 图片输入](https://developers.openai.com/api/docs/guides/images-vision)。

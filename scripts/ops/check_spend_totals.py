@@ -18,6 +18,15 @@ SELECT count(*) mismatches FROM errors
 """
 
 
+PERSONAL_QUERY = """
+WITH d AS(SELECT user_id,month,sum(charged_tokens) used_tokens,sum(CASE WHEN settled=0 THEN charged_tokens ELSE 0 END) reserved_tokens,count(*) requests,sum(prompt_tokens) prompt_tokens,sum(completion_tokens) completion_tokens FROM luna_usage GROUP BY user_id,month),
+errors AS(
+ SELECT d.user_id FROM d LEFT JOIN luna_user_month_totals t USING(user_id,month) WHERE t.user_id IS NULL OR d.used_tokens<>t.used_tokens OR d.reserved_tokens<>t.reserved_tokens OR d.requests<>t.requests OR d.prompt_tokens<>t.prompt_tokens OR d.completion_tokens<>t.completion_tokens
+ UNION ALL SELECT t.user_id FROM luna_user_month_totals t LEFT JOIN d USING(user_id,month) WHERE d.user_id IS NULL AND (t.used_tokens<>0 OR t.reserved_tokens<>0 OR t.requests<>0 OR t.prompt_tokens<>0 OR t.completion_tokens<>0))
+SELECT count(*) mismatches FROM errors
+"""
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--remote", action="store_true", required=True)
@@ -30,7 +39,7 @@ def main():
             "DB",
             "--remote",
             "--command",
-            QUERY,
+            QUERY.strip().rstrip(";") + ";" + PERSONAL_QUERY,
             "--json",
             "--config",
             "cloudflare/wrangler.jsonc",
@@ -39,11 +48,11 @@ def main():
         text=True,
     )
     rows = json.loads(output)
-    if not rows or rows[0]["results"][0]["mismatches"]:
+    if len(rows) != 2 or any(row["results"][0]["mismatches"] for row in rows):
         raise SystemExit(
             "Spend totals differ from ledger; no automatic correction was made"
         )
-    print("Global Luna and audio totals match detailed ledgers.")
+    print("Global spend and personal cloud token totals match detailed ledgers.")
 
 
 if __name__ == "__main__":

@@ -5,8 +5,16 @@ from pathlib import Path
 import shutil
 
 ROOT = Path(__file__).resolve().parents[2]
-FILES = ("app.js", "admin.js", "notices.js", "style.css")
-CSP = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+FILES = (
+    "captcha.js",
+    "captcha-page.js",
+    "password-reset.js",
+    "app.js",
+    "admin.js",
+    "notices.js",
+    "style.css",
+)
+CSP = "default-src 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self'; connect-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 
 
 def build(destination=None):
@@ -36,6 +44,13 @@ def build(destination=None):
                 f"/static/{name}\n  Cache-Control: no-store\n",
             ]
         )
+    challenge = (source / "captcha.html").read_text()
+    for name in FILES:
+        content = (source / name).read_bytes()
+        stem, suffix = name.rsplit(".", 1)
+        versioned = stem + "." + hashlib.sha256(content).hexdigest()[:16] + "." + suffix
+        challenge = challenge.replace("/static/" + name, "/static/" + versioned)
+    (output / "captcha.html").write_text(challenge)
     (output / "index.html").write_text(html)
     (output / "_headers").write_text("\n".join(headers))
     return output

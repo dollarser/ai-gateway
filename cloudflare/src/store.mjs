@@ -422,13 +422,18 @@ export class Store {
       u = await this.access(raw);
       auth = "access_token";
     } else {
-      key = await this.first(
-        "SELECT * FROM keys WHERE hash=? AND revoked=0 AND expires>?",
+      const row = await this.first(
+        "SELECT u.*,k.id AS auth_key_id,k.services AS auth_key_services FROM keys k JOIN users u ON u.id=k.user_id WHERE k.hash=? AND k.revoked=0 AND k.expires>?",
         await digest(raw),
         now(),
       );
-      if (!key) throw new Denied(401, "API Key 无效或已过期");
-      u = await this.first("SELECT * FROM users WHERE id=?", key.user_id);
+      if (!row) throw new Denied(401, "API Key 无效或已过期");
+      u = row;
+      key = {
+        id: row.auth_key_id,
+        user_id: row.id,
+        services: row.auth_key_services,
+      };
     }
     if (service === "catalog") {
       if (path !== "/v1/models") throw new Denied(400, "目录凭证路径无效");
@@ -542,22 +547,23 @@ export class Store {
     );
   }
   async usage(uid = null) {
-    const filter = uid ? " AND user_id=?" : "";
-    return {
-      today: day(),
-      totals: await this.all(
+    const filter = uid ? " AND user_id=?" : "",
+      today = day();
+    const rows = await this.db.batch([
+      this.stmt(
         "SELECT service,count(*) requests,coalesce(sum(response_bytes),0) response_bytes FROM requests WHERE day=?" +
           filter +
           " GROUP BY service",
-        day(),
+        today,
         ...(uid ? [uid] : []),
       ),
-      requests: await this.all(
+      this.stmt(
         "SELECT * FROM requests" +
           (uid ? " WHERE user_id=?" : "") +
           " ORDER BY started DESC LIMIT 100",
         ...(uid ? [uid] : []),
       ),
-    };
+    ]);
+    return { today, totals: rows[0].results, requests: rows[1].results };
   }
 }

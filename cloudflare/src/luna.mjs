@@ -1,3 +1,4 @@
+import { visionInput } from "./vision.mjs";
 import { openaiHeaders } from "./openai-headers.mjs";
 import { toolDiagnostic } from "./worker-logs.mjs";
 import { lunaCost, budgetError } from "./budgets.mjs";
@@ -14,17 +15,18 @@ export function budgetValue(value) {
 }
 export async function lunaUsage(store, uid) {
   const period = month();
-  const u = await store.first(
-    "SELECT luna_monthly_tokens FROM users WHERE id=?",
-    uid,
-  );
   const r = await store.first(
-    "SELECT coalesce(sum(charged_tokens),0) n,coalesce(sum(CASE WHEN settled=0 THEN charged_tokens ELSE 0 END),0) reserved,count(*) requests,coalesce(sum(prompt_tokens),0) prompt_tokens,coalesce(sum(completion_tokens),0) completion_tokens FROM luna_usage WHERE user_id=? AND month=?",
-    uid,
+    "SELECT u.luna_monthly_tokens,coalesce(t.used_tokens,0) n,coalesce(t.reserved_tokens,0) reserved,coalesce(t.requests,0) requests,coalesce(t.prompt_tokens,0) prompt_tokens,coalesce(t.completion_tokens,0) completion_tokens FROM users u LEFT JOIN luna_user_month_totals t ON t.user_id=u.id AND t.month=? WHERE u.id=?",
     period,
+    uid,
   );
+  return cloudUsageValue(r, r, period);
+}
+export function cloudUsageValue(u, r, period = month()) {
   return {
     model: LUNA_MODEL,
+    scope: "cloud_text_tokens",
+    models: [LUNA_MODEL, "text-embedding-3-small"],
     month: period,
     timezone: "Asia/Shanghai",
     resets_at: new Date(
@@ -40,7 +42,7 @@ export async function lunaUsage(store, uid) {
     completion_tokens: r.completion_tokens,
   };
 }
-async function activeLease(store, lease) {
+export async function activeLease(store, lease) {
   if (typeof lease !== "string" || !lease || lease.length > 128)
     throw new Denied(422, "无效请求凭证");
   const r = await store.first(
@@ -68,9 +70,9 @@ export function lunaCatalogForUser(r, env) {
                 reasoning_tools_endpoint: "/v1/responses",
               },
               architecture: {
-                input_modalities: ["text"],
+                input_modalities: ["text", "image"],
                 output_modalities: ["text"],
-                modality: "text->text",
+                modality: "text+image->text",
               },
             },
           ]
@@ -78,7 +80,7 @@ export function lunaCatalogForUser(r, env) {
   };
 }
 
-// No URL/file/image inputs, server-side tools, hidden conversation state, or paid
+// No file inputs, server-side tools, hidden conversation state, or paid
 // processing tiers: every billable input must be present in this bounded request.
 export function preparePayload(payload, responses) {
   const allowed = responses
@@ -133,13 +135,16 @@ export function preparePayload(payload, responses) {
       throw new Denied(422, "需要 input");
   } else if (!Array.isArray(payload.messages) || !payload.messages.length)
     throw new Denied(422, "需要 messages");
-  function check(v, depth = 0) {
+  const vision = visionInput(responses);
+  function check(v, depth = 0, role) {
     if (depth > 32) throw new Denied(422, "输入嵌套过深");
     if (!v || typeof v !== "object") return;
     if (Array.isArray(v)) {
-      for (const x of v) check(x, depth + 1);
+      for (const x of v) check(x, depth + 1, role);
       return;
     }
+    role = v.role ?? role;
+    if (vision.check(v, role)) return;
     if (
       v.type &&
       ![
@@ -152,7 +157,7 @@ export function preparePayload(payload, responses) {
         "function",
       ].includes(v.type)
     )
-      throw new Denied(422, "Luna 额度当前仅支持文本和自定义函数");
+      throw new Denied(422, "Luna 仅开放文本、图片和自定义函数");
     for (const [k, x] of Object.entries(v)) {
       if (responses && k === "id")
         throw new Denied(
@@ -170,7 +175,7 @@ export function preparePayload(payload, responses) {
         ].includes(k)
       )
         throw new Denied(422, "Luna 额度当前仅支持文本输入");
-      check(x, depth + 1);
+      check(x, depth + 1, role);
     }
   }
   // Check input/tool descriptors only; JSON schemas may legitimately contain type.
@@ -252,7 +257,7 @@ export function preparePayload(payload, responses) {
     result.stream_options = { include_usage: true };
   // A conservative upper bound for text tokenization, framing and function schemas.
   const inputBound =
-    new TextEncoder().encode(JSON.stringify(result)).length +
+    vision.inputBytes(result) +
     4096 +
     (responses
       ? Array.isArray(payload.input)
@@ -261,7 +266,10 @@ export function preparePayload(payload, responses) {
       : payload.messages.length) *
       64;
   if (inputBound > 250000)
-    throw new Denied(413, "Luna 文本输入过长，请缩短上下文");
+    throw new Denied(
+      413,
+      "Luna 输入预留超过 250000 tokens，请缩短上下文或减少图片",
+    );
   // Reserve an upper bound for input plus the full requested output limit.
   return {
     payload: result,
@@ -363,7 +371,11 @@ export async function proxyLuna(
         "Content-Type": "application/json",
       }),
       body: JSON.stringify(p.payload),
-      signal: AbortSignal.any([abort.signal, AbortSignal.timeout(840000)]),
+      signal: AbortSignal.any([
+        abort.signal,
+        request.signal,
+        AbortSignal.timeout(840000),
+      ]),
     });
   } catch {
     throw new Denied(502, "OpenAI 连接失败；未知用量暂按预留额度计入");

@@ -11,7 +11,7 @@ from gateway.edge_origin import edge_grant
 from gateway.errors import Denied
 
 router = APIRouter()
-HTTP_PATHS = {"chat/completions", "responses", "audio/transcriptions"}
+HTTP_PATHS = {"chat/completions", "responses", "embeddings", "audio/transcriptions"}
 
 
 def provider_headers(headers):

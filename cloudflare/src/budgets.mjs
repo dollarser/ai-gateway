@@ -62,6 +62,7 @@ export async function globalUsage(store) {
         output: 0.5,
       },
     },
+    embedding_pricing_usd_per_million: { "text-embedding-3-small": 0.02 },
     audio: Object.fromEntries(audio.map((r) => [r.kind, r.used])),
   };
 }

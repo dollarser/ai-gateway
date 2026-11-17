@@ -11,7 +11,7 @@
 
 | 用途 | 接口 | 模型 / 响应 |
 |---|---|---|
-| 文本、函数调用 | POST /v1/chat/completions 或 /v1/responses | gpt-6-luna；Chat 工具调用使用 none，需要推理加工具使用 Responses |
+| 文本、图片输入、函数调用 | POST /v1/chat/completions 或 /v1/responses | gpt-6-luna；Chat 工具调用使用 none，需要推理加工具使用 Responses |
 | 文件识别 | POST /v1/audio/transcriptions | multipart，model=gpt-transcribe、file；支持 json/text 或 JSON SSE |
 | 合成 | POST /v1/audio/speech | model=gpt-realtime-2.1-mini、input；仅原始 PCM，24kHz、16-bit little-endian、单声道 |
 | 自建模型与语音 WebSocket | 依部署开放 | [自建语音协议](self-hosted-voice.md)，与云模型协议分开 |
@@ -34,3 +34,5 @@ TTS CLI 接收 PCM 流、缓存跨分片的半个样本，在客户端封装 WAV
 
 
 云模型目录只读鉴权，不计入个人日请求数或并发名额。通知按账号持久化检查时间，每天最多自动检查一次，手动进入列表可刷新；不因重新登录或恢复前台无条件请求。历史明细可能归档，不用有限的请求数组计算完整累计用量。最新错误表、资源策略和验收清单统一见[客户端交接](client-handoff.md)。
+
+邮箱自助找回密码接口及 API Key 处理策略见[密码找回](password-recovery.md)，账号服务地址不变。

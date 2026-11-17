@@ -32,6 +32,15 @@ def verify_backup(path):
 
         if db.execute(QUERY).fetchone()[0]:
             raise RuntimeError("Backup spend totals differ from detailed ledgers")
+    if db.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='luna_user_month_totals'"
+    ).fetchone()[0]:
+        from scripts.ops.check_spend_totals import PERSONAL_QUERY
+
+        if db.execute(PERSONAL_QUERY).fetchone()[0]:
+            raise RuntimeError(
+                "Backup personal cloud totals differ from detailed ledgers"
+            )
     db.close()
 
 

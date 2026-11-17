@@ -24,15 +24,20 @@ export function audioQuotas(b) {
 }
 export async function audioUsage(store, uid) {
   const period = day();
-  const u = await store.first(
-    "SELECT openai_asr_daily_seconds,openai_tts_daily_characters FROM users WHERE id=?",
-    uid,
-  );
-  const rows = await store.all(
-    "SELECT kind,coalesce(sum(charged_units),0) used,coalesce(sum(CASE WHEN settled=0 THEN charged_units ELSE 0 END),0) reserved,count(*) requests FROM audio_usage WHERE user_id=? AND day=? GROUP BY kind",
-    uid,
-    period,
-  );
+  const rows = await store.db.batch([
+    store.stmt(
+      "SELECT openai_asr_daily_seconds,openai_tts_daily_characters FROM users WHERE id=?",
+      uid,
+    ),
+    store.stmt(
+      "SELECT kind,sum(charged_units) used,sum(CASE WHEN settled=0 THEN charged_units ELSE 0 END) reserved,count(*) requests FROM audio_usage WHERE user_id=? AND day=? GROUP BY kind",
+      uid,
+      period,
+    ),
+  ]);
+  return audioUsageValue(rows[0].results[0], rows[1].results, period);
+}
+export function audioUsageValue(u, rows, period = day()) {
   return {
     day: period,
     timezone: "Asia/Shanghai",

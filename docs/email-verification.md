@@ -30,10 +30,10 @@
 账号接口基础地址为 https://accounts.hilex.me ，无需先登录。
 
 1. `GET /auth/registration-info`：新增 email_verification（是否要求验证码）、email_verification_available（邮件配置是否完整，不代表实际投递健康）字段；registration_enabled 仍表示注册策略。
-2. `POST /auth/registration-code`，JSON `{"email":"user@example.net"}`：发送六位验证码。成功返回通用 message、expires_in=600、retry_after=60；已有账号返回相同响应但不会再次发送注册验证码，不直接暴露账号存在状态。
+2. `POST /auth/registration-code`，JSON `{"email":"user@example.net","captcha_token":"本次人机验证token"}`：发送六位验证码。成功返回通用 message、expires_in=600、retry_after=60；已有账号返回相同响应但不会再次发送注册验证码，不直接暴露账号存在状态。
 3. `POST /auth/register`，JSON `{"email":"user@example.net","password":"用户密码","code":"012345"}`：验证码保留字符串形式以免丢失前导零。成功 201，随后正常登录。code 必须属于同一邮箱；邮件和登录名按去除两端空白、转小写归一化。
 
-网页已经包含邮箱验证码输入、发送按钮和六十秒倒计时。外部客户端必须同步增加验证码 UI 和上述 code 字段；旧客户端直接提交邮箱和密码会被拒绝。验证码只在注册用途有效，不能用于改密、登录或重置密码。
+网页已经包含邮箱验证码输入、发送按钮和六十秒倒计时。外部客户端必须同步增加验证码 UI 和上述 code 字段；旧客户端直接提交邮箱和密码会被拒绝。注册验证码只在注册用途有效，不能用于改密、登录或重置密码。邮箱找回密码使用[独立的重置验证码流程](password-recovery.md)。
 
 | HTTP / error_code | 客户端处理 |
 |---|---|
@@ -67,7 +67,7 @@
 
 基础地址 https://accounts.hilex.me ，要求账号登录 access_token；网页 Cookie 写操作要求 CSRF。模型 API Key 不支持这些账号接口。
 
-- `POST /account/email/code`，JSON `{"email":"user@example.net"}`：向目标邮箱发送六位验证码，返回 message、expires_in=600、retry_after=60。
+- `POST /account/email/code`，JSON `{"email":"user@example.net","captcha_token":"本次人机验证token"}`：向目标邮箱发送六位验证码，返回 message、expires_in=600、retry_after=60。
 - `POST /account/email/bind`，JSON `{"email":"user@example.net","code":"012345"}`：校验验证码并完成绑定，返回 `{"user":{...},"message":"邮箱已验证并绑定，原登录名和密码保持不变"}`。返回的 user.email_binding_required=false，并包含 email_verified_at。
 
 绑定只更新联系邮箱和验证时间，**不修改登录名、密码、权限、额度或现有登录令牌**，也不会自动将新绑定邮箱设为另一个登录别名。历史登录名是邮箱的账号，换填不同的联系邮箱后仍使用原登录名登录。此功能用于补绑定，已验证账号不提供修改邮箱操作。
@@ -98,3 +98,7 @@
 ```
 
 第二条先验证登录并只向发件邮箱自测，再安装Worker Secret，复用原HMAC密钥，不影响账号、邮箱验证状态和个人额度。configure_mail默认拒绝重新安装企业邮箱注册通道；如明确需要短期回退，可使用 --allow-legacy-enterprise，但这不代表供应商支持其用途。未提供provider的旧Secret继续兼容，避免上线过程中突然中断现有注册。
+
+已验证绑定的邮箱现在可用于[自助找回密码](password-recovery.md)。原注册或绑定验证码不能用于找回；默认保留 API Key，可主动选择停用全部 Key。
+
+注册和绑定的发送验证码接口现在强制校验 captcha_token，获取方式、action、安卓 WebView 桥接见[人机验证接入](human-verification.md)。

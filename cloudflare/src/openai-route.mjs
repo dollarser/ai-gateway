@@ -2,6 +2,7 @@ import { Denied } from "./store.mjs";
 const paths = new Set([
   "/v1/chat/completions",
   "/v1/responses",
+  "/v1/embeddings",
   "/v1/audio/transcriptions",
   "/v1/realtime",
 ]);

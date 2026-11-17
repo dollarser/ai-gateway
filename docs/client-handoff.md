@@ -63,7 +63,7 @@ OpenAI 出站支持部署时切换 Worker 直连或本机转发，当前默认�
 
 | 模型 ID | 用途 | API 域名下的接口 |
 |---|---|---|
-| `gpt-6-luna` | 文本与自定义工具 | `POST /v1/chat/completions`、`POST /v1/responses` |
+| `gpt-6-luna` | 文本、图片输入与自定义工具 | `POST /v1/chat/completions`、`POST /v1/responses` |
 | `gpt-transcribe` | 音频识别 | `POST /v1/audio/transcriptions` |
 | `gpt-realtime-2.1-mini` | 文字合成语音 | `POST /v1/audio/speech` |
 
@@ -213,3 +213,163 @@ Chat 带工具时客户端使用 `reasoning_effort:"none"`，网关也会做兼�
 - 模型发现不计为推理用量；余额不重复扣reserved；历史明细为空或诊断字段为空有正确提示。
 
 排查新出现的模型参数错误时，服务端Worker日志可按X-Request-ID查看脱敏的上游错误分类及指定工具的Schema结构摘要；客户端无需为此上传整段聊天、音频或凭据。历史请求不能补录未保存的Schema。服务端日志不改变错误响应契约，客户端仍按上述错误码及流式完成规则处理；内部账号错误也可能返回request_id供关联排查。
+
+## 图片与并发错误更新
+
+Luna 已开放标准 Chat image_url 和 Responses input_image，模型发现声明 text、image 输入；图片来源、大小及预留额度详见 [Luna 图片输入](luna-allowance.md#图片输入)。最多 2 张图（含历史）、JSON 请求体 4 MiB。
+
+账号并发在对话、ASR、TTS 间共享。HTTP 429 的 `error_code=account_concurrency_limited` 表示同时进行的请求过多，不代表日额度耗尽；响应包含同值 `X-Error-Code`、`request_id` / `X-Request-ID`、`retryable:true` 和 `Retry-After:1`。Retry-After 只是最短重试间隔，不保证 1 秒后有空位。客户端应保留错误码，取消不再使用的对话请求，并按需提示重试，避免无上限自动重试。
+
+收到完整 JSON usage，或 SSE 的完成标记与 usage 后，服务端即释放名额；客户端取消也释放名额。未知的提供方费用仍占用额度预留，与并发名额独立。
+
+## 安卓客户端：邮箱自助找回密码
+
+安卓可以直接使用已上线的 HTTP 接口实现原生“忘记密码”页面，无需打开网页、接收深链或读取短信。**只能使用已验证并绑定的邮箱**；新密码为 6–128 字符，原登录名不变。联系邮箱不是自动增加的登录别名，用户名账号绑定邮箱后仍使用原用户名登录。
+
+### 入口和页面流程
+
+1. 登录页提供“忘记密码？”入口，进入独立找回页面。填写绑定邮箱，先在应用内 WebView 完成 Turnstile 人机验证，获取一次性 token，再点击/提交“发送重置验证码”。
+2. 展示通用发送提示和重发倒计时。用户从邮件手动填写六位验证码，再输入新密码、确认新密码；两次不一致时在本地拦截。
+3. 默认保留 API Key。可在“怀疑账号被盗？”展开项下提供“同时停用全部 API Key”复选框，默认不勾选，明确说明相关应用会停止调用。普通用户无需看到 Key 管理入口。
+4. 提交成功后清空密码与验证码、清理被重置账号的本地认证状态，再返回普通登录页。**不自动登录，不自动创建新 API Key**。
+
+### 请求一：发送重置验证码
+
+```http
+POST https://accounts.hilex.me/auth/password-reset/code
+Content-Type: application/json
+
+{"email":"owner@example.net","captcha_token":"本次Turnstile验证返回的token"}
+```
+
+成功响应 HTTP 200：
+
+```json
+{
+  "message": "若该邮箱已验证并绑定可用账号，您将收到密码重置验证码，请检查收件箱及垃圾邮件",
+  "expires_in": 600,
+  "retry_after": 60
+}
+```
+
+200 表示请求已受理，不表示邮箱一定存在或邮件已经送达；发送由服务端异步处理。不要显示“账号存在”或“验证码保证已发送”。提示检查收件箱和垃圾邮件，未验证或未绑定邮箱的账号联系管理员。暂停公开注册不影响已有账号找回。
+
+发送按钮根据 retry_after 禁用；收到 429 时读取响应头 Retry-After。倒计时使用单调时钟截止时间（例如 SystemClock.elapsedRealtime），从后台恢复时重新计算，不依赖页面每秒减一。禁止后台自动重发；按钮防重复点击，切换页面也不能绕过服务端限频。
+
+### 请求二：校验验证码并设置新密码
+
+```http
+POST https://accounts.hilex.me/auth/password-reset
+Content-Type: application/json
+
+{
+  "email": "owner@example.net",
+  "code": "012345",
+  "new_password": "example-new-password",
+  "revoke_api_keys": false
+}
+```
+
+示例密码仅示意。code 必须为字符串，保留前导零；只接受六位 ASCII 数字。邮箱可去首尾空白并按 Locale.ROOT 转小写，**密码不要 trim 或自动转换大小写**。确认密码只在本地比对，不发送 confirm_password 等未开放字段。revoke_api_keys 必须为 JSON 布尔值，省略等同 false，不能传字符串 "false"。
+
+成功响应 HTTP 200：
+
+```json
+{
+  "ok": true,
+  "api_keys_revoked": false,
+  "message": "密码已重置，原登录会话均已退出，请使用原登录名和新密码重新登录。API Key 保持有效。"
+}
+```
+
+验证码有效期十分钟、最多五次校验尝试；重发使旧挑战失效。注册、绑定和找回验证码不能互换；已消费的找回码不能再次提交。提交中禁用按钮，不并行发送多次重置请求。
+
+### Retrofit / Kotlin 接口示意
+
+以下仅展示协议；沿用客户端现有 JSON 序列化方案，不新增 SDK 或鉴权辅助类。使用 Gson 时的字段映射示例：
+
+```kotlin
+data class ResetCodeRequest(
+    val email: String,
+    @SerializedName("captcha_token") val captchaToken: String,
+)
+data class ResetCodeResponse(
+    val message: String,
+    @SerializedName("expires_in") val expiresIn: Int,
+    @SerializedName("retry_after") val retryAfter: Int,
+)
+data class ResetPasswordRequest(
+    val email: String,
+    val code: String,
+    @SerializedName("new_password") val newPassword: String,
+    @SerializedName("revoke_api_keys") val revokeApiKeys: Boolean = false,
+)
+data class ResetPasswordResponse(
+    val ok: Boolean,
+    val message: String,
+    @SerializedName("api_keys_revoked") val apiKeysRevoked: Boolean,
+)
+interface PasswordRecoveryApi {
+    @POST("auth/password-reset/code")
+    suspend fun sendCode(@Body body: ResetCodeRequest): Response<ResetCodeResponse>
+
+    @POST("auth/password-reset")
+    suspend fun reset(@Body body: ResetPasswordRequest): Response<ResetPasswordResponse>
+}
+```
+
+baseUrl 使用 `https://accounts.hilex.me/`，保留末尾斜杠；注解路径不要重复写域名或 /v1。SerializedName 来自 Gson，POST / Body / Response 来自 Retrofit。Moshi 或 kotlinx.serialization 项目使用现有对应注解映射相同 JSON 字段。
+
+这两个请求均为匿名账号接口：**不需要 Authorization、API Key、X-Client-ID、网页 Cookie 或 X-CSRF-Token**。为它们绕过模型鉴权和自动 refresh 拦截器，不伪造浏览器 Origin 或内部头，也不先调用登录。原生安卓不受浏览器 CORS 限制，直接通过 HTTPS 请求账号域名。使用现有安全 HTTP 配置，不关闭证书校验。
+
+Response 非成功时读取 errorBody 并按服务端 error_code 分支，不能只保留 HTTP 状态或异常文案。若客户端统一改写错误体，仍应保留 error_code、request_id（存在时）和 Retry-After。
+
+### 错误与重试
+
+| HTTP / error_code | 安卓处理 |
+|---|---|
+| 422 invalid_email | 提示邮箱格式不正确 |
+| 422 invalid_password | 提示密码需为 6–128 字符 |
+| 422 invalid_reset_options | 修正客户端布尔字段，不让用户反复重试 |
+| 422 password_reset_code_required | 要求填写六位数字验证码 |
+| 400 password_reset_invalid | 通用提示验证码无效、过期或已用；不要推断账号是否存在。按需让用户重新获取 |
+| 429 email_rate_limited | 遵守 Retry-After，显示重发倒计时；与模型并发/日额度的 429 分开处理 |
+| 503 email_delivery_unavailable | 提示找回服务暂不可用，稍后手动重试；不得绕过验证码 |
+
+请求超时或连接中断不自动重放发送邮件或重置密码：上次操作可能已完成。重置结果不明确时，可提示用户尝试用原登录名和刚设置的新密码正常登录；若失败，再按需获取新验证码。不要在后台自动提交旧验证码。
+
+### 重置成功后的本地状态
+
+- 服务端已撤销被重置账号的全部网页会话和 access/refresh 令牌族；清除本机该账号的 access_token、refresh_token、持久化认证信息与内存会话，取消其进行中的刷新/自动重连任务。
+- 防止重置前已启动的 refresh 请求迟到后重新写入旧令牌：沿用账号级互斥或会话版本号，清理时增加版本，只允许当前版本写入。已有多账号客户端仅清理目标账号，不误删其他账号登录。
+- 返回登录页，可预填已知的原登录名；不要把绑定邮箱强行覆盖成登录名。不保存新密码用于自动登录。
+- API Key 默认保持有效。api_keys_revoked=true 时清除或标记失效该账号本机保存的 Key；不要从普通找回页面申请新 Key，重新创建仍由管理员完成。
+- 密码和验证码只在本次表单内存中使用，离页或成功后清空，不写入磁盘、持久化页面状态、日志、埋点或诊断包。不要记录完整请求/响应中的凭据。
+
+### 安卓验收
+
+- 未登录可打开找回页并请求验证码；不携带模型鉴权头，不触发 token refresh。
+- "012345" 保留前导零；两次密码不一致、少于六字符均阻止提交；发送/提交按钮能防重复点击。
+- 重发倒计时在切后台、回前台和页面重建后正确；429 依据 Retry-After 展示，不循环重发。
+- 使用真实测试账号验证重置后旧密码、旧 access/refresh 均失效，新密码可通过原登录名正常登录。
+- 默认重置后原 Key 仍能调用；主动选择停用后原 Key 返回认证失败，其他账号 Key 不受影响。
+- 过期、重放及注册/绑定用途的验证码均不能重置密码；未知邮箱的发送提示保持通用。
+- 重置成功后重启应用仍处于退出状态；迟到的 refresh 不恢复旧登录，表单与日志不残留密码/验证码。
+
+更完整的服务端事务、通知和审计边界见[邮箱找回文档](password-recovery.md)。
+
+## Turnstile 人机验证更新（安卓必须接入）
+
+注册、绑定邮箱、找回密码的发送验证码接口新增必需 captcha_token。原生安卓通过 `https://accounts.hilex.me/auth/captcha?action=password_reset_code` 完成 WebView 验证，经受可信来源限制的 HelixCaptcha WebMessage 桥回传 token，随后使用原生 HTTP 提交；不能直接调用发送接口而省略 proof。注册 action=registration_code，绑定 action=email_binding_code。最终提交邮件验证码的接口不新增 proof 字段。
+
+详细的 WebView 配置、安全桥接示例、一次性 token 生命周期、错误码及验收边界见[人机验证接入](human-verification.md)。旧客户端未接入时发送邮件将返回 captcha_required；不要自动退回无验证发送。
+
+## 本地模型、OpenAI small 嵌入与旧密码改密更新
+
+本地模型已开启目录发现，首次查询即可返回；目录不占推理并发。默认 /v1/models 只列文本输出，嵌入模型需要 ?output_modalities=embeddings 或 all。新增的付费云嵌入仅为 text-embedding-3-small；POST /v1/embeddings、input 字段、默认1536维/可选dimensions，账号token+ClientID或API Key鉴权不变，沿用qwen权限。Luna与small共享云文本月token额度及全站预算，small按自己的价格结算。完整限制和实例见[嵌入与模型发现](openai-embeddings.md)。
+
+记得旧密码时，匿名 `POST https://accounts.hilex.me/auth/password`，提交 username/current_password/new_password 即可修改，无需邮箱验证码、账号token或ClientID。新密码至少6字符，原用户名不变；成功后清除该账号旧access/refresh并返回登录，不自动登录；API Key保留。该接口的401表示原用户名/旧密码校验失败，不能触发刷新令牌。详细流程见[旧密码改密](password-recovery.md#记得旧密码按原用户名改密)。
+
+## 合并用量快照
+
+`GET https://accounts.hilex.me/account/usage-snapshot` 使用账号认证（Bearer access_token，不需要X-Client-ID；站内Cookie同样支持），返回`{usage,luna,audio}`，分别保持原`/account/usage`、`/account/luna-usage`、`/account/audio-usage`的响应结构。API Key不能访问账号快照。新版网页只请求该接口，安卓可在同时显示三类用量时切换到此接口，避免三次认证和HTTP往返；只需一类数据时仍可使用原分项接口。不增加轮询频率，继续按需刷新，不公共缓存账号响应。真实调用的权限/并发和预算不由客户端快照决定。

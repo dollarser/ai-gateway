@@ -52,6 +52,7 @@ notification_deliveries = []
 site_notices = []
 customer_notices = []
 logged_in = [True]
+asset_calls = []
 api_calls = []
 notice_failure = [False]
 mutations = []
@@ -76,6 +77,7 @@ def handle(route):
     req = route.request
     path = urllib.parse.urlsplit(req.url).path
     if path == "/" or path.startswith("/static/"):
+        asset_calls.append(path)
         file = PUBLIC_ASSETS / ("index.html" if path == "/" else path.lstrip("/"))
         return route.fulfill(
             path=str(file),
@@ -178,10 +180,32 @@ def handle(route):
         return respond(
             {"user": users[0], "message": "邮箱已验证并绑定，原登录名和密码保持不变"}
         )
+    if path == "/account/usage-snapshot":
+        return respond(
+            {
+                "usage": {"today": "2026-11-17", "totals": [], "requests": []},
+                "luna": {
+                    "month": "2026-11",
+                    "monthly_tokens": 10000000,
+                    "used_tokens": 1200,
+                    "reserved_tokens": 0,
+                    "remaining_tokens": 9998800,
+                    "resets_at": "2026-12-01T00:00:00+08:00",
+                },
+                "audio": {
+                    "day": "2026-11-17",
+                    "asr": {"remaining": 1740000, "limit": 1800000, "reserved": 0},
+                    "tts": {"remaining": 499900, "limit": 500000, "reserved": 0},
+                    "resets_at": "2026-11-18T00:00:00+08:00",
+                },
+            }
+        )
     if path == "/account/me":
         if not logged_in[0]:
             return respond({"detail": "需要登录"}, 401)
         return respond({"user": users[0], "csrf": "test-csrf"})
+    if path == "/auth/captcha-info":
+        return respond({"enabled": False})
     if path == "/auth/registration-info":
         return respond(
             {"today": "2026-11-15", "defaults": defaults, "email_verification": True}
@@ -503,7 +527,7 @@ with sync_playwright() as p:
     assert ledger["charged_units"] == 1 and ledger["settled"] == 1
     page.locator("#operations-panel>summary").click()
     page.locator("#global-budget-summary").get_by_text(
-        "Luna 估算用量", exact=False
+        "云文本估算用量", exact=False
     ).wait_for()
     page.locator("#global-limits-form [name=luna_monthly_usd]").fill("200")
     page.locator("#global-limits-form button").click()
@@ -573,20 +597,32 @@ with sync_playwright() as p:
     page.locator("#notice-admin-items button").filter(has_text="撤回").click()
     page.get_by_text("暂无通告", exact=True).wait_for()
     users[0]["role"] = "user"
+    asset_calls.clear()
     customer_notices[0]["state"] = "published"
     page.reload()
     page.locator("#notices-panel").wait_for(state="visible")
     page.locator("#notice-items article").wait_for()
     assert page.locator("#notice-management").is_hidden()
     assert page.locator("#admin-tab").is_hidden()
+    assert not any("/admin." in path for path in asset_calls), asset_calls
+    page.locator('[data-tab="usage"]').click()
+    page.get_by_text("云文本（Luna / 嵌入）", exact=False).first.wait_for()
+    assert api_calls.count(("GET", "/account/usage-snapshot")) >= 1
+    assert not any("/admin." in path for path in asset_calls), asset_calls
+    page.locator('[data-tab="notices"]').click()
+    page.locator("#notices-panel").wait_for(state="visible")
     users[0]["role"] = "admin"
     page.reload()
     page.locator("#notices-panel").wait_for(state="visible")
     assert not errors, errors
     (ROOT / ".runtime/tests/browser").mkdir(parents=True, exist_ok=True)
-    page.screenshot(path=str(ROOT / ".runtime/tests/browser/admin-desktop.png"), full_page=True)
+    page.screenshot(
+        path=str(ROOT / ".runtime/tests/browser/admin-desktop.png"), full_page=True
+    )
     page.set_viewport_size({"width": 390, "height": 844})
-    page.screenshot(path=str(ROOT / ".runtime/tests/browser/admin-mobile.png"), full_page=True)
+    page.screenshot(
+        path=str(ROOT / ".runtime/tests/browser/admin-mobile.png"), full_page=True
+    )
     assert page.evaluate("document.documentElement.scrollWidth") <= 390
     print(
         "Browser: settings, bulk ban/unban, bulk quotas, user creation, IP/details, safe rendering and mobile layout passed"

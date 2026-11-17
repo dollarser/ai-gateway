@@ -529,7 +529,7 @@
       const td = document.createElement("td");
       const button = action("核对实际用量", async () => {
         const raw = prompt(
-          "填写实际扣量（Luna: tokens；识别: 毫秒；合成: Unicode 字符）",
+          "填写实际扣量（云文本: tokens；识别: 毫秒；合成: Unicode 字符）",
           String(r.charged_units),
         );
         if (raw === null) return;
@@ -606,7 +606,7 @@
       r.elements[k].value = data.registration[k];
     $("global-budget-summary").textContent =
       data.month +
-      "（北京时间）Luna 估算用量 $" +
+      "（北京时间）云文本估算用量 $" +
       data.luna.used_usd.toFixed(4) +
       "，其中预留 $" +
       data.luna.reserved_usd.toFixed(4) +
@@ -644,7 +644,7 @@
       provider_error_rate: "模型错误率偏高",
       pending_usage: "存在待核对额度",
       high_latency: "请求延迟偏高",
-      luna_budget: "Luna 全站预算接近上限",
+      luna_budget: "云文本全站预算接近上限",
     };
     for (const alert of data.alerts) {
       const row = document.createElement("p");
@@ -736,7 +736,7 @@
     pending_usage: "存在待核对额度",
     high_latency: "请求延迟偏高",
     slow_first_audio: "首音频响应偏慢",
-    luna_budget: "Luna 预算接近上限",
+    luna_budget: "云文本预算接近上限",
     test: "测试通知",
   };
   function inboxBadge(n) {

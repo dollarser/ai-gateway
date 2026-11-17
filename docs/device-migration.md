@@ -50,3 +50,5 @@ Cloudflare 中的 Worker、D1、DNS 和隧道资源不会因本机迁移自动�
 先恢复私有配置和隧道凭据，修正 `deploy/cloudflared-api.yml` 中的用户名/绝对路径及 systemd 工作目录，重建依赖并安装 cloudflared。验证网关、内部认证和出站网络后再切换隧道连接器：旧、新连接器同时连接同一隧道可能分摊流量，避免未就绪的新设备接收生产请求。停旧连接器不等于删除云端隧道，不必重建 DNS。
 
 启用用户服务与 linger 的流程见 [可靠性运维](gateway-reliability.md)，隧道恢复见 [隧道文档](tunnels.md)。切换后确认 `/healthz` 的 `openai_transport` 为期望模式，并验证聊天、ASR、PCM 合成及用量结算。迁移本机后实际出口网络可能改变，应重新验证 OpenAI 可用性。
+
+Turnstile 的私有恢复副本 `.runtime/secrets/turnstile.json` 也须随私有备份迁移，权限600，不能提交或公开；包含 Worker 恢复所需的 site/secret 配置，操作见[人机验证运维](human-verification.md#部署与运维)。

@@ -99,7 +99,7 @@ export async function maintenance(store) {
     unlinked +
     " LIMIT 500";
   const selected =
-    "SELECT * FROM requests WHERE id IN(" + ids + ") ORDER BY started";
+    "SELECT r.* FROM maintenance_request_candidates c CROSS JOIN requests r ON r.id=c.id";
   await store.db.batch([
     store.stmt(
       "DELETE FROM access_tokens WHERE hash IN(SELECT hash FROM access_tokens WHERE expires<? LIMIT 1000)",
@@ -132,14 +132,17 @@ export async function maintenance(store) {
       "UPDATE requests SET client_ip=NULL,user_agent=NULL,device_id=NULL WHERE id IN(SELECT id FROM requests WHERE started<? AND (client_ip IS NOT NULL OR user_agent IS NOT NULL OR device_id IS NOT NULL) LIMIT 1000)",
       ts - 30 * 86400,
     ),
+    store.stmt("DELETE FROM maintenance_request_candidates"),
+    store.stmt("INSERT INTO maintenance_request_candidates " + ids),
     store.stmt(
       "INSERT INTO request_history(user_id,day,service,total,failed,response_bytes,prompt_tokens,completion_tokens) SELECT user_id,day,service,count(*),sum(CASE WHEN status>=400 THEN 1 ELSE 0 END),sum(response_bytes),sum(prompt_tokens),sum(completion_tokens) FROM (" +
         selected +
         ") GROUP BY user_id,day,service ON CONFLICT(user_id,day,service) DO UPDATE SET total=total+excluded.total,failed=failed+excluded.failed,response_bytes=response_bytes+excluded.response_bytes,prompt_tokens=prompt_tokens+excluded.prompt_tokens,completion_tokens=completion_tokens+excluded.completion_tokens",
     ),
     store.stmt(
-      "DELETE FROM requests WHERE id IN(SELECT id FROM (" + selected + "))",
+      "DELETE FROM requests WHERE id IN(SELECT id FROM maintenance_request_candidates)",
     ),
+    store.stmt("DELETE FROM maintenance_request_candidates"),
   ]);
 }
 export async function operationsRoute(

@@ -1,3 +1,8 @@
+import {
+  embeddingCatalog,
+  EMBEDDING_MODELS,
+  proxyEmbedding,
+} from "./embeddings.mjs";
 import { logInferenceFailure } from "./worker-logs.mjs";
 import {
   ingressDiagnostics,
@@ -6,16 +11,10 @@ import {
 import { compressedDuration } from "./audio-duration.mjs";
 import { Store, Denied } from "./store.mjs";
 import { digest, token, now } from "./crypto.mjs";
-import {
-  LUNA_MODEL,
-  lunaCatalog,
-  lunaCatalogForUser,
-  proxyLuna,
-} from "./luna.mjs";
+import { LUNA_MODEL, lunaCatalogForUser, proxyLuna } from "./luna.mjs";
 import {
   ASR_MODEL,
   TTS_MODEL,
-  audioModels,
   audioModelsForUser,
   proxyTranscription,
   proxySpeech,
@@ -177,6 +176,7 @@ function internalRequest(request, lease, body, type = "application/json") {
       ...(type ? { "Content-Type": type } : {}),
     },
     body,
+    signal: request.signal,
   });
 }
 function badAudio(model, expected, local) {
@@ -227,6 +227,7 @@ async function track(response, store, lease, trace, ctx, start) {
     pt = 0,
     ct = 0,
     exactUsage = false,
+    terminal = false,
     outputCharacters = 0;
   const decoder = new TextDecoder(),
     reader = response.body.getReader();
@@ -240,6 +241,7 @@ async function track(response, store, lease, trace, ctx, start) {
       trace.failure_stage = "response_stream";
       trace.error_code = "provider_stream_interrupted";
     }
+    if (obj?.type === "response.completed") terminal = true;
     const value = obj?.response ?? obj,
       u = value?.usage;
     if (value?.id) trace.upstream_response_id = String(value.id).slice(0, 128);
@@ -301,10 +303,28 @@ async function track(response, store, lease, trace, ctx, start) {
           const lines = pending.split("\n");
           pending = lines.pop().slice(-65536);
           for (const l of lines)
-            if (l.startsWith("data:"))
-              try {
-                accept(JSON.parse(l.slice(5)));
-              } catch {}
+            if (l.startsWith("data:")) {
+              if (l.slice(5).trim() === "[DONE]") terminal = true;
+              else
+                try {
+                  accept(JSON.parse(l.slice(5)));
+                } catch {}
+            }
+          // Completion is authoritative even if client backpressure prevents
+          // another pull (and therefore prevents observing the upstream EOF).
+          if (terminal && exactUsage) await finish(response.status);
+        } else if (isJSON) {
+          let value;
+          try {
+            value = JSON.parse(body);
+          } catch {
+            /* incomplete JSON */
+          }
+          if (value) {
+            accept(value);
+            if (exactUsage || response.status >= 400)
+              await finish(response.status);
+          }
         }
         controller.enqueue(r.value);
       } catch (e) {
@@ -317,11 +337,10 @@ async function track(response, store, lease, trace, ctx, start) {
     async cancel() {
       trace.failure_stage = "response_stream";
       trace.error_code = "client_disconnected";
-      try {
-        await reader.cancel();
-      } finally {
-        ctx.waitUntil(finish(499));
-      }
+      // Release the account lease immediately; upstream cancellation may stall.
+      const completion = finish(499);
+      ctx.waitUntil(completion);
+      await Promise.all([completion, reader.cancel().catch(() => {})]);
     },
   });
   return new Response(stream, { status: response.status, headers });
@@ -411,18 +430,64 @@ export async function edgeAPI(request, env, ctx) {
     let raw;
     try {
       raw = credentials(request, env);
-      if (path === "/v1/models" && env.LOCAL_MODELS_ENABLED !== "true") {
+      if (path === "/v1/models") {
         const u = await store.catalogUser(raw);
         const data = [
           ...(u.permitted.includes("qwen")
             ? lunaCatalogForUser(u, env).data
             : []),
           ...audioModelsForUser(u, env),
+          ...(u.permitted.includes("qwen") ? embeddingCatalog(u, env) : []),
         ];
+        let partial = false;
+        if (
+          u.permitted.includes("qwen") &&
+          env.LOCAL_MODELS_ENABLED === "true"
+        ) {
+          const key = new Request(
+            "https://" + url.hostname + "/__local-model-catalog",
+          );
+          const cache = globalThis.caches?.default;
+          const cached = cache ? await cache.match(key) : null;
+          if (cached) data.push(...(await cached.json()));
+          else
+            try {
+              const allModels = new URL(request.url);
+              allModels.search = "?output_modalities=all";
+              // Source trusts the authenticated Worker grant. Catalog reads don't
+              // acquire inference slots, consume request quotas or persist leases.
+              const r = await origin(
+                new Request(allModels, request),
+                env,
+                id,
+                id,
+                null,
+              );
+              if (!r.ok) throw new Error("local catalog unavailable");
+              const value = await r.json();
+              if (!Array.isArray(value.data))
+                throw new Error("invalid catalog");
+              data.push(...value.data);
+              if (cache)
+                ctx.waitUntil(
+                  cache.put(
+                    key,
+                    Response.json(value.data, {
+                      headers: { "Cache-Control": "max-age=30" },
+                    }),
+                  ),
+                );
+            } catch {
+              partial = true;
+            }
+        }
         return json({ object: "list", data: filterCatalog(data, url) }, 200, {
           "X-Request-ID": id,
           "X-Inference-Execution": "edge",
           "Cache-Control": "no-store",
+          ...(partial
+            ? { "X-Model-Catalog-Partial": "local_unavailable" }
+            : {}),
         });
       }
       lease = await store.acquire(raw, service, path, {
@@ -460,68 +525,6 @@ export async function edgeAPI(request, env, ctx) {
             service === "asr" ? 22 * 1024 * 1024 : 4 * 1024 * 1024,
           )
         : null;
-    if (path === "/v1/models") {
-      const r = await store.first(
-        "SELECT u.*,k.services key_services FROM requests r JOIN users u ON u.id=r.user_id LEFT JOIN keys k ON k.id=r.key_id WHERE r.id=?",
-        lease,
-      );
-      const permissions = ["qwen", "asr", "tts"].filter(
-        (s) =>
-          JSON.parse(r.services).includes(s) &&
-          (!r.key_services || JSON.parse(r.key_services).includes(s)),
-      );
-      let data = [];
-      if (permissions.includes("qwen"))
-        data.push(...(await lunaCatalog(store, env, lease)).data);
-      data.push(...(await audioModels(store, env, lease)));
-      if (permissions.includes("qwen") && env.LOCAL_MODELS_ENABLED === "true") {
-        const key = new Request(
-          "https://" + url.hostname + "/__local-model-catalog",
-        );
-        const cache = globalThis.caches?.default;
-        if (cache) {
-          const cached = await cache.match(key);
-          if (cached)
-            try {
-              data.push(...(await cached.json()));
-            } catch {}
-        }
-        ctx.waitUntil(
-          (async () => {
-            try {
-              const allModels = new URL(request.url);
-              allModels.search = "?output_modalities=all";
-              const r = await origin(
-                new Request(allModels, request),
-                env,
-                lease,
-                id,
-                null,
-              );
-              if (r.ok) {
-                const value = await r.json();
-                if (Array.isArray(value.data) && cache)
-                  await cache.put(
-                    key,
-                    Response.json(value.data, {
-                      headers: { "Cache-Control": "max-age=30" },
-                    }),
-                  );
-              }
-            } catch {}
-          })(),
-        );
-      }
-      data = filterCatalog(data, url);
-      return track(
-        json({ object: "list", data }),
-        store,
-        lease,
-        trace,
-        ctx,
-        start,
-      );
-    }
     const local = request.headers.get("X-Inference-Provider") === "local";
     let response;
     if (path === "/v1/audio/transcriptions") {
@@ -664,6 +667,26 @@ export async function edgeAPI(request, env, ctx) {
           providerTransport(store, lease, trace, ctx, fetch, env),
           ctx,
         );
+      } else if (
+        path === "/v1/embeddings" &&
+        Object.hasOwn(EMBEDDING_MODELS, payload.model)
+      ) {
+        trace.provider = "openai";
+        trace.protocol = "http";
+        const result = await proxyEmbedding(
+          internalRequest(request, lease, JSON.stringify(payload)),
+          env,
+          store,
+          payload,
+          providerTransport(store, lease, trace, ctx, fetch, env),
+        );
+        trace.estimated_input_tokens = result.inputTokens;
+        response = result.response;
+      } else if (
+        path === "/v1/embeddings" &&
+        String(payload.model ?? "").startsWith("text-embedding-")
+      ) {
+        throw new Denied(422, "未开放的 OpenAI 嵌入模型");
       } else if (payload.model === LUNA_MODEL) {
         trace.provider = "openai";
         trace.protocol = payload.stream ? "sse" : "http";
@@ -714,6 +737,13 @@ export async function edgeAPI(request, env, ctx) {
     };
     const quota = Object.keys(quotaCodes).find((k) => String(e).includes(k));
     if (quota) e.retryable = ["quota_rpm", "quota_concurrency"].includes(quota);
+    const quotaMessages = {
+      quota_concurrency:
+        "账号并发请求已达上限，请结束或取消进行中的请求后重试；这不代表日额度用尽",
+      quota_rpm: "账号每分钟请求数已达上限，请稍后重试",
+      quota_daily: "账号今日请求次数已达上限",
+      quota_tokens: "API Key 今日 token 额度已用尽",
+    };
     trace.error_code =
       e.code ??
       (quota
@@ -726,8 +756,9 @@ export async function edgeAPI(request, env, ctx) {
     if (lease) await store.finish({ lease, status, size: 0, trace });
     return json(
       {
-        detail:
-          e instanceof Denied
+        detail: quota
+          ? quotaMessages[quota]
+          : e instanceof Denied
             ? e.message
             : status === 429
               ? "账号请求或模型额度已用尽"
@@ -748,11 +779,16 @@ export async function edgeAPI(request, env, ctx) {
       {
         "X-Request-ID": id,
         "X-Inference-Execution": "edge",
+        "X-Error-Code": trace.error_code,
         ...(trace.compatibility
           ? { "X-Inference-Compatibility": trace.compatibility }
           : {}),
         ...(status === 429 && e.retryable !== false
-          ? { "Retry-After": String(e.retry_after ?? 60) }
+          ? {
+              "Retry-After": String(
+                e.retry_after ?? (quota === "quota_concurrency" ? 1 : 60),
+              ),
+            }
           : {}),
       },
     );

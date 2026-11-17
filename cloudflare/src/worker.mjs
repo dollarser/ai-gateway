@@ -1,3 +1,7 @@
+import { usageSnapshot } from "./usage-snapshot.mjs";
+import { changePasswordWithCredentials } from "./credential-password.mjs";
+import { captchaInfo, verifyCaptcha } from "./captcha.mjs";
+import { requestPasswordReset, resetPassword } from "./password-reset.mjs";
 import { openaiRoute } from "./openai-route.mjs";
 import {
   writeWorkerLog,
@@ -318,12 +322,16 @@ async function route(request, env, ctx) {
     method === "GET" &&
     (p === "/" ||
       p === "/static/app.js" ||
+      p === "/static/password-reset.js" ||
+      p === "/static/captcha.js" ||
+      p === "/static/captcha-page.js" ||
+      p === "/auth/captcha" ||
       p === "/static/style.css" ||
       p === "/static/admin.js" ||
       p === "/static/notices.js")
   ) {
     const asset = new URL(request.url);
-    asset.pathname = p;
+    asset.pathname = p === "/auth/captcha" ? "/captcha" : p;
     const assetRequest = new Request(asset, request);
     if (p === "/") {
       assetRequest.headers.delete("If-None-Match");
@@ -336,10 +344,12 @@ async function route(request, env, ctx) {
     headers.set("Referrer-Policy", "no-referrer");
     headers.set(
       "Content-Security-Policy",
-      "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+      "default-src 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self'; connect-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
     );
     return new Response(response.body, { status: response.status, headers });
   }
+  if (p === "/auth/captcha-info" && method === "GET")
+    return json(captchaInfo(env));
   if (p === "/auth/registration-info" && method === "GET")
     return json({
       services: SERVICES,
@@ -356,7 +366,14 @@ async function route(request, env, ctx) {
       ).enabled,
     });
   if (p === "/auth/registration-code" && method === "POST") {
-    const b = validate(await body(request), ["email"]);
+    const b = validate(await body(request), ["email", "captcha_token"]);
+    await verifyCaptcha(
+      request,
+      env,
+      store,
+      b.captcha_token,
+      "registration_code",
+    );
     return json(
       await requestRegistrationCode(
         store,
@@ -387,6 +404,51 @@ async function route(request, env, ctx) {
       ...(await store.defaults()),
     });
     return json({ user, message: "注册成功，请使用邮箱和密码登录" }, 201);
+  }
+  if (p === "/auth/password-reset/code" && method === "POST") {
+    const b = validate(await body(request), ["email", "captcha_token"]);
+    await verifyCaptcha(
+      request,
+      env,
+      store,
+      b.captcha_token,
+      "password_reset_code",
+    );
+    return json(
+      await requestPasswordReset(
+        store,
+        env,
+        b.email,
+        request.headers.get("CF-Connecting-IP") || "local",
+        sendRegistrationEmail,
+        ctx,
+      ),
+    );
+  }
+  if (p === "/auth/password-reset" && method === "POST") {
+    const b = validate(await body(request), [
+      "email",
+      "code",
+      "new_password",
+      "revoke_api_keys",
+    ]);
+    return json(
+      await resetPassword(store, env, b, sendRegistrationEmail, ctx),
+      200,
+      {
+        "Set-Cookie": `${COOKIE}=; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`,
+      },
+    );
+  }
+  if (p === "/auth/password" && method === "POST") {
+    const result = await changePasswordWithCredentials(
+      store,
+      await body(request),
+      request.headers.get("CF-Connecting-IP") || "local",
+    );
+    return json(result, 200, {
+      "Set-Cookie": `${COOKIE}=; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`,
+    });
   }
   if (p === "/auth/login" && method === "POST") {
     const b = validate(await body(request), ["username", "password"]);
@@ -495,6 +557,8 @@ async function route(request, env, ctx) {
       return json(b);
     }
   }
+  if (p === "/account/usage-snapshot" && method === "GET")
+    return json(await usageSnapshot(store, u));
   if (p === "/account/usage" && method === "GET")
     return json(await store.usage(u.id));
   if (p === "/admin/usage" && method === "GET") {
@@ -764,6 +828,18 @@ export default {
           store.stmt(
             "DELETE FROM account_email_codes WHERE user_id IN(SELECT user_id FROM account_email_codes WHERE expires<? OR state IN ('consumed','failed') LIMIT 500)",
             now(),
+          ),
+          store.stmt(
+            "DELETE FROM password_reset_codes WHERE user_id IN (SELECT user_id FROM password_reset_codes WHERE expires<? OR state IN ('consumed','failed') LIMIT 500)",
+            now(),
+          ),
+          store.stmt(
+            "DELETE FROM captcha_redemptions WHERE token_hash IN (SELECT token_hash FROM captcha_redemptions WHERE created<? LIMIT 1000)",
+            now() - 600,
+          ),
+          store.stmt(
+            "DELETE FROM captcha_attempts WHERE bucket<?",
+            Math.floor(now() / 60) - 2,
           ),
           store.stmt("DELETE FROM login_attempts WHERE ts<?", now() - 300),
           store.stmt(

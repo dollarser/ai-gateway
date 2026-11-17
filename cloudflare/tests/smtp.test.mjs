@@ -106,3 +106,32 @@ test("SMTP configuration requires TLS, matching sender and independent verificat
       null,
     );
 });
+
+test("Reset emails distinguish recovery codes and password-change notifications without sending passwords", async () => {
+  for (const [purpose, code, expected] of [
+    ["password-reset", "012345", "密码重置验证码"],
+    ["password-changed", "keys-retained", "API Key 保持有效"],
+    ["password-changed", "keys-revoked", "所有 API Key 已停用"],
+  ]) {
+    const p = peer([
+      "220 ready\r\n250 ok\r\n334 user\r\n334 pass\r\n235 ok\r\n250 ok\r\n250 ok\r\n354 data\r\n250 queued\r\n",
+    ]);
+    await smtpSession(p.socket, config, "reader@example.com", code, purpose);
+    const mail = p.writes[7],
+      body = mail
+        .split("\r\n\r\n")[1]
+        .replace(/\r\n\.\r\n$/, "")
+        .replaceAll("\r\n", "");
+    const text = new TextDecoder().decode(
+      Uint8Array.from(atob(body), (s) => s.charCodeAt(0)),
+    );
+    assert.ok(text.includes(expected));
+    assert.match(
+      mail,
+      purpose === "password-reset"
+        ? /Subject: Helix AI password reset code/
+        : /Subject: Helix AI password changed/,
+    );
+    if (purpose === "password-changed") assert.ok(!text.includes("012345"));
+  }
+});
