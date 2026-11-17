@@ -10,6 +10,9 @@ FILES = (
     "captcha-page.js",
     "password-reset.js",
     "app.js",
+    "portal-common.js",
+    "admin-portal.js",
+    "notice-manager.js",
     "admin.js",
     "notices.js",
     "style.css",
@@ -24,6 +27,7 @@ def build(destination=None):
         shutil.rmtree(output)
     (output / "static").mkdir(parents=True)
     html = (source / "index.html").read_text()
+    admin_html = (source / "admin.html").read_text()
     headers = [
         f"/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n  Content-Security-Policy: {CSP}\n",
         "/\n  Cache-Control: no-store\n",
@@ -37,6 +41,7 @@ def build(destination=None):
         (output / "static" / versioned).write_bytes(content)
         # Old cached HTML remains usable while fetching current unversioned scripts.
         (output / "static" / name).write_bytes(content)
+        admin_html = admin_html.replace("/static/" + name, "/static/" + versioned)
         html = html.replace("/static/" + name, "/static/" + versioned)
         headers.extend(
             [
@@ -52,6 +57,9 @@ def build(destination=None):
         challenge = challenge.replace("/static/" + name, "/static/" + versioned)
     (output / "captcha.html").write_text(challenge)
     (output / "index.html").write_text(html)
+    (output / "admin").mkdir()
+    (output / "admin/index.html").write_text(admin_html)
+    headers.append("/admin*\n  Cache-Control: no-store\n")
     (output / "_headers").write_text("\n".join(headers))
     return output
 

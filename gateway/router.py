@@ -325,10 +325,14 @@ async def inference(path: str, request: Request):
                 catalog, window = {"object": "list", "data": []}, 0
             else:
                 catalog, window = None, 0
+            unavailable = []
             try:
                 if catalog is None:
                     catalog, window = await discover_models(
-                        request.app.state.client, headers, selected
+                        request.app.state.client,
+                        headers,
+                        selected,
+                        unavailable=unavailable,
                     )
             except Denied:
                 if not luna:
@@ -345,6 +349,8 @@ async def inference(path: str, request: Request):
             request.app.state.llm_model_max_len = window
             status = 200
             response = JSONResponse(catalog, headers={"X-Request-ID": request_id})
+            if unavailable:
+                response.headers["X-Model-Catalog-Partial"] = "local_unavailable"
             size = len(response.body)
             return response
         first_timeout = 180 if service in {"asr", "tts"} else 90

@@ -33,9 +33,28 @@ def index():
     return FileResponse(ROOT / "static/index.html")
 
 
+@router.get("/admin")
+@router.get("/admin/")
+@router.get("/admin/index.html")
+def admin_page(user=Depends(admin)):
+    return FileResponse(
+        ROOT / "static/admin.html", headers={"Cache-Control": "no-store"}
+    )
+
+
 @router.get("/static/{name}")
 def static(name: str):
-    if name not in {"app.js", "style.css"}:
+    if name not in {
+        "app.js",
+        "portal-common.js",
+        "admin-portal.js",
+        "admin.js",
+        "notice-manager.js",
+        "notices.js",
+        "captcha.js",
+        "password-reset.js",
+        "style.css",
+    }:
         raise HTTPException(404)
     return FileResponse(ROOT / "static" / name)
 

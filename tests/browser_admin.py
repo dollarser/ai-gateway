@@ -76,13 +76,19 @@ ledger = {
 def handle(route):
     req = route.request
     path = urllib.parse.urlsplit(req.url).path
-    if path == "/" or path.startswith("/static/"):
+    if path in {"/", "/admin", "/admin/"} or path.startswith("/static/"):
         asset_calls.append(path)
-        file = PUBLIC_ASSETS / ("index.html" if path == "/" else path.lstrip("/"))
+        file = PUBLIC_ASSETS / (
+            "index.html"
+            if path == "/"
+            else "admin/index.html"
+            if path.startswith("/admin")
+            else path.lstrip("/")
+        )
         return route.fulfill(
             path=str(file),
             content_type="text/html"
-            if path == "/"
+            if path in {"/", "/admin", "/admin/"}
             else "text/css"
             if path.endswith(".css")
             else "text/javascript",
@@ -228,7 +234,7 @@ def handle(route):
                 "notifications": {
                     "configured": True,
                     "external_configured": notification_enabled[0],
-                    "destination_url": "https://accounts.hilex.me/#alerts",
+                    "destination_url": "https://accounts.hilex.me/admin#alerts",
                     "destination_host": "alerts.example.test",
                     "deliveries": notification_deliveries,
                 },
@@ -445,14 +451,14 @@ with sync_playwright() as p:
     page.route("https://accounts.test/**", handle)
     page.clock.install()
     page.goto("https://accounts.test")
-    page.locator("#users-list tr").nth(1).wait_for()
+    page.locator("#usage-panel").wait_for(state="visible")
     page.wait_for_timeout(100)
     assert api_calls.count(("GET", "/account/notices/unread-count")) == 1
     assert not any(
         path in {"/admin/operations", "/admin/notifications"} for _, path in api_calls
     )
     page.reload()
-    page.locator("#users-list tr").nth(1).wait_for()
+    page.locator("#usage-panel").wait_for(state="visible")
     page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
     page.wait_for_timeout(100)
     assert api_calls.count(("GET", "/account/notices/unread-count")) == 1
@@ -466,10 +472,15 @@ with sync_playwright() as p:
     page.wait_for_timeout(100)
     assert api_calls.count(("GET", "/account/notices/unread-count")) == 3
     page.reload()
-    page.locator("#users-list tr").nth(1).wait_for()
+    page.locator("#usage-panel").wait_for(state="visible")
     page.wait_for_timeout(100)
     assert api_calls.count(("GET", "/account/notices/unread-count")) == 3
     notice_failure[0] = False
+    assert page.locator("#admin-panel,#key-form,#notice-form").count() == 0
+    assert page.locator("#admin-link").is_visible()
+    page.locator("#admin-link").click()
+    page.locator("#users-list tr").nth(1).wait_for()
+    assert page.locator("#password-form,#usage-panel").count() == 0
     assert page.locator("#admin-summary>div").count() == 6
     page.locator("#users-list tr").nth(1).get_by_role(
         "button", name="设置", exact=True
@@ -578,11 +589,12 @@ with sync_playwright() as p:
     assert "未读 0 条" in page.locator("#inbox-summary").inner_text()
     page.locator('[data-tab="notices"]').click()
     page.locator("#notices-panel").wait_for(state="visible")
-    page.locator("#notice-management>summary").click()
     page.locator("#notice-form [name=title]").fill("通告 <img src=x onerror=alert(1)>")
     page.locator("#notice-form [name=body]").fill("第一行\n<script>alert(1)</script>")
     page.locator("#notice-form button").first.click()
     page.locator("#notice-admin-items button").filter(has_text="发布").click()
+    page.locator("#notice-admin-items").get_by_text("已发布", exact=False).wait_for()
+    page.goto("https://accounts.test/#notices")
     page.locator("#notice-items article").wait_for()
     assert "未读 1" in page.locator("#notice-summary").inner_text()
     assert page.locator("#notice-items script,#notice-items img").count() == 0
@@ -593,8 +605,10 @@ with sync_playwright() as p:
     page.locator("#notices-panel").wait_for(state="visible")
     page.locator("#notice-items article").wait_for()
     assert "已读" in page.locator("#notice-items").inner_text()
-    page.locator("#notice-management>summary").click()
+    page.goto("https://accounts.test/admin#notices")
     page.locator("#notice-admin-items button").filter(has_text="撤回").click()
+    page.locator("#notice-admin-items").get_by_text("已撤回", exact=False).wait_for()
+    page.goto("https://accounts.test/#notices")
     page.get_by_text("暂无通告", exact=True).wait_for()
     users[0]["role"] = "user"
     asset_calls.clear()
@@ -602,8 +616,8 @@ with sync_playwright() as p:
     page.reload()
     page.locator("#notices-panel").wait_for(state="visible")
     page.locator("#notice-items article").wait_for()
-    assert page.locator("#notice-management").is_hidden()
-    assert page.locator("#admin-tab").is_hidden()
+    assert page.locator("#notice-form,#admin-panel,#keys-panel").count() == 0
+    assert page.locator("#admin-link").is_hidden()
     assert not any("/admin." in path for path in asset_calls), asset_calls
     page.locator('[data-tab="usage"]').click()
     page.get_by_text("云文本（Luna / 嵌入）", exact=False).first.wait_for()
@@ -627,6 +641,16 @@ with sync_playwright() as p:
     print(
         "Browser: settings, bulk ban/unban, bulk quotas, user creation, IP/details, safe rendering and mobile layout passed"
     )
+    page.goto("https://accounts.test/admin")
+    page.locator("#users-list tr").nth(1).wait_for()
+    page.screenshot(
+        path=str(ROOT / ".runtime/tests/browser/admin-console-mobile.png"),
+        full_page=True,
+    )
+    assert page.evaluate("document.documentElement.scrollWidth") <= 390
+    page.locator('a[href="/"]').click()
+    page.locator("#usage-panel").wait_for(state="visible")
+    page.locator('[data-tab="notices"]').click()
     page.locator("#email-binding-reminder").wait_for(state="visible")
     page.locator("#open-email-binding").click()
     assert (

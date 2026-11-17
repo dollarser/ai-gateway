@@ -658,16 +658,12 @@ class HTTPTests(unittest.TestCase):
         }
         self.assertEqual(self.client.get("/account/me", headers=auth).status_code, 401)
         self.assertEqual(
-            self.client.get(
-                "https://api.hilex.me/v1/models", headers=auth
-            ).status_code,
+            self.client.get("https://api.hilex.me/v1/models", headers=auth).status_code,
             401,
         )
         auth["Authorization"] = "Bearer ai-at-invalid"
         self.assertEqual(
-            self.client.get(
-                "https://api.hilex.me/v1/models", headers=auth
-            ).status_code,
+            self.client.get("https://api.hilex.me/v1/models", headers=auth).status_code,
             401,
         )
 
@@ -1023,6 +1019,26 @@ class HTTPTests(unittest.TestCase):
             },
         )
         self.assertEqual(r.status_code, 200, r.text)
+
+    def test_admin_html_is_separate_and_requires_admin_on_all_aliases(self):
+        personal = self.client.get("/")
+        self.assertNotIn('id="admin-panel"', personal.text)
+        self.assertNotIn('id="notice-form"', personal.text)
+        for path in ("/admin", "/admin/", "/admin/index.html"):
+            self.assertEqual(self.client.get(path).status_code, 403)
+        login = self.client.post(
+            "/auth/login",
+            json={"username": "key-manager", "password": "manager-password-123"},
+        )
+        self.assertEqual(login.status_code, 200)
+        for path in ("/admin", "/admin/", "/admin/index.html"):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["cache-control"], "no-store")
+            self.assertIn('id="admin-panel"', response.text)
+            self.assertNotIn('id="password-form"', response.text)
+        self.client.cookies.clear()
+        self.assertEqual(self.client.get("/admin").status_code, 401)
 
     def test_secure_cookie_and_public_static(self):
         r = self.client.post(

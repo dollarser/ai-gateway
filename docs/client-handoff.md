@@ -373,3 +373,7 @@ Response 非成功时读取 errorBody 并按服务端 error_code 分支，不能
 ## 合并用量快照
 
 `GET https://accounts.hilex.me/account/usage-snapshot` 使用账号认证（Bearer access_token，不需要X-Client-ID；站内Cookie同样支持），返回`{usage,luna,audio}`，分别保持原`/account/usage`、`/account/luna-usage`、`/account/audio-usage`的响应结构。API Key不能访问账号快照。新版网页只请求该接口，安卓可在同时显示三类用量时切换到此接口，避免三次认证和HTTP往返；只需一类数据时仍可使用原分项接口。不增加轮询频率，继续按需刷新，不公共缓存账号响应。真实调用的权限/并发和预算不由客户端快照决定。
+
+## 网页个人账号与管理控制台
+
+个人账号页为 https://accounts.hilex.me/ ，管理控制台为 https://accounts.hilex.me/admin 。普通用户没有管理入口，管理员在个人页可进入控制台。管理页面使用同一登录会话并独立校验管理员角色。安卓等客户端继续使用原账号与模型 API，无需修改认证或模型调用路径；客户端的个人通知仍使用 `/account/notices`，不访问管理页面或 `/admin/*`。

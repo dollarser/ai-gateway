@@ -318,10 +318,31 @@ async function route(request, env, ctx) {
     request.headers.get("Origin") !== origin
   )
     fail(403, "origin denied");
+  // HTML is protected here as well as every management API. Assets must not
+  // serve /admin independently, including its directory/index aliases.
+  const adminPage = ["/admin", "/admin/", "/admin/index.html"].includes(p);
+  if (adminPage && ["GET", "HEAD"].includes(method)) {
+    try {
+      await userSession(request, store, true);
+    } catch (error) {
+      if (error.status !== 401) throw error;
+      return new Response(null, {
+        status: 302,
+        headers: {
+          Location: "/?next=admin",
+          "Cache-Control": "no-store",
+        },
+      });
+    }
+  }
   if (
-    method === "GET" &&
-    (p === "/" ||
+    (method === "GET" || (adminPage && method === "HEAD")) &&
+    (adminPage ||
+      p === "/" ||
       p === "/static/app.js" ||
+      p === "/static/portal-common.js" ||
+      p === "/static/admin-portal.js" ||
+      p === "/static/notice-manager.js" ||
       p === "/static/password-reset.js" ||
       p === "/static/captcha.js" ||
       p === "/static/captcha-page.js" ||
@@ -331,9 +352,13 @@ async function route(request, env, ctx) {
       p === "/static/notices.js")
   ) {
     const asset = new URL(request.url);
-    asset.pathname = p === "/auth/captcha" ? "/captcha" : p;
+    asset.pathname = adminPage
+      ? "/admin/"
+      : p === "/auth/captcha"
+        ? "/captcha"
+        : p;
     const assetRequest = new Request(asset, request);
-    if (p === "/") {
+    if (p === "/" || adminPage) {
       assetRequest.headers.delete("If-None-Match");
       assetRequest.headers.delete("If-Modified-Since");
     }

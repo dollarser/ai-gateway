@@ -100,6 +100,7 @@ class PublicAssetsTests(unittest.TestCase):
             html = (output / "index.html").read_text() + (
                 output / "captcha.html"
             ).read_text()
+            html += (output / "admin/index.html").read_text()
             headers = (output / "_headers").read_text()
             for name in FILES:
                 self.assertNotIn("/static/" + name + '"', html)
@@ -115,8 +116,8 @@ class PublicAssetsTests(unittest.TestCase):
             self.assertIn("frame-ancestors", headers)
             self.assertIn("immutable", headers)
             self.assertEqual(
-                len(list(output.rglob("*"))), 18
-            )  # static dir + 14 public files + 2 HTML pages + headers
+                len(list(output.rglob("*"))), 2 * len(FILES) + 6
+            )  # Two asset aliases each, two directories, three HTML pages, headers
 
 
 class WriteReductionTests(unittest.TestCase):

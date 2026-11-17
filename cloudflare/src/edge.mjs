@@ -449,8 +449,10 @@ export async function edgeAPI(request, env, ctx) {
           );
           const cache = globalThis.caches?.default;
           const cached = cache ? await cache.match(key) : null;
-          if (cached) data.push(...(await cached.json()));
-          else
+          if (cached) {
+            data.push(...(await cached.json()));
+            partial = cached.headers.has("X-Model-Catalog-Partial");
+          } else
             try {
               const allModels = new URL(request.url);
               allModels.search = "?output_modalities=all";
@@ -464,6 +466,7 @@ export async function edgeAPI(request, env, ctx) {
                 null,
               );
               if (!r.ok) throw new Error("local catalog unavailable");
+              partial = r.headers.has("X-Model-Catalog-Partial");
               const value = await r.json();
               if (!Array.isArray(value.data))
                 throw new Error("invalid catalog");
@@ -473,7 +476,12 @@ export async function edgeAPI(request, env, ctx) {
                   cache.put(
                     key,
                     Response.json(value.data, {
-                      headers: { "Cache-Control": "max-age=30" },
+                      headers: {
+                        "Cache-Control": "max-age=30",
+                        ...(partial
+                          ? { "X-Model-Catalog-Partial": "local_unavailable" }
+                          : {}),
+                      },
                     }),
                   ),
                 );

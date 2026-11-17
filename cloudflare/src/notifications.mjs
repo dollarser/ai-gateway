@@ -34,7 +34,7 @@ export function notificationConfiguration(env) {
       configured: true,
       external_configured: !!u,
       transport: u ? "in_app_and_https_json_webhook" : "in_app",
-      destination_url: "https://accounts.hilex.me/#alerts",
+      destination_url: "https://accounts.hilex.me/admin#alerts",
       destination_host: u?.hostname ?? null,
       signed: !!env.ALERT_WEBHOOK_SECRET,
     };
@@ -43,7 +43,7 @@ export function notificationConfiguration(env) {
       configured: true,
       external_configured: false,
       transport: "in_app",
-      destination_url: "https://accounts.hilex.me/#alerts",
+      destination_url: "https://accounts.hilex.me/admin#alerts",
       external_error: "invalid_destination",
     };
   }
@@ -76,7 +76,7 @@ export async function enqueueAlerts(store, env) {
       episode: alert.episode,
       observed_at: new Date(alert.last_seen * 1000).toISOString(),
       details,
-      dashboard: "https://accounts.hilex.me/#alerts",
+      dashboard: "https://accounts.hilex.me/admin#alerts",
     };
     // Queue and persistent episode marker commit atomically. Retention of inbox
     // messages must never cause a continuing incident to notify again.
@@ -224,7 +224,7 @@ export async function enqueueTest(store, user) {
       state: "open",
       observed_at: new Date().toISOString(),
       details: {},
-      dashboard: "https://accounts.hilex.me/#alerts",
+      dashboard: "https://accounts.hilex.me/admin#alerts",
     }),
     ts - 60,
   );

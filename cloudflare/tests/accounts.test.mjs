@@ -2350,14 +2350,17 @@ test("Project inbox is the default destination without self HTTP calls and read 
   const status = await notificationStatus(store, {});
   assert.equal(status.configured, true);
   assert.equal(status.external_configured, false);
-  assert.equal(status.destination_url, "https://accounts.hilex.me/#alerts");
+  assert.equal(
+    status.destination_url,
+    "https://accounts.hilex.me/admin#alerts",
+  );
   await store.run(
     "INSERT INTO alert_deliveries(id,kind,episode,event_state,created,payload) VALUES('site-message-fixture','test',0,'open',?,?)",
     ts,
     JSON.stringify({
       kind: "test",
       details: { count: 1 },
-      dashboard: "https://accounts.hilex.me/#alerts",
+      dashboard: "https://accounts.hilex.me/admin#alerts",
     }),
   );
   let posts = 0;
@@ -4635,4 +4638,128 @@ test("Concurrent cloud requests cannot overspend a one-token personal balance", 
     .bind(uid)
     .first();
   assert.deepEqual(row, { used_tokens: 1, reserved_tokens: 0, requests: 1 });
+});
+
+test("Management HTML requires an administrator on every alias and cannot be cached", async () => {
+  const login = await call("/auth/login", {
+    username: "admin",
+    password: "admin-password",
+  });
+  assert.equal(login.status, 200);
+  const { uid } = await lunaUser("admin-page-ordinary");
+  const store = new Store(db);
+  const raw = "ai-at-admin-page-ordinary-token";
+  await store.run(
+    "INSERT INTO auth_families VALUES(?,?,?,0)",
+    "page-family",
+    uid,
+    Date.now() / 1000 + 3600,
+  );
+  await store.run(
+    "INSERT INTO access_tokens VALUES(?,?,?)",
+    await digest(raw),
+    "page-family",
+    Date.now() / 1000 + 3600,
+  );
+  for (const path of ["/admin", "/admin/", "/admin/index.html"]) {
+    const anonymous = await mf.dispatchFetch("https://accounts.test" + path, {
+      redirect: "manual",
+    });
+    assert.equal(anonymous.status, 302);
+    assert.equal(anonymous.headers.get("Location"), "/?next=admin");
+    assert.equal(anonymous.headers.get("Cache-Control"), "no-store");
+    const denied = await mf.dispatchFetch("https://accounts.test" + path, {
+      headers: { Authorization: "Bearer " + raw },
+    });
+    assert.equal(denied.status, 403);
+    const allowed = await mf.dispatchFetch("https://accounts.test" + path, {
+      headers: {
+        Cookie: login.headers.get("set-cookie").split(";")[0],
+        "If-None-Match": "cached",
+      },
+    });
+    assert.equal(allowed.status, 200);
+    assert.equal(allowed.headers.get("Cache-Control"), "no-store");
+    assert.match(await allowed.text(), /portal/);
+  }
+  await store.run("UPDATE users SET must_change=1 WHERE id=?", uid);
+  await store.run("UPDATE users SET role='admin' WHERE id=?", uid);
+  const mustChange = await mf.dispatchFetch("https://accounts.test/admin", {
+    headers: { Authorization: "Bearer " + raw },
+  });
+  assert.equal(mustChange.status, 403);
+});
+
+test("Partial local catalog keeps embedding and its marker on cache hits without inference leases", async () => {
+  const { uid, key } = await lunaUser("partial-embedding-catalog");
+  const previousFetch = globalThis.fetch,
+    previousCaches = globalThis.caches;
+  let cached = null,
+    calls = 0;
+  const jobs = [];
+  globalThis.caches = {
+    default: {
+      async match() {
+        return cached?.clone();
+      },
+      async put(key, response) {
+        cached = response.clone();
+      },
+    },
+  };
+  globalThis.fetch = async () => {
+    calls++;
+    return Response.json(
+      {
+        data: [
+          {
+            id: "Qwen/Qwen3-Embedding-0.6B",
+            architecture: { output_modalities: ["embeddings"] },
+          },
+        ],
+      },
+      { headers: { "X-Model-Catalog-Partial": "local_unavailable" } },
+    );
+  };
+  try {
+    for (let i = 0; i < 2; i++) {
+      const response = await edgeAPI(
+        new Request(
+          "https://api.hilex.me/v1/models?output_modalities=embeddings",
+          { headers: { Authorization: "Bearer " + key } },
+        ),
+        { DB: db, INTERNAL_SECRET: secret, LOCAL_MODELS_ENABLED: "true" },
+        {
+          waitUntil(p) {
+            jobs.push(p);
+          },
+        },
+      );
+      assert.equal(response.status, 200);
+      assert.equal(
+        response.headers.get("X-Model-Catalog-Partial"),
+        "local_unavailable",
+      );
+      assert.ok(
+        (await response.json()).data.some(
+          (m) => m.id === "Qwen/Qwen3-Embedding-0.6B",
+        ),
+      );
+      await Promise.all(jobs);
+    }
+    assert.equal(calls, 1);
+    assert.equal(
+      (
+        await new Store(db).first(
+          "SELECT count(*) n FROM requests WHERE user_id=?",
+          uid,
+        )
+      ).n,
+      0,
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousCaches === undefined) delete globalThis.caches;
+    else globalThis.caches = previousCaches;
+  }
 });

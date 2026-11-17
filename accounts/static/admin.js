@@ -625,7 +625,7 @@
     };
     $("notification-status").textContent =
       "默认接收位置：站内告警中心 " +
-      (notifications.destination_url ?? "https://accounts.hilex.me/#alerts") +
+      (notifications.destination_url ?? "https://accounts.hilex.me/admin#alerts") +
       (notifications.external_configured
         ? "；另已配置外部 HTTPS Webhook（" +
           notifications.destination_host +

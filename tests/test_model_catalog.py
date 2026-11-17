@@ -81,6 +81,45 @@ class CatalogTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_backend_failure_isolation_and_all_failed_error(self):
+        async def run():
+            for failure in ("connect", "timeout", "invalid", "slow", "all"):
+
+                async def backend(request):
+                    if request.url.port == 30007 or failure == "all":
+                        if failure in {"connect", "all"}:
+                            raise httpx.ConnectError("private backend", request=request)
+                        if failure == "timeout":
+                            raise httpx.ReadTimeout("private backend", request=request)
+                        if failure == "slow":
+                            await asyncio.sleep(5)
+                        return httpx.Response(200, json={"data": [None]})
+                    return httpx.Response(
+                        200, json={"data": [{"id": "embedding-live"}]}
+                    )
+
+                async with httpx.AsyncClient(
+                    transport=httpx.MockTransport(backend)
+                ) as client:
+                    unavailable = []
+                    if failure == "all":
+                        with self.assertRaises(Denied) as raised:
+                            await discover_models(
+                                client, {}, None, unavailable=unavailable
+                            )
+                        self.assertEqual(raised.exception.status, 502)
+                    else:
+                        catalog, window = await discover_models(
+                            client, {}, None, unavailable=unavailable
+                        )
+                        self.assertEqual(
+                            [m["id"] for m in catalog["data"]], ["embedding-live"]
+                        )
+                        self.assertEqual(window, 0)
+                        self.assertEqual(unavailable, ["chat"])
+
+        asyncio.run(run())
+
     def test_inactive_deployments_and_unsupported_modalities_are_absent(self):
         deployment = MODEL_DEPLOYMENTS[0]
         self.assertEqual(
@@ -149,7 +188,7 @@ class CatalogHTTPTests(unittest.TestCase):
             )
             self.assertEqual(r.status_code, 400)
 
-    def test_failed_backend_returns_safe_error_and_settles_quota(self):
+    def test_failed_embedding_preserves_chat_and_settles_quota(self):
         key = self.key(["qwen"])["key"]
 
         async def backend(request):
@@ -164,14 +203,18 @@ class CatalogHTTPTests(unittest.TestCase):
                 "https://api.hilex.me/v1/models?output_modalities=all",
                 headers={"X-API-Key": key},
             )
-            self.assertEqual(response.status_code, 502)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual([m["id"] for m in response.json()["data"]], ["chat"])
+            self.assertEqual(
+                response.headers["X-Model-Catalog-Partial"], "local_unavailable"
+            )
             self.assertNotIn("private backend detail", response.text)
             self.assertNotIn("18771", response.text)
             row = self.db.db.execute(
                 "SELECT ended,status FROM requests ORDER BY started DESC LIMIT 1"
             ).fetchone()
             self.assertIsNotNone(row["ended"])
-            self.assertEqual(row["status"], 502)
+            self.assertEqual(row["status"], 200)
         finally:
             self.client.portal.call(mock.aclose)
             self.app.state.client = self.mock

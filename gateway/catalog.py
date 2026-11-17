@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import httpx
+from async_timeout import timeout
 from gateway.errors import Denied
 from gateway.deployments import MODEL_DEPLOYMENTS
 from gateway import llm
@@ -89,24 +90,33 @@ def build_catalog(payloads, selected=None):
     return {"object": "list", "data": data}
 
 
-async def discover_models(client, headers, selected, deployments=MODEL_DEPLOYMENTS):
+async def discover_models(
+    client, headers, selected, deployments=MODEL_DEPLOYMENTS, *, unavailable=None
+):
     async def fetch(deployment):
         try:
-            response = await client.get(
-                deployment.upstream + "/v1/models",
-                headers=headers,
-                timeout=httpx.Timeout(10, connect=3),
-            )
+            # Stay within the Worker's 1.5s origin catalog budget even if a
+            # local backend accepts the connection but stops responding.
+            async with timeout(1):
+                response = await client.get(
+                    deployment.upstream + "/v1/models",
+                    headers=headers,
+                    timeout=httpx.Timeout(1, connect=0.5),
+                )
             response.raise_for_status()
-            return deployment, response.json()
-        except (httpx.HTTPError, ValueError) as exc:
+            payload = response.json()
+            build_catalog([(deployment, payload)])
+            return deployment, payload
+        except (httpx.HTTPError, asyncio.TimeoutError, ValueError, Denied) as exc:
             # Public responses contain neither backend URLs nor raw backend errors.
             logger.warning(
                 "model_catalog_unavailable deployment=%s error=%s",
                 deployment.name,
                 type(exc).__name__,
             )
-            raise Denied(502, "模型列表暂时不可用，请稍后重试") from exc
+            if unavailable is not None:
+                unavailable.append(deployment.name)
+            return None
 
     # Await every outcome so a failed backend cannot leave background fetches behind.
     results = await asyncio.gather(
@@ -115,6 +125,9 @@ async def discover_models(client, headers, selected, deployments=MODEL_DEPLOYMEN
     for result in results:
         if isinstance(result, BaseException):
             raise result
+    results = [result for result in results if result is not None]
+    if deployments and not results:
+        raise Denied(502, "模型列表暂时不可用，请稍后重试")
     catalog = build_catalog(results, selected)
     window = next(
         (
