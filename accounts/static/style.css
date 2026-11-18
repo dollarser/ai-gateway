@@ -19,3 +19,6 @@ dialog{border:1px solid #b5c8ce;border-radius:12px;max-width:calc(100vw - 24px);
 html:has(body.captcha-embedded), body.captcha-embedded { background: transparent; }
 .captcha-embedded #captcha-dialog { position:fixed;inset:auto;margin:0;transform:translate(-50%,-50%);box-sizing: border-box; max-width: calc(100vw - 24px); overflow: auto; }
 .captcha-embedded #captcha-dialog::backdrop { background: transparent; }
+
+/* Public project navigation: source link secondary, download action primary. */
+.header-links{display:flex;align-items:center;flex-wrap:wrap;gap:10px}.header-links a{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:10px 14px;border:1px solid transparent;border-radius:8px;font-size:14px;font-weight:650;text-decoration:none;white-space:nowrap}.header-links .project-link{background:transparent;color:#e0f3ef;border-color:#63848a}.header-links .project-link:hover{background:#ffffff12;border-color:#bcebd8}.header-links .client-download{background:#bcebd8;color:#103b40}.header-links .client-download:hover{background:#d8f7e9}.header-links a:focus-visible{outline:3px solid #fff;outline-offset:4px}.header-actions{min-width:0}#identity{overflow-wrap:anywhere;max-width:280px}@media(max-width:600px){.header-actions{justify-content:flex-start}.header-links{width:100%}#identity{max-width:100%}}
