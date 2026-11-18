@@ -33,12 +33,12 @@ PATCH /account/profile
 Authorization: Bearer <access_token>
 Content-Type: application/json
 
-{"display_name":"新的显示名","current_password":"<当前密码>"}
+{"display_name":"新的显示名"}
 ```
 
-此账号接口不要求 X-Client-ID；浏览器 Cookie 写请求仍要求 X-CSRF-Token。API Key 不能修改资料。每 24 小时可成功修改一次，相同值为幂等操作；失败后应清除客户端当前密码输入。成功返回 `{user, message}`，用户对象包含 `display_name_updated_at`（秒时间戳）。修改显示名不改变 ID、登录邮箱、密码、角色、额度、API Key、登录令牌或通知已读记录。
+此账号接口不要求 X-Client-ID；浏览器 Cookie 写请求仍要求 X-CSRF-Token。API Key 不能修改资料。每 24 小时可成功修改一次，相同值为幂等操作；已登录用户直接修改，无需填写或发送当前密码。成功返回 `{user, message}`，用户对象包含 `display_name_updated_at`（秒时间戳）。修改显示名不改变 ID、登录邮箱、密码、角色、额度、API Key、登录令牌或通知已读记录。
 
-常见错误：422 `display_name_invalid`，403 当前密码错误或需先修改初始密码，429 `display_name_change_limited`。不要因资料改名清空账号数据或重新生成账号。
+常见错误：422 `display_name_invalid`，403 需先修改初始密码，429 `display_name_change_limited`。不要因资料改名清空账号数据或重新生成账号。
 
 ## 修改密码
 

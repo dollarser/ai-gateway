@@ -592,16 +592,8 @@ async function route(request, env, ctx) {
   if (p === "/account/me" && method === "GET")
     return json({ user: publicUser(u), csrf: bearer(request) ? null : u.csrf });
   if (p === "/account/profile" && method === "PATCH") {
-    const b = validate(await body(request), [
-      "display_name",
-      "current_password",
-    ]);
-    const updated = await store.changeDisplayName(
-      u.id,
-      b.display_name,
-      text(b.current_password, 1, 128),
-      request.headers.get("CF-Connecting-IP") || "local",
-    );
+    const b = validate(await body(request), ["display_name"]);
+    const updated = await store.changeDisplayName(u.id, b.display_name);
     return json({
       user: updated,
       message: "显示名已更新，登录邮箱和账号 ID 不变",

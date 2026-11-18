@@ -229,12 +229,10 @@ export class Store {
       email.trim().toLowerCase(),
     );
   }
-  async changeDisplayName(uid, value, currentPassword, ip) {
+  async changeDisplayName(uid, value) {
     const display_name = normalizeDisplayName(value),
       u = await this.first("SELECT * FROM users WHERE id=?", uid);
-    await this.rateLimit(ip, "login", "account:" + uid);
-    if (!u || !u.enabled || !(await checkPassword(currentPassword, u.password)))
-      throw new Denied(403, "当前密码错误");
+    if (!u || !u.enabled) throw new Denied(401, "账号不可用");
     if (u.must_change) throw new Denied(403, "请先修改初始密码");
     if (display_name === u.display_name) return publicUser(u);
     const ts = now(),

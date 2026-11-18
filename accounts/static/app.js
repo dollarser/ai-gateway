@@ -346,7 +346,6 @@ function refreshProfile() {
       ? "下次可修改时间：" + date(until)
       : "显示名允许重复，登录使用邮箱。";
   $("display_name-form").elements.display_name.value = user.display_name;
-  $("display_name-form").elements.current_password.value = "";
 }
 $("display_name-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -356,7 +355,6 @@ $("display_name-form").addEventListener("submit", async (e) => {
   try {
     const data = await api("/account/profile", "PATCH", {
       display_name: f.elements.display_name.value,
-      current_password: f.elements.current_password.value,
     });
     user = data.user;
     $("identity").textContent = user.display_name;
@@ -365,7 +363,6 @@ $("display_name-form").addEventListener("submit", async (e) => {
   } catch (error) {
     message(error.message, true);
   } finally {
-    f.elements.current_password.value = "";
     if (button)
       button.disabled =
         !!user.must_change ||

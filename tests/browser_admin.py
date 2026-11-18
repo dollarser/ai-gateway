@@ -438,7 +438,7 @@ def handle(route):
     if path == "/admin/audit":
         return respond([{"action": "test"}])
     if path == "/account/profile":
-        assert data["current_password"] == "test-password"
+        assert set(data) == {"display_name"}
         users[0]["display_name"] = data["display_name"]
         users[0]["display_name_updated_at"] = 9999999999
         return respond({"user": users[0], "message": "显示名已更新"})
@@ -659,13 +659,10 @@ with sync_playwright() as p:
     page.locator('[data-tab="notices"]').click()
     page.locator('[data-tab="profile"]').click()
     page.locator("#display_name-form [name=display_name]").fill("demo")
-    page.locator("#display_name-form [name=current_password]").fill("test-password")
     page.locator("#display_name-form button").click()
     page.get_by_text("显示名已更新", exact=True).wait_for()
     assert page.locator("#identity").inner_text() == "demo"
-    assert (
-        page.locator("#display_name-form [name=current_password]").input_value() == ""
-    )
+    assert page.locator("#display_name-form [name=current_password]").count() == 0
     assert page.locator("#display_name-form button").is_disabled()
     page.locator("#email-binding-reminder").wait_for(state="visible")
     page.locator("#open-email-binding").click()

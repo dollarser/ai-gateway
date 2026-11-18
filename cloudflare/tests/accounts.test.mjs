@@ -4939,15 +4939,9 @@ test("Changing display name preserves ID, tokens, keys, email and notice receipt
     user.id,
     ts,
   );
-  const bad = await call(
-    "/account/profile",
-    { display_name: "改名后", current_password: "wrong" },
-    { method: "PATCH", access },
-  );
-  assert.equal(bad.status, 403);
   const response = await call(
     "/account/profile",
-    { display_name: "改名后", current_password: "email-pass" },
+    { display_name: "改名后" },
     { method: "PATCH", access },
   );
   assert.equal(response.status, 200, JSON.stringify(response.body));
@@ -4978,7 +4972,7 @@ test("Changing display name preserves ID, tokens, keys, email and notice receipt
   );
   const next = await call(
     "/account/profile",
-    { display_name: "再改一次", current_password: "email-pass" },
+    { display_name: "再改一次" },
     { method: "PATCH", access },
   );
   assert.equal(next.status, 429);
@@ -4996,7 +4990,7 @@ test("Changing display name preserves ID, tokens, keys, email and notice receipt
 test("Display name profile writes are account-authenticated, CSRF protected and race-safe", async () => {
   const a = await emailAccount("相同昵称", "profile-race-a@example.net"),
     b = await emailAccount("相同昵称", "profile-race-b@example.net");
-  const body = { display_name: "公共昵称", current_password: "email-pass" };
+  const body = { display_name: "公共昵称" };
   const key = await a.store.createKey(a.user.id, a.user.id, {
     name: "no-profile",
     services: ["qwen"],
@@ -5050,8 +5044,8 @@ test("Display name profile writes are account-authenticated, CSRF protected and 
   );
   const c = await emailAccount("并发改名", "profile-race-c@example.net");
   const race = await Promise.allSettled([
-    c.store.changeDisplayName(c.user.id, "甲", "email-pass", "profile-race-c1"),
-    c.store.changeDisplayName(c.user.id, "乙", "email-pass", "profile-race-c2"),
+    c.store.changeDisplayName(c.user.id, "甲"),
+    c.store.changeDisplayName(c.user.id, "乙"),
   ]);
   assert.equal(race.filter((r) => r.status === "fulfilled").length, 1);
   assert.equal(race.find((r) => r.status === "rejected").reason.status, 429);
