@@ -171,7 +171,37 @@ async function provider(request) {
   });
 }
 const secret = "test-internal-secret-".repeat(3);
+// Historical tests name fixtures for readability; all real HTTP logins use
+// the new email-only contract. These aliases exist only in this test harness.
+async function fixtureEmail(name) {
+  if (name.includes("@")) return name.trim().toLowerCase();
+  const row = await db
+    .prepare(
+      "SELECT id,email FROM users WHERE display_name=? ORDER BY id LIMIT 1",
+    )
+    .bind(name.trim().toLowerCase())
+    .first();
+  if (!row) return "missing-fixture@example.net";
+  if (row.email) return row.email;
+  const email = "fixture-" + row.id + "@example.net";
+  await db
+    .prepare("UPDATE users SET email=? WHERE id=?")
+    .bind(email, row.id)
+    .run();
+  return email;
+}
+async function fixtureLogin(store, name, password, ip) {
+  return store.login(await fixtureEmail(name), password, ip);
+}
 async function call(path, body, options = {}) {
+  if (
+    (path === "/auth/login" || path === "/auth/password") &&
+    body?.display_name !== undefined
+  ) {
+    const { display_name, ...rest } = body;
+    body = { ...rest, email: await fixtureEmail(display_name) };
+  }
+
   const {
     method = body === undefined ? "GET" : "POST",
     access,
@@ -229,7 +259,7 @@ before(async () => {
   }
   await db
     .prepare(
-      "INSERT INTO users(username,password,role,services,rpm,daily_requests,concurrency,must_change,created) VALUES(?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO users(display_name,password,role,services,rpm,daily_requests,concurrency,must_change,created) VALUES(?,?,?,?,?,?,?,?,?)",
     )
     .bind(
       "admin",
@@ -244,7 +274,7 @@ before(async () => {
     )
     .run();
   const result = await call("/auth/login", {
-    username: "admin",
+    display_name: "admin",
     password: "admin-password",
   });
   assert.equal(result.status, 200);
@@ -298,7 +328,7 @@ test("registration, login, cookie CSRF and key ownership", async () => {
   assert.equal(r.body.user.role, "user");
   assert.equal(r.body.user.must_change, 0);
   const login = await call("/auth/login", {
-    username: email,
+    display_name: email,
     password: "long-password",
   });
   assert.equal(login.status, 200);
@@ -379,7 +409,7 @@ test("internal endpoints reject missing credentials and tampered bodies", async 
 test("atomic concurrency, persistent usage, idempotent finish and key revocation", async () => {
   const created = await call(
     "/admin/users",
-    { username: "quota-user", concurrency: 1, rpm: 0, daily_requests: 0 },
+    { display_name: "quota-user", concurrency: 1, rpm: 0, daily_requests: 0 },
     { access: admin },
   );
   assert.equal(created.status, 200);
@@ -402,7 +432,7 @@ test("atomic concurrency, persistent usage, idempotent finish and key revocation
     403,
   );
   const login = await call("/auth/login", {
-    username: "quota-user",
+    display_name: "quota-user",
     password: created.body.temporary_password,
   });
   assert.equal(
@@ -490,7 +520,7 @@ test("legacy Python password encoding matches Worker verification", async () => 
 test("parallel refresh reuse revokes the token family atomically", async () => {
   const login = await call(
     "/auth/login",
-    { username: "admin", password: "admin-password" },
+    { display_name: "admin", password: "admin-password" },
     { headers: { "CF-Connecting-IP": "192.0.2.50" } },
   );
   const results = await Promise.all([
@@ -510,14 +540,14 @@ test("parallel refresh reuse revokes the token family atomically", async () => {
 test("daily quota is shared across keys and zero RPM remains unlimited", async () => {
   const created = await call(
     "/admin/users",
-    { username: "daily-user", concurrency: 4, rpm: 0, daily_requests: 1 },
+    { display_name: "daily-user", concurrency: 4, rpm: 0, daily_requests: 1 },
     { access: admin },
   );
   assert.equal(created.status, 200);
   const uid = created.body.user.id;
   const login = await call(
     "/auth/login",
-    { username: "daily-user", password: created.body.temporary_password },
+    { display_name: "daily-user", password: created.body.temporary_password },
     { headers: { "CF-Connecting-IP": "192.0.2.51" } },
   );
   await call(
@@ -565,7 +595,7 @@ test("invalid account services and key expiry cannot corrupt stored permissions"
   for (const value of [null, false, [], "asr"]) {
     const result = await call(
       "/admin/users",
-      { username: "invalid-services", services: value },
+      { display_name: "invalid-services", services: value },
       { access: admin },
     );
     assert.equal(result.status, 422);
@@ -602,7 +632,7 @@ async function lunaUser(name, monthly = 10000000) {
   const uid = (
     await db
       .prepare(
-        "INSERT INTO users(username,password,role,services,rpm,daily_requests,concurrency,must_change,created,luna_monthly_tokens) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id",
+        "INSERT INTO users(display_name,password,role,services,rpm,daily_requests,concurrency,must_change,created,luna_monthly_tokens) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id",
       )
       .bind(
         name,
@@ -887,7 +917,7 @@ test("Luna budgets can only be changed by admins and new account defaults are ap
   );
   const r = await call(
     "/admin/users",
-    { username: "luna-default" },
+    { display_name: "luna-default" },
     { access: admin },
   );
   assert.equal(r.body.user.luna_monthly_tokens, 2500000);
@@ -1160,7 +1190,7 @@ test("admin unified defaults, user overview, IP metadata and atomic bulk ban/unb
   );
   const created = await call(
     "/admin/users",
-    { username: "unified-defaults" },
+    { display_name: "unified-defaults" },
     { access: admin },
   );
   assert.equal(created.body.user.openai_asr_daily_seconds, 2400);
@@ -1170,7 +1200,9 @@ test("admin unified defaults, user overview, IP metadata and atomic bulk ban/unb
   });
   assert.equal(overview.status, 200);
   assert.ok(overview.body.matching >= 1);
-  const target = overview.body.users.find((u) => u.username === "audio-asr");
+  const target = overview.body.users.find(
+    (u) => u.display_name === "audio-asr",
+  );
   assert.equal(target.last_request_ip, "203.0.113.9");
   assert.equal(target.password, undefined);
   const details = await call(
@@ -2125,7 +2157,8 @@ test("Network statistics retain successful and failed cohorts and bundles exclud
     "password-for-normal",
     { must_change: 0 },
   );
-  const login = await store.login(
+  const login = await fixtureLogin(
+    store,
     "network-normal",
     "password-for-normal",
     "network-normal-ip",
@@ -2409,7 +2442,8 @@ test("Project inbox is the default destination without self HTTP calls and read 
     { role: "admin", must_change: 0 },
   );
   const access = (
-    await store.login(
+    await fixtureLogin(
+      store,
       "inbox-admin-two",
       "inbox-test-password",
       "inbox-admin-ip",
@@ -2420,7 +2454,8 @@ test("Project inbox is the default destination without self HTTP calls and read 
   });
   assert.ok(theirs.body.items.some((n) => n.id === "site-message-fixture"));
   const normal = (
-    await store.login(
+    await fixtureLogin(
+      store,
       "network-normal",
       "password-for-normal",
       "inbox-normal-ip",
@@ -2444,10 +2479,11 @@ test("Customer notices isolate recipients, synchronize reads and enforce draft l
       must_change: 0,
     }),
     b = await store.createUser("notice-reader-b", password, { must_change: 0 });
-  const access = (await store.login(a.username, password, "notice-a-ip")).body
-      .access_token,
-    other = (await store.login(b.username, password, "notice-b-ip")).body
-      .access_token;
+  const access = (
+      await fixtureLogin(store, a.display_name, password, "notice-a-ip")
+    ).body.access_token,
+    other = (await fixtureLogin(store, b.display_name, password, "notice-b-ip"))
+      .body.access_token;
   const draft = {
     title: "服务公告 <script>",
     body: "纯文本\n新功能已上线",
@@ -2544,8 +2580,9 @@ test("Customer notices isolate recipients, synchronize reads and enforce draft l
   const c = await store.createUser("notice-late-reader", password, {
       must_change: 0,
     }),
-    late = (await store.login(c.username, password, "notice-late-ip")).body
-      .access_token;
+    late = (
+      await fixtureLogin(store, c.display_name, password, "notice-late-ip")
+    ).body.access_token;
   assert.equal(
     (await call("/account/notices", undefined, { access: late })).body.total,
     1,
@@ -2931,12 +2968,16 @@ test("Legacy logins remind email binding; verified accounts skip reminders and b
     b = await store.createUser("binding-other-user", password, {
       must_change: 0,
     });
-  const login = await call("/auth/login", { username: a.username, password });
+  const login = await call("/auth/login", {
+    display_name: a.display_name,
+    password,
+  });
   assert.equal(login.body.user.email_binding_required, true);
   assert.equal(login.body.user.email, email);
   const access = login.body.access_token,
-    other = (await store.login(b.username, password, "binding-other-ip")).body
-      .access_token;
+    other = (
+      await fixtureLogin(store, b.display_name, password, "binding-other-ip")
+    ).body.access_token;
   assert.equal(
     (await call("/account/me", undefined, { access })).body.user
       .email_binding_required,
@@ -3025,7 +3066,7 @@ test("Legacy logins remind email binding; verified accounts skip reminders and b
     assert.equal(result.status, 200);
     assert.equal(result.body.user.email_binding_required, false);
     assert.ok(result.body.user.email_verified_at);
-    assert.equal(result.body.user.username, a.username);
+    assert.equal(result.body.user.display_name, a.display_name);
     assert.equal(
       (
         await store.first(
@@ -3048,8 +3089,9 @@ test("Legacy logins remind email binding; verified accounts skip reminders and b
       (await call("/account/email/code", { email }, { access })).status,
       409,
     );
-    const again = await store.login(
-      a.username,
+    const again = await fixtureLogin(
+      store,
+      a.display_name,
       password,
       "binding-login-again",
     );
@@ -3099,7 +3141,12 @@ test("Legacy logins remind email binding; verified accounts skip reminders and b
       must_change: 1,
     });
     const mandatoryToken = (
-      await store.login(mandatory.username, password, "binding-must-ip")
+      await fixtureLogin(
+        store,
+        mandatory.display_name,
+        password,
+        "binding-must-ip",
+      )
     ).body.access_token;
     assert.equal(
       (
@@ -3115,8 +3162,9 @@ test("Legacy logins remind email binding; verified accounts skip reminders and b
     const c = await store.createUser("binding-race-user", password, {
         must_change: 0,
       }),
-      cToken = (await store.login(c.username, password, "binding-race-ip")).body
-        .access_token,
+      cToken = (
+        await fixtureLogin(store, c.display_name, password, "binding-race-ip")
+      ).body.access_token,
       raceEmail = "binding-race@example.net",
       raceHash = await digest(raceEmail);
     for (const u of [b, c]) {
@@ -3170,7 +3218,7 @@ test("Legacy logins remind email binding; verified accounts skip reminders and b
   assert.equal(
     (
       await store.first(
-        "SELECT email_verified_at IS NOT NULL verified FROM users WHERE username=?",
+        "SELECT email_verified_at IS NOT NULL verified FROM users WHERE email=?",
         "person@example.com",
       )
     ).verified,
@@ -3625,8 +3673,8 @@ test("Email password reset revokes all sessions, preserves keys by default and c
     services: ["qwen"],
   });
   const sessions = [
-    await store.login(user.username, "before1", "reset-ip-1"),
-    await store.login(user.username, "before1", "reset-ip-2"),
+    await fixtureLogin(store, user.display_name, "before1", "reset-ip-1"),
+    await fixtureLogin(store, user.display_name, "before1", "reset-ip-2"),
   ];
   const response = await requestPasswordReset(
     store,
@@ -3682,11 +3730,15 @@ test("Email password reset revokes all sessions, preserves keys by default and c
       status: 401,
     });
   }
-  await assert.rejects(store.login(user.username, "before1", "reset-new-ip"), {
-    status: 401,
-  });
+  await assert.rejects(
+    fixtureLogin(store, user.display_name, "before1", "reset-new-ip"),
+    {
+      status: 401,
+    },
+  );
   assert.equal(
-    (await store.login(user.username, "after1", "reset-new-ip")).body.user.id,
+    (await fixtureLogin(store, user.display_name, "after1", "reset-new-ip"))
+      .body.user.id,
     user.id,
   );
   const lease = await store.acquire(key.key, "qwen", "/v1/chat/completions");
@@ -4393,15 +4445,16 @@ test("Local model discovery works on first call without inference leases or free
   }
 });
 
-test("Original username and password can change password anonymously, revoke sessions and retain API keys", async () => {
+test("Original display_name and password can change password anonymously, revoke sessions and retain API keys", async () => {
   const store = new Store(db);
   const user = await store.createUser("credential-change", "before1", {
     must_change: 0,
     rpm: 0,
     daily_requests: 0,
   });
-  const login = await store.login(
-    user.username,
+  const login = await fixtureLogin(
+    store,
+    user.display_name,
     "before1",
     "credential-initial",
   );
@@ -4411,13 +4464,13 @@ test("Original username and password can change password anonymously, revoke ses
     days: 1,
   });
   const bad = await call("/auth/password", {
-    username: user.username,
+    display_name: user.display_name,
     current_password: "wrong",
     new_password: "after1",
   });
   assert.equal(bad.status, 401);
   const r = await call("/auth/password", {
-    username: " CREDENTIAL-CHANGE ",
+    display_name: " CREDENTIAL-CHANGE ",
     current_password: "before1",
     new_password: "after1",
   });
@@ -4429,12 +4482,18 @@ test("Original username and password can change password anonymously, revoke ses
   });
   await assert.rejects(store.session(login.cookie), { status: 401 });
   await assert.rejects(
-    store.login(user.username, "before1", "credential-old-login"),
+    fixtureLogin(store, user.display_name, "before1", "credential-old-login"),
     { status: 401 },
   );
   assert.equal(
-    (await store.login(user.username, "after1", "credential-new-login")).body
-      .user.id,
+    (
+      await fixtureLogin(
+        store,
+        user.display_name,
+        "after1",
+        "credential-new-login",
+      )
+    ).body.user.id,
     user.id,
   );
   const lease = await store.acquire(key.key, "qwen", "/v1/chat/completions");
@@ -4445,7 +4504,7 @@ test("Original username and password can change password anonymously, revoke ses
         await call(
           "/auth/password",
           {
-            username: "credential-missing",
+            display_name: "credential-missing",
             current_password: "wrong",
             new_password: "after1",
           },
@@ -4459,7 +4518,7 @@ test("Original username and password can change password anonymously, revoke ses
       await call(
         "/auth/password",
         {
-          username: "credential-missing",
+          display_name: "credential-missing",
           current_password: "wrong",
           new_password: "after1",
         },
@@ -4541,8 +4600,9 @@ test("Usage snapshot matches separate authenticated endpoints and rejects anonym
     await passwordHash("snapshot-pass"),
     user.id,
   );
-  const session = await store.login(
-    user.username,
+  const session = await fixtureLogin(
+    store,
+    user.display_name,
     "snapshot-pass",
     "snapshot-ip",
   );
@@ -4642,7 +4702,7 @@ test("Concurrent cloud requests cannot overspend a one-token personal balance", 
 
 test("Management HTML requires an administrator on every alias and cannot be cached", async () => {
   const login = await call("/auth/login", {
-    username: "admin",
+    display_name: "admin",
     password: "admin-password",
   });
   assert.equal(login.status, 200);
@@ -4761,5 +4821,342 @@ test("Partial local catalog keeps embedding and its marker on cache hits without
     globalThis.fetch = previousFetch;
     if (previousCaches === undefined) delete globalThis.caches;
     else globalThis.caches = previousCaches;
+  }
+});
+
+async function emailAccount(name, email) {
+  const store = new Store(db),
+    user = await store.createUser(name, "email-pass", {
+      must_change: 0,
+      email,
+      rpm: 0,
+      daily_requests: 0,
+    });
+  const login = await store.login(email, "email-pass", email + "-initial");
+  return { store, user, access: login.body.access_token, login };
+}
+test("Email-only identity accepts duplicate Unicode display names and keeps account IDs distinct", async () => {
+  const a = await emailAccount("共同名字", "canonical-a@example.net"),
+    b = await emailAccount("共同名字", "canonical-b@example.net");
+  assert.notEqual(a.user.id, b.user.id);
+  assert.equal(a.user.display_name, b.user.display_name);
+  for (const target of [a, b]) {
+    const r = await call(
+      "/auth/login",
+      { email: target.user.email.toUpperCase(), password: "email-pass" },
+      { headers: { "CF-Connecting-IP": target.user.email + "-second" } },
+    );
+    assert.equal(r.status, 200);
+    assert.equal(r.body.user.id, target.user.id);
+  }
+  await assert.rejects(
+    a.store.login("共同名字", "email-pass", "no-name-login"),
+    (e) => e.status === 401,
+  );
+  const obsolete = await mf.dispatchFetch("https://accounts.test/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "共同名字", password: "email-pass" }),
+  });
+  assert.equal(obsolete.status, 422);
+  await assert.rejects(
+    a.store.createUser("第三人", "email-pass", {
+      email: "CANONICAL-A@example.net",
+    }),
+    (e) => e.status === 409,
+  );
+  assert.ok(!Object.hasOwn(a.user, "username"));
+});
+test("Registration display_name is optional, repeatable and never becomes a login credential", async () => {
+  // This scenario has its own synthetic mail budget.
+  await new Store(db).run("DELETE FROM email_send_attempts");
+  const { requestRegistrationCode } = await import("../src/registration.mjs");
+  for (const [email, name] of [
+    ["repeat-display-a@example.net", "相同昵称"],
+    ["repeat-display-b@example.net", "相同昵称"],
+    ["default-display@example.net", undefined],
+  ]) {
+    let code;
+    await requestRegistrationCode(
+      new Store(db),
+      registrationEnv,
+      email,
+      email,
+      async (_c, _e, value) => {
+        code = value;
+      },
+    );
+    const r = await call(
+      "/auth/register",
+      {
+        email,
+        password: "email-pass",
+        code,
+        ...(name ? { display_name: name } : {}),
+      },
+      { headers: { "CF-Connecting-IP": email } },
+    );
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.equal(r.body.user.display_name, name ?? "用户");
+    assert.equal(r.body.user.email, email);
+    assert.ok(r.body.user.email_verified_at);
+  }
+  for (const name of [" ", "x".repeat(81), "bad\u0000name"]) {
+    const r = await call("/auth/register", {
+      email: "bad-name@example.net",
+      password: "email-pass",
+      display_name: name,
+      code: "123456",
+    });
+    assert.equal(r.status, 422);
+  }
+});
+test("Changing display name preserves ID, tokens, keys, email and notice receipts", async () => {
+  const { store, user, access, login } = await emailAccount(
+    "改名前",
+    "profile-owner@example.net",
+  );
+  const key = await store.createKey(user.id, user.id, {
+    name: "same-account",
+    services: ["qwen"],
+    days: 1,
+  });
+  const id = "d".repeat(48),
+    ts = Date.now() / 1000;
+  await store.run(
+    "INSERT INTO customer_notices(id,title,body,state,starts_at,created,updated,published_at) VALUES(?,?,?,'published',?,?,?,?)",
+    id,
+    "Synthetic identity notice",
+    "Synthetic",
+    ts - 1,
+    ts,
+    ts,
+    ts,
+  );
+  await store.run(
+    "INSERT INTO customer_notice_reads VALUES(?,?,?)",
+    id,
+    user.id,
+    ts,
+  );
+  const bad = await call(
+    "/account/profile",
+    { display_name: "改名后", current_password: "wrong" },
+    { method: "PATCH", access },
+  );
+  assert.equal(bad.status, 403);
+  const response = await call(
+    "/account/profile",
+    { display_name: "改名后", current_password: "email-pass" },
+    { method: "PATCH", access },
+  );
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+  assert.equal(response.body.user.id, user.id);
+  assert.equal(response.body.user.email, user.email);
+  assert.equal(
+    (await call("/account/me", undefined, { access })).body.user.display_name,
+    "改名后",
+  );
+  assert.equal((await store.catalogUser(key.key)).id, user.id);
+  const refreshed = await store.refresh(login.body.refresh_token);
+  assert.ok(refreshed.access_token);
+  assert.equal((await store.access(refreshed.access_token)).id, user.id);
+  assert.equal(
+    (
+      await store.first(
+        "SELECT read_at FROM customer_notice_reads WHERE user_id=? AND notice_id=?",
+        user.id,
+        id,
+      )
+    ).read_at,
+    ts,
+  );
+  assert.equal(
+    (await store.login(user.email, "email-pass", "profile-owner-after")).body
+      .user.id,
+    user.id,
+  );
+  const next = await call(
+    "/account/profile",
+    { display_name: "再改一次", current_password: "email-pass" },
+    { method: "PATCH", access },
+  );
+  assert.equal(next.status, 429);
+  assert.equal(next.body.error_code, "display_name_change_limited");
+  assert.equal(
+    (
+      await store.first(
+        "SELECT count(*) n FROM audit WHERE actor=? AND action='change_display_name'",
+        user.id,
+      )
+    ).n,
+    1,
+  );
+});
+test("Display name profile writes are account-authenticated, CSRF protected and race-safe", async () => {
+  const a = await emailAccount("相同昵称", "profile-race-a@example.net"),
+    b = await emailAccount("相同昵称", "profile-race-b@example.net");
+  const body = { display_name: "公共昵称", current_password: "email-pass" };
+  const key = await a.store.createKey(a.user.id, a.user.id, {
+    name: "no-profile",
+    services: ["qwen"],
+    days: 1,
+  });
+  assert.equal(
+    (await call("/account/profile", body, { method: "PATCH", access: key.key }))
+      .status,
+    401,
+  );
+  assert.equal(
+    (
+      await call(
+        "/account/profile",
+        { ...body, id: b.user.id },
+        { method: "PATCH", access: a.access },
+      )
+    ).status,
+    422,
+  );
+  const signed = await call(
+    "/auth/login",
+    { email: a.user.email, password: "email-pass" },
+    { headers: { "CF-Connecting-IP": "profile-cookie" } },
+  );
+  assert.equal(
+    (
+      await call("/account/profile", body, {
+        method: "PATCH",
+        cookie: signed.headers.get("set-cookie").split(";")[0],
+        csrf: "bad",
+      })
+    ).status,
+    403,
+  );
+  const results = await Promise.all([
+    call("/account/profile", body, {
+      method: "PATCH",
+      access: a.access,
+      headers: { "CF-Connecting-IP": "profile-a-write" },
+    }),
+    call("/account/profile", body, {
+      method: "PATCH",
+      access: b.access,
+      headers: { "CF-Connecting-IP": "profile-b-write" },
+    }),
+  ]);
+  assert.deepEqual(
+    results.map((r) => r.status),
+    [200, 200],
+  );
+  const c = await emailAccount("并发改名", "profile-race-c@example.net");
+  const race = await Promise.allSettled([
+    c.store.changeDisplayName(c.user.id, "甲", "email-pass", "profile-race-c1"),
+    c.store.changeDisplayName(c.user.id, "乙", "email-pass", "profile-race-c2"),
+  ]);
+  assert.equal(race.filter((r) => r.status === "fulfilled").length, 1);
+  assert.equal(race.find((r) => r.status === "rejected").reason.status, 429);
+});
+test("Email password changes revoke sessions, and missing login emails are assigned only by admins without verification", async () => {
+  const account = await emailAccount("邮箱改密", "email-password@example.net");
+  const changed = await call(
+    "/auth/password",
+    {
+      email: account.user.email,
+      current_password: "email-pass",
+      new_password: "new-email-pass",
+    },
+    { headers: { "CF-Connecting-IP": "email-password-ip" } },
+  );
+  assert.equal(changed.status, 200);
+  assert.equal(
+    (await call("/account/me", undefined, { access: account.access })).status,
+    401,
+  );
+  assert.equal(
+    (
+      await account.store.login(
+        account.user.email,
+        "new-email-pass",
+        "email-password-after",
+      )
+    ).body.user.id,
+    account.user.id,
+  );
+  const currentAccess = (
+    await account.store.login(
+      account.user.email,
+      "new-email-pass",
+      "email-password-current",
+    )
+  ).body.access_token;
+  const missing = await account.store.createUser(
+    "无邮箱服务账号",
+    "email-pass",
+    { must_change: 0 },
+  );
+  assert.equal(
+    (
+      await call(
+        "/admin/users/" + missing.id + "/login-email",
+        { email: "legacy-login@example.net" },
+        { method: "PUT", access: currentAccess },
+      )
+    ).status,
+    403,
+  );
+  const assigned = await call(
+    "/admin/users/" + missing.id + "/login-email",
+    { email: "legacy-login@example.net" },
+    { method: "PUT", access: admin },
+  );
+  assert.equal(assigned.status, 200);
+  assert.equal(assigned.body.user.email_verified_at, null);
+  assert.equal(assigned.body.user.id, missing.id);
+  assert.equal(
+    (
+      await account.store.login(
+        "legacy-login@example.net",
+        "email-pass",
+        "legacy-login-ip",
+      )
+    ).body.user.id,
+    missing.id,
+  );
+  assert.equal(
+    (
+      await call(
+        "/admin/users/" + missing.id + "/login-email",
+        { email: "overwrite@example.net" },
+        { method: "PUT", access: admin },
+      )
+    ).status,
+    409,
+  );
+});
+
+test("Schema maintenance blocks public requests before reading the database", async () => {
+  const maintenance = new Miniflare({
+    modules: true,
+    scriptPath: ".test-build/worker.js",
+    compatibilityDate: "2026-07-01",
+    bindings: { ACCOUNT_MAINTENANCE: "true" },
+  });
+  try {
+    for (const path of [
+      "/auth/login",
+      "/account/me",
+      "/v1/models",
+      "/admin",
+      "/healthz",
+    ]) {
+      const response = await maintenance.dispatchFetch(
+        "https://accounts.test" + path,
+      );
+      assert.equal(response.status, 503);
+      assert.equal(response.headers.get("Retry-After"), "60");
+      assert.equal((await response.json()).error_code, "maintenance");
+    }
+  } finally {
+    await maintenance.dispose();
   }
 });

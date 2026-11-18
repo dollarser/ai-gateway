@@ -2,15 +2,27 @@
 window.helixCaptcha = (() => {
   let scriptPromise = null,
     pending = null,
-    busy = false;
+    busy = false,
+    attempt = null;
   async function configuration() {
-    const r = await fetch("/auth/captcha-info", {
-        cache: "no-store",
-        credentials: "omit",
-      }),
-      v = await r.json();
-    if (!r.ok) throw new Error(v.detail || "人机验证暂不可用");
-    return v;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      const r = await fetch("/auth/captcha-info", {
+          cache: "no-store",
+          credentials: "omit",
+          signal: controller.signal,
+        }),
+        v = await r.json();
+      if (!r.ok) throw new Error(v.detail || "人机验证暂不可用");
+      return v;
+    } catch (error) {
+      if (error.name === "AbortError")
+        throw new Error("人机验证加载超时，请重试");
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
   }
   function load() {
     if (window.turnstile) return Promise.resolve();
@@ -42,35 +54,50 @@ window.helixCaptcha = (() => {
   async function getToken(action) {
     if (busy) throw new Error("请先完成当前人机验证");
     busy = true;
+    const current = (attempt = { cancelled: false });
+    const check = () => {
+      if (current.cancelled) throw new Error("人机验证已取消");
+    };
     try {
       const info = await configuration();
+      check();
       if (info.enabled === false) return undefined;
       if (!info.actions.includes(action)) throw new Error("无效的人机验证用途");
       await load();
+      check();
       const dialog = document.getElementById("captcha-dialog"),
         container = document.getElementById("captcha-widget");
       return await new Promise((resolve, reject) => {
-        let id;
+        let id,
+          settled = false;
         const finish = (token, error) => {
-          if (!pending) return;
+          if (settled) return;
+          settled = true;
           pending = null;
           if (id !== undefined) window.turnstile.remove(id);
           container.replaceChildren();
-          dialog.close();
+          if (dialog.dataset.embedded !== "true" || token) dialog.close();
           if (error) reject(error);
           else resolve(token);
         };
         pending = () => finish(null, new Error("人机验证已取消"));
-        dialog.showModal();
         try {
+          if (!dialog.open) dialog.showModal();
+          if (dialog.dataset.embedded === "true")
+            document.getElementById("captcha-page-status").hidden = true;
           id = window.turnstile.render(container, {
             sitekey: info.site_key,
             action,
-            size: "flexible",
+            size: container.clientWidth < 300 ? "compact" : "flexible",
+            retry: "never",
+            "refresh-expired": "never",
+            "refresh-timeout": "never",
             language: "zh-cn",
             callback: (token) => finish(token),
             "expired-callback": () =>
               finish(null, new Error("人机验证已过期，请重新验证")),
+            "timeout-callback": () =>
+              finish(null, new Error("人机验证超时，请重新验证")),
             "error-callback": () => {
               finish(null, new Error("人机验证失败，请重新验证"));
               return true;
@@ -81,6 +108,7 @@ window.helixCaptcha = (() => {
         }
       });
     } finally {
+      attempt = null;
       busy = false;
     }
   }
@@ -98,5 +126,11 @@ window.helixCaptcha = (() => {
     },
     { once: true },
   );
-  return { getToken };
+  return {
+    getToken,
+    cancel() {
+      if (attempt) attempt.cancelled = true;
+      pending?.();
+    },
+  };
 })();

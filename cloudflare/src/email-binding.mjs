@@ -19,9 +19,8 @@ export async function bindAccountEmail(store, env, user, rawEmail, code) {
   const email = registrationEmail(rawEmail);
   if (
     await store.first(
-      "SELECT id FROM users WHERE id<>? AND (lower(email)=? OR lower(username)=?)",
+      "SELECT id FROM users WHERE id<>? AND email=? COLLATE NOCASE",
       user.id,
-      email,
       email,
     )
   )
@@ -32,12 +31,11 @@ export async function bindAccountEmail(store, env, user, rawEmail, code) {
   try {
     results = await store.db.batch([
       store.stmt(
-        "UPDATE users SET email=?,email_verified_at=? WHERE id=? AND enabled=1 AND must_change=0 AND email_verified_at IS NULL AND NOT EXISTS(SELECT 1 FROM users other WHERE other.id<>? AND (lower(other.email)=? OR lower(other.username)=?)) AND EXISTS(SELECT 1 FROM account_email_codes c WHERE c.user_id=users.id AND c.email_hash=? AND c.id=? AND c.code_hash=? AND c.state='sent' AND c.expires>? AND c.attempts<=5)",
+        "UPDATE users SET email=?,email_verified_at=? WHERE id=? AND enabled=1 AND must_change=0 AND email_verified_at IS NULL AND NOT EXISTS(SELECT 1 FROM users other WHERE other.id<>? AND lower(other.email)=?) AND EXISTS(SELECT 1 FROM account_email_codes c WHERE c.user_id=users.id AND c.email_hash=? AND c.id=? AND c.code_hash=? AND c.state='sent' AND c.expires>? AND c.attempts<=5)",
         email,
         ts,
         user.id,
         user.id,
-        email,
         email,
         proof.emailHash,
         proof.id,
@@ -68,7 +66,7 @@ export async function bindAccountEmail(store, env, user, rawEmail, code) {
     user: publicUser(
       await store.first("SELECT * FROM users WHERE id=?", user.id),
     ),
-    message: "邮箱已验证并绑定，原登录名和密码保持不变",
+    message: "邮箱已验证并绑定，可用于登录和找回密码",
   };
 }
 export async function accountEmailRoute(request, store, env, user, body, send) {

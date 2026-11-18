@@ -3,7 +3,7 @@
 当前协议以 [客户端交接](client-handoff.md) 为准；账号和 API 域名分别为 accounts.hilex.me、api.hilex.me。公网 `/docs` 已关闭，接口说明随项目版本维护。
 
 1. `GET https://accounts.hilex.me/auth/registration-info` 检查注册状态；用户主动调用 `POST /auth/registration-code` 发送验证码，再向 `POST /auth/register` 提交 email、password、六位字符串 code。验证码十分钟有效，至少六十秒后重发。
-2. `POST /auth/login`，提交 username、password，保存 access_token、refresh_token 及有效期。
+2. `POST /auth/login`，提交 email、password（唯一邮箱登录），保存 access_token、refresh_token 及有效期。
 3. 模型请求使用 `Authorization: Bearer <access_token>` 和客户端配置的 `X-Client-ID`。管理员 API Key 可以单独调用，不需要 Client ID。
 4. access token 过期后串行刷新并原子替换 token 对；不要并发复用旧 refresh token。
 5. 登录后若 user.must_change 为真（当前通常为1），先改初始密码并重新登录；user.email_binding_required=true 时展示可稍后处理的绑定提醒，流程见[邮箱验证](email-verification.md)。
@@ -36,3 +36,5 @@ TTS CLI 接收 PCM 流、缓存跨分片的半个样本，在客户端封装 WAV
 云模型目录只读鉴权，不计入个人日请求数或并发名额。通知按账号持久化检查时间，每天最多自动检查一次，手动进入列表可刷新；不因重新登录或恢复前台无条件请求。历史明细可能归档，不用有限的请求数组计算完整累计用量。最新错误表、资源策略和验收清单统一见[客户端交接](client-handoff.md)。
 
 邮箱自助找回密码接口及 API Key 处理策略见[密码找回](password-recovery.md)，账号服务地址不变。
+
+用户显示字段为 `display_name`，允许重复；身份与缓存隔离只使用固定 `id`。新注册可选填显示名，修改显示名使用 `PATCH /account/profile`，详情见 [邮箱身份迁移](client-migration-email-identity.md)。

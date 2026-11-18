@@ -14,7 +14,7 @@ export async function diagnosticsRoute(request, store, user, readBody) {
     const id = queryId(url.searchParams.get("request_id") ?? "");
     return reply(
       await store.all(
-        "SELECT r.*,u.username FROM requests r JOIN users u ON u.id=r.user_id WHERE r.request_id=? OR r.id=? OR r.client_request_id=? ORDER BY r.started DESC LIMIT 100",
+        "SELECT r.*,u.display_name FROM requests r JOIN users u ON u.id=r.user_id WHERE r.request_id=? OR r.id=? OR r.client_request_id=? ORDER BY r.started DESC LIMIT 100",
         id,
         id,
         id,
@@ -30,7 +30,7 @@ export async function diagnosticsRoute(request, store, user, readBody) {
     )
       throw new Denied(422, "核对筛选字段无效");
     const rows = await store.all(
-      `SELECT q.*,u.username,r.request_id,r.status,r.ended,r.ended+60 adjustable_after,r.model FROM (SELECT 'luna' kind,'tokens' unit,lease,user_id,month period,reserved_tokens reserved_units,charged_tokens charged_units,settled,response_id,reserved_cost_nanos,charged_cost_nanos FROM luna_usage UNION ALL SELECT 'audio' kind,CASE kind WHEN 'asr' THEN 'milliseconds' ELSE 'characters' END unit,lease,user_id,day period,reserved_units,charged_units,settled,response_id,NULL,NULL FROM audio_usage) q JOIN users u ON u.id=q.user_id JOIN requests r ON r.id=q.lease WHERE (?='all' OR q.settled=?) AND (? IS NULL OR q.user_id=?) ORDER BY r.started DESC LIMIT 100`,
+      `SELECT q.*,u.display_name,r.request_id,r.status,r.ended,r.ended+60 adjustable_after,r.model FROM (SELECT 'luna' kind,'tokens' unit,lease,user_id,month period,reserved_tokens reserved_units,charged_tokens charged_units,settled,response_id,reserved_cost_nanos,charged_cost_nanos FROM luna_usage UNION ALL SELECT 'audio' kind,CASE kind WHEN 'asr' THEN 'milliseconds' ELSE 'characters' END unit,lease,user_id,day period,reserved_units,charged_units,settled,response_id,NULL,NULL FROM audio_usage) q JOIN users u ON u.id=q.user_id JOIN requests r ON r.id=q.lease WHERE (?='all' OR q.settled=?) AND (? IS NULL OR q.user_id=?) ORDER BY r.started DESC LIMIT 100`,
       state,
       state === "settled" ? 1 : 0,
       uid,

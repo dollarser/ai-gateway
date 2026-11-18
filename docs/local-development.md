@@ -49,3 +49,5 @@ bash scripts/start.sh
 ```
 
 使用 API Key 时不需要后端私有 Client ID 文件。使用登录令牌时通过 `SPEECH_CLIENT_ID` 提供服务约定的 Client ID。
+
+Worker/D1 的现行邮箱身份结构见 [邮箱身份迁移](client-migration-email-identity.md)。历史 SQLite 工具继续只用于隔离测试和旧数据导出，不承载本次生产账号契约；不要将生产静态账号门户指向历史 SQLite 登录接口。

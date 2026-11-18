@@ -11,6 +11,11 @@
 .notification-card{border:1px solid #d7e1dd;border-radius:8px;padding:16px;margin:12px 0}.notification-card.unread{border-left:4px solid #177b67;background:#f2f8f5}.notification-card h3{margin:0 0 8px}.notification-card p{font-size:13px}#alert-badge{background:#b33434;color:#fff;border-radius:12px;padding:1px 6px;font-size:12px}
 #notice-badge{background:#b33434;color:#fff;border-radius:12px;padding:1px 6px;font-size:12px}#notice-form textarea{width:100%;box-sizing:border-box;font:inherit;padding:10px;border:1px solid #b9cbc3;border-radius:6px}#notice-items p,#notice-admin-items p,#notice-items h3,#notice-admin-items h3{overflow-wrap:anywhere}
 
-dialog{border:1px solid #b5c8ce;border-radius:12px;max-width:calc(100vw - 24px);padding:24px}dialog::backdrop{background:#103b4070}#captcha-widget{min-width:260px;margin:16px 0}
+dialog{border:1px solid #b5c8ce;border-radius:12px;max-width:calc(100vw - 24px);padding:24px}dialog::backdrop{background:#103b4070}#captcha-dialog{width:min(400px,calc(100vw - 24px));min-width:0;max-height:calc(100vh - 24px);max-height:calc(100dvh - 24px);overflow-y:auto;padding:clamp(12px,4vw,24px);overflow-wrap:anywhere}#captcha-widget{min-width:0;width:100%;margin:16px 0}#captcha-dialog button{white-space:normal;overflow-wrap:anywhere}
 
 .auth-actions{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px 16px;border-top:1px solid #e3e9ec;margin-top:24px;padding-top:12px}.auth-signup{display:flex;align-items:center;gap:4px;font-size:13px;color:#6b8088}.auth-link{background:transparent;color:#116c61;min-height:44px;padding:8px 4px;font-size:14px;font-weight:600;border-radius:4px}.auth-link:hover{background:#edf6f3;filter:none;text-decoration:underline;text-underline-offset:4px}.auth-link:focus-visible{outline:2px solid #35a38e;outline-offset:3px}.auth-footer{display:flex;justify-content:center;align-items:center;gap:4px;border-top:1px solid #e3e9ec;margin:24px 0 0;padding-top:12px;font-size:13px;color:#6b8088}@media(max-width:360px){.auth-actions{gap:0 8px}.auth-signup{font-size:12px}}
+
+/* Native embedded verification uses one card, including errors and retry. */
+html:has(body.captcha-embedded), body.captcha-embedded { background: transparent; }
+.captcha-embedded #captcha-dialog { position:fixed;inset:auto;margin:0;transform:translate(-50%,-50%);box-sizing: border-box; max-width: calc(100vw - 24px); overflow: auto; }
+.captcha-embedded #captcha-dialog::backdrop { background: transparent; }

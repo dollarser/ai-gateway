@@ -22,7 +22,7 @@ defaults = dict(
 users = [
     dict(
         id=i,
-        username=name,
+        display_name=name,
         role="admin" if i == 1 else "user",
         enabled=1,
         services=["qwen", "asr", "tts"],
@@ -61,7 +61,7 @@ answers = []
 ledger = {
     "kind": "audio",
     "lease": "test-lease",
-    "username": "demo",
+    "display_name": "demo",
     "period": "2026-11-15",
     "settled": 0,
     "reserved_units": 3,
@@ -430,13 +430,18 @@ def handle(route):
     if path == "/admin/users" and req.method == "POST":
         return respond(
             {
-                "user": dict(username=data["username"]),
+                "user": dict(display_name=data["display_name"]),
                 "temporary_password": "temporary-test",
                 "message": "created",
             }
         )
     if path == "/admin/audit":
         return respond([{"action": "test"}])
+    if path == "/account/profile":
+        assert data["current_password"] == "test-password"
+        users[0]["display_name"] = data["display_name"]
+        users[0]["display_name_updated_at"] = 9999999999
+        return respond({"user": users[0], "message": "显示名已更新"})
     raise RuntimeError("Unexpected browser API path " + path)
 
 
@@ -519,7 +524,8 @@ with sync_playwright() as p:
     page.wait_for_timeout(100)
     assert all(u["openai_tts_daily_characters"] == 400000 for u in users)
     page.locator("#create-user>summary").click()
-    page.locator("#user-form [name=username]").fill("browser-test")
+    page.locator("#user-form [name=display_name]").fill("browser-test")
+    page.locator("#user-form [name=email]").fill("browser-test@example.net")
     page.locator("#user-form button").click()
     page.locator("#user-secret").wait_for(state="visible")
     assert "temporary-test" in page.locator("#user-secret").inner_text()
@@ -651,6 +657,16 @@ with sync_playwright() as p:
     page.locator('a[href="/"]').click()
     page.locator("#usage-panel").wait_for(state="visible")
     page.locator('[data-tab="notices"]').click()
+    page.locator('[data-tab="profile"]').click()
+    page.locator("#display_name-form [name=display_name]").fill("demo")
+    page.locator("#display_name-form [name=current_password]").fill("test-password")
+    page.locator("#display_name-form button").click()
+    page.get_by_text("显示名已更新", exact=True).wait_for()
+    assert page.locator("#identity").inner_text() == "demo"
+    assert (
+        page.locator("#display_name-form [name=current_password]").input_value() == ""
+    )
+    assert page.locator("#display_name-form button").is_disabled()
     page.locator("#email-binding-reminder").wait_for(state="visible")
     page.locator("#open-email-binding").click()
     assert (
@@ -661,6 +677,9 @@ with sync_playwright() as p:
     assert page.locator("#email-binding-form").is_hidden()
     assert page.locator("#email-binding-reminder").is_visible()
     page.locator("#open-email-binding").click()
+    page.locator("#verify-binding").click()
+    page.locator("#send-binding-code").wait_for(state="visible")
+    page.wait_for_function("!document.getElementById('send-binding-code').disabled")
     page.locator("#send-binding-code").click()
     page.get_by_text("绑定验证码已发送", exact=True).wait_for()
     assert page.locator("#send-binding-code").is_disabled()
@@ -668,13 +687,19 @@ with sync_playwright() as p:
     page.locator("#email-binding-form button").filter(has_text="验证并绑定").click()
     page.locator("#email-binding-reminder").wait_for(state="hidden")
     page.reload()
-    page.locator("#notices-panel").wait_for(state="visible")
+    page.locator("#usage-panel").wait_for(state="visible")
     assert page.locator("#email-binding-reminder").is_hidden()
     logged_in[0] = False
     page.goto("https://accounts.test/")
     page.locator("#show-register").click()
     page.locator("#registration-code-fields").wait_for(state="visible")
     page.locator("#register-form [name=email]").fill("synthetic@example.net")
+    page.locator("#register-form [name=display_name]").fill("demo")
+    page.locator("#verify-registration").click()
+    page.locator("#send-registration-code").wait_for(state="visible")
+    page.wait_for_function(
+        "!document.getElementById('send-registration-code').disabled"
+    )
     page.locator("#send-registration-code").click()
     page.get_by_text("验证码已发送，请检查邮箱", exact=True).wait_for()
     assert page.locator("#send-registration-code").is_disabled()
@@ -684,7 +709,10 @@ with sync_playwright() as p:
     page.locator("#register-form button").filter(has_text="注册账号").click()
     page.get_by_text("注册成功，请登录", exact=True).wait_for()
     assert any(
-        path == "/auth/register" and b.get("code") == "123456" for path, b in mutations
+        path == "/auth/register"
+        and b.get("code") == "123456"
+        and b.get("display_name") == "demo"
+        for path, b in mutations
     )
     assert not errors, errors
     browser.close()

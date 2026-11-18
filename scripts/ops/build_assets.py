@@ -7,6 +7,7 @@ import shutil
 ROOT = Path(__file__).resolve().parents[2]
 FILES = (
     "captcha.js",
+    "email-verification.js",
     "captcha-page.js",
     "password-reset.js",
     "app.js",

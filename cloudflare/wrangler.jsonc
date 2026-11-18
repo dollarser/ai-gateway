@@ -16,6 +16,7 @@
     },
   ],
   "vars": {
+    "ACCOUNT_MAINTENANCE": "false",
     "ACCOUNT_ORIGIN": "https://accounts.hilex.me",
     "API_HOST": "api.hilex.me",
     "LOCAL_MODELS_ENABLED": "true",

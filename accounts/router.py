@@ -52,6 +52,7 @@ def static(name: str):
         "notice-manager.js",
         "notices.js",
         "captcha.js",
+        "email-verification.js",
         "password-reset.js",
         "style.css",
     }:

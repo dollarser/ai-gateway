@@ -31,7 +31,7 @@
 
 1. `GET /auth/registration-info`：新增 email_verification（是否要求验证码）、email_verification_available（邮件配置是否完整，不代表实际投递健康）字段；registration_enabled 仍表示注册策略。
 2. `POST /auth/registration-code`，JSON `{"email":"user@example.net","captcha_token":"本次人机验证token"}`：发送六位验证码。成功返回通用 message、expires_in=600、retry_after=60；已有账号返回相同响应但不会再次发送注册验证码，不直接暴露账号存在状态。
-3. `POST /auth/register`，JSON `{"email":"user@example.net","password":"用户密码","code":"012345"}`：验证码保留字符串形式以免丢失前导零。成功 201，随后正常登录。code 必须属于同一邮箱；邮件和登录名按去除两端空白、转小写归一化。
+3. `POST /auth/register`，JSON `{"email":"user@example.net","password":"用户密码","code":"012345"}`：验证码保留字符串形式以免丢失前导零。成功 201，随后正常登录。code 必须属于同一邮箱；登录邮箱按去除两端空白、转小写归一化，显示名保留 Unicode 大小写且可重复。
 
 网页已经包含邮箱验证码输入、发送按钮和六十秒倒计时。外部客户端必须同步增加验证码 UI 和上述 code 字段；旧客户端直接提交邮箱和密码会被拒绝。注册验证码只在注册用途有效，不能用于改密、登录或重置密码。邮箱找回密码使用[独立的重置验证码流程](password-recovery.md)。
 
@@ -61,18 +61,18 @@
 
 登录响应的 `user` 和 `GET /account/me` 的 `user` 新增 `email_binding_required`。未验证账号（包括历史邮箱注册、历史用户名账号、管理员创建的未验证账号）为 true，已完成注册邮箱验证或绑定验证的账号为 false。标记按 email_verified_at 动态计算，不批量修改历史账号，不自动向历史邮箱发信。
 
-网页登录或恢复会话后展示“请验证并绑定邮箱”提醒。已有 email 时预填；没有 email 但用户名为邮箱时预填用户名。用户可展开验证表单，也可选择稍后绑定；提醒不阻断模型调用、用量查询等既有功能。首次强制改密的账号先修改初始密码，再绑定。绑定成功后提醒隐藏，下次登录不再提示。
+网页登录或恢复会话后展示“请验证并绑定邮箱”提醒。只预填已有 email，不能从显示名推断邮箱。没有邮箱的历史服务账号由管理员按 ID 设置登录邮箱。用户可展开验证表单，也可选择稍后绑定；提醒不阻断模型调用、用量查询等既有功能。首次强制改密的账号先修改初始密码，再绑定。绑定成功后提醒隐藏，下次登录不再提示。
 
 ### 客户端接口
 
 基础地址 https://accounts.hilex.me ，要求账号登录 access_token；网页 Cookie 写操作要求 CSRF。模型 API Key 不支持这些账号接口。
 
 - `POST /account/email/code`，JSON `{"email":"user@example.net","captcha_token":"本次人机验证token"}`：向目标邮箱发送六位验证码，返回 message、expires_in=600、retry_after=60。
-- `POST /account/email/bind`，JSON `{"email":"user@example.net","code":"012345"}`：校验验证码并完成绑定，返回 `{"user":{...},"message":"邮箱已验证并绑定，原登录名和密码保持不变"}`。返回的 user.email_binding_required=false，并包含 email_verified_at。
+- `POST /account/email/bind`，JSON `{"email":"user@example.net","code":"012345"}`：校验验证码并完成绑定，返回 `{"user":{...},"message":"邮箱已验证并绑定，可用于登录和找回密码"}`。返回的 user.email_binding_required=false，并包含 email_verified_at。
 
-绑定只更新联系邮箱和验证时间，**不修改登录名、密码、权限、额度或现有登录令牌**，也不会自动将新绑定邮箱设为另一个登录别名。历史登录名是邮箱的账号，换填不同的联系邮箱后仍使用原登录名登录。此功能用于补绑定，已验证账号不提供修改邮箱操作。
+绑定更新登录邮箱和验证时间，**不修改账号 ID、显示名、密码、权限、额度或现有登录令牌**。绑定成功后使用返回的 email 登录；显示名不参与登录。此功能用于补绑定，已验证账号不提供修改邮箱操作。
 
-除注册已有的邮箱错误码外，新增：409 email_in_use（被其他账号的用户名或邮箱占用）、409 email_already_verified（已完成绑定）、409 email_binding_changed（并发导致账号或挑战状态改变，刷新后重试）、403 password_change_required（先改初始密码）。客户端应在收到 true 时提示用户绑定，允许稍后处理；用户主动打开表单后才发送验证码，不能在每次登录时自动发邮件。
+除注册已有的邮箱错误码外，新增：409 email_in_use（被其他账号的邮箱占用）、409 email_already_verified（已完成绑定）、409 email_binding_changed（并发导致账号或挑战状态改变，刷新后重试）、403 password_change_required（先改初始密码）。客户端应在收到 true 时提示用户绑定，允许稍后处理；用户主动打开表单后才发送验证码，不能在每次登录时自动发邮件。
 
 ### 隔离、限频和并发
 

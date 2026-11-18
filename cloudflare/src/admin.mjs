@@ -200,7 +200,7 @@ export async function adminRoute(request, store, u, readBody, env = {}) {
     )
       throw new Denied(422, "筛选或分页参数无效");
     const where =
-      "(?='' OR u.username LIKE ? OR coalesce(u.email,'') LIKE ? OR coalesce(u.last_login_ip,'') LIKE ? OR EXISTS(SELECT 1 FROM requests r WHERE r.user_id=u.id AND r.client_ip=?)) AND (?='all' OR u.enabled=?)";
+      "(?='' OR u.display_name LIKE ? OR coalesce(u.email,'') LIKE ? OR coalesce(u.last_login_ip,'') LIKE ? OR EXISTS(SELECT 1 FROM requests r WHERE r.user_id=u.id AND r.client_ip=?)) AND (?='all' OR u.enabled=?)";
     const args = [
       q,
       "%" + q + "%",

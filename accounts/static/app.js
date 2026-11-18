@@ -1,9 +1,9 @@
 "use strict";
-let registrationRequiresCode = false,
-  registrationCodeTimer = null;
+let registrationRequiresCode = false;
 async function tab(name) {
-  if (!["usage", "password", "notices"].includes(name)) name = "usage";
-  for (const item of ["usage", "password", "notices"])
+  if (!["usage", "profile", "password", "notices"].includes(name))
+    name = "usage";
+  for (const item of ["usage", "profile", "password", "notices"])
     $(item + "-panel").hidden = item !== name;
   history.replaceState(
     null,
@@ -26,12 +26,13 @@ async function refresh() {
     "credential-password",
   ])
     $(id).hidden = true;
-  $("password-form").elements.username.value = user.username;
+  $("password-form").elements.email.value = user.email || "";
   $("workspace").hidden = false;
-  $("identity").textContent = user.username;
+  $("identity").textContent = user.display_name;
   $("page-title").textContent = "我的账号";
   $("admin-link").hidden = user.role !== "admin" || !!user.must_change;
   refreshEmailBinding();
+  refreshProfile();
   if (user.must_change) {
     message("首次登录，请先修改初始密码。");
     await tab("password");
@@ -198,7 +199,7 @@ $("login-form").addEventListener(
   run(async (e) => {
     const f = e.target;
     const data = await api("/auth/login", "POST", {
-      username: f.elements.username.value,
+      email: f.elements.email.value,
       password: f.elements.password.value,
     });
     csrf = data.csrf;
@@ -226,7 +227,7 @@ $("password-form").addEventListener(
   run(async (e) => {
     const f = e.target;
     await api("/auth/password", "POST", {
-      username: f.elements.username.value,
+      email: f.elements.email.value,
       current_password: f.elements.current_password.value,
       new_password: f.elements.new_password.value,
     });
@@ -271,6 +272,9 @@ $("register-form").addEventListener(
       throw new Error("两次输入的密码不一致");
     const data = await api("/auth/register", "POST", {
       email,
+      ...(f.elements.display_name.value.trim()
+        ? { display_name: f.elements.display_name.value.trim() }
+        : {}),
       password: f.elements.password.value,
       ...(registrationRequiresCode
         ? { code: f.elements.code.value.trim() }
@@ -279,66 +283,28 @@ $("register-form").addEventListener(
     f.reset();
     $("register").hidden = true;
     $("login").hidden = false;
-    $("login-form").elements.username.value = email;
+    $("login-form").elements.email.value = email;
     $("login-form").elements.password.focus();
     message(data.message);
   }),
 );
 
-$("send-registration-code").addEventListener(
-  "click",
-  run(async () => {
-    const f = $("register-form"),
-      button = $("send-registration-code");
-    if (!f.elements.email.reportValidity()) return;
-    button.disabled = true;
-    try {
-      const data = await api("/auth/registration-code", "POST", {
-        email: f.elements.email.value,
-        captcha_token: await window.helixCaptcha.getToken("registration_code"),
-      });
-      message(data.message);
-      let remaining = 60;
-      button.textContent = remaining + " 秒后重发";
-      clearInterval(registrationCodeTimer);
-      registrationCodeTimer = setInterval(() => {
-        remaining--;
-        button.textContent =
-          remaining > 0 ? remaining + " 秒后重发" : "发送验证码";
-        if (remaining <= 0) {
-          clearInterval(registrationCodeTimer);
-          button.disabled = false;
-        }
-      }, 1000);
-      f.elements.code.focus();
-    } catch (e) {
-      button.disabled = false;
-      throw e;
-    }
-  }),
-);
-
-let bindingOwner = null,
-  bindingCodeTimer = null;
+let bindingOwner = null;
 function refreshEmailBinding() {
   const required = user.email_binding_required === true;
   $("email-binding-reminder").hidden = !required;
   $("open-email-binding").disabled = !!user.must_change;
   $("email-binding-hint").textContent = user.must_change
     ? "请先修改初始密码，再验证并绑定邮箱。"
-    : "您的账号尚未验证邮箱，请完成绑定以接收账号通知。绑定不会改变登录名，也不影响当前服务使用。";
+    : "请验证邮箱，以便使用找回密码和接收账号通知。验证后使用该邮箱登录，账号 ID、密码和服务权限保持不变。";
   if (!required) {
     $("email-binding-form").reset();
     $("email-binding-form").hidden = true;
-    clearInterval(bindingCodeTimer);
-    $("send-binding-code").disabled = false;
-    $("send-binding-code").textContent = "发送验证码";
+    window.emailVerification.clearAll();
   }
   if (bindingOwner !== user.id) {
     bindingOwner = user.id;
-    $("email-binding-form").elements.email.value =
-      user.email ||
-      (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(user.username) ? user.username : "");
+    $("email-binding-form").elements.email.value = user.email || "";
   }
 }
 $("open-email-binding").addEventListener("click", () => {
@@ -349,38 +315,6 @@ $("defer-email-binding").addEventListener("click", () => {
   $("email-binding-form").hidden = true;
   $("email-binding-form").elements.code.value = "";
 });
-$("send-binding-code").addEventListener(
-  "click",
-  run(async () => {
-    const f = $("email-binding-form"),
-      button = $("send-binding-code");
-    if (!f.elements.email.reportValidity()) return;
-    button.disabled = true;
-    try {
-      const data = await api("/account/email/code", "POST", {
-        email: f.elements.email.value,
-        captcha_token: await window.helixCaptcha.getToken("email_binding_code"),
-      });
-      message(data.message);
-      let remaining = 60;
-      button.textContent = remaining + " 秒后重发";
-      clearInterval(bindingCodeTimer);
-      bindingCodeTimer = setInterval(() => {
-        remaining--;
-        button.textContent =
-          remaining > 0 ? remaining + " 秒后重发" : "发送验证码";
-        if (remaining <= 0) {
-          clearInterval(bindingCodeTimer);
-          button.disabled = false;
-        }
-      }, 1000);
-      f.elements.code.focus();
-    } catch (e) {
-      button.disabled = false;
-      throw e;
-    }
-  }),
-);
 $("email-binding-form").addEventListener(
   "submit",
   run(async (e) => {
@@ -393,3 +327,47 @@ $("email-binding-form").addEventListener(
     message(result.message);
   }),
 );
+
+function refreshProfile() {
+  $("profile-display_name").textContent = user.display_name;
+  $("profile-email").textContent =
+    (user.email || "尚未设置") +
+    (user.email_verified_at
+      ? "（已验证）"
+      : "（未验证，请验证后使用找回密码）");
+  const until = (Number(user.display_name_updated_at) || 0) + 86400;
+  const cooling = user.display_name_updated_at > 0 && Date.now() / 1000 < until;
+  $("display_name-form").querySelector("button").disabled =
+    !!user.must_change || cooling;
+  $("display_name-change-info").textContent = user.must_change
+    ? "请先修改初始密码。"
+    : cooling
+      ? "下次可修改时间：" + date(until)
+      : "显示名允许重复，登录使用邮箱。";
+  $("display_name-form").elements.display_name.value = user.display_name;
+  $("display_name-form").elements.current_password.value = "";
+}
+$("display_name-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target,
+    button = e.submitter;
+  if (button) button.disabled = true;
+  try {
+    const data = await api("/account/profile", "PATCH", {
+      display_name: f.elements.display_name.value,
+      current_password: f.elements.current_password.value,
+    });
+    user = data.user;
+    $("identity").textContent = user.display_name;
+    refreshProfile();
+    message(data.message);
+  } catch (error) {
+    message(error.message, true);
+  } finally {
+    f.elements.current_password.value = "";
+    if (button)
+      button.disabled =
+        !!user.must_change ||
+        Number(user.display_name_updated_at) > Date.now() / 1000 - 86400;
+  }
+});

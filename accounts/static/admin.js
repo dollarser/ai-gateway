@@ -104,17 +104,25 @@
       if (!u.enabled) tr.classList.add("disabled-user");
       const check = document.createElement("input");
       check.type = "checkbox";
-      check.setAttribute("aria-label", "选择 " + u.username);
+      check.setAttribute(
+        "aria-label",
+        "选择 " + u.display_name + " (#" + u.id + ")",
+      );
       check.checked = state.selected.has(u.id);
       check.onchange = () => {
-        if (check.checked) state.selected.set(u.id, u.username);
+        if (check.checked)
+          state.selected.set(u.id, u.display_name + " (#" + u.id + ")");
         else state.selected.delete(u.id);
         selection();
       };
       const selectTd = document.createElement("td");
       selectTd.append(check);
       tr.append(selectTd);
-      const name = cell(tr, u.username);
+      const name = cell(tr, u.display_name);
+      const identifier = document.createElement("small");
+      identifier.textContent =
+        "#" + u.id + " · " + (u.email || "未设置登录邮箱");
+      name.append(identifier);
       const badge = document.createElement("small");
       badge.className =
         "status-badge " + (u.enabled ? "status-ok" : "status-disabled");
@@ -164,7 +172,7 @@
               !confirm(
                 (u.enabled ? "封禁" : "解封") +
                   "账号 " +
-                  u.username +
+                  u.display_name +
                   "？" +
                   (u.enabled ? "封禁会撤销现有登录，会保留历史用量。" : ""),
               )
@@ -177,6 +185,20 @@
         ),
         action("密钥", () => keys(u)),
       );
+      if (!u.email)
+        controls.append(
+          action("设置登录邮箱", async () => {
+            const email = prompt(
+              "为账号 #" + u.id + " 设置登录邮箱（不会标记已验证）",
+            );
+            if (!email) return;
+            await api("/admin/users/" + u.id + "/login-email", "PUT", {
+              email,
+            });
+            await load();
+            message("登录邮箱已设置，请账号本人验证邮箱");
+          }),
+        );
       if (u.id !== user.id)
         controls.append(
           action(
@@ -184,7 +206,9 @@
             async () => {
               if (
                 !confirm(
-                  "重置 " + u.username + " 的密码，并撤销全部会话和 API Key？",
+                  "重置 " +
+                    u.display_name +
+                    " 的密码，并撤销全部会话和 API Key？",
                 )
               )
                 return;
@@ -193,7 +217,7 @@
                 "POST",
               );
               $("user-password").textContent =
-                u.username + "\n临时密码：" + r.temporary_password;
+                u.display_name + "\n临时密码：" + r.temporary_password;
               $("user-secret").hidden = false;
               message(r.message);
             },
@@ -220,7 +244,8 @@
     f.hidden = false;
     $("edit-container").hidden = false;
     f.elements.id.value = u.id;
-    $("editing-name").textContent = "设置账号：" + u.username;
+    $("editing-name").textContent =
+      "设置账号：" + u.display_name + " (#" + u.id + ")";
     for (const k of quotaFields) f.elements[k].value = u[k];
     for (const box of f.querySelectorAll("[name=services]"))
       box.checked = u.services.includes(box.value);
@@ -228,7 +253,8 @@
   }
   async function keys(u) {
     keyTarget = u.id;
-    $("key-owner").textContent = "API Key：" + u.username;
+    $("key-owner").textContent =
+      "API Key：" + u.display_name + " (#" + u.id + ")";
     for (const box of $("key-services").querySelectorAll("input")) {
       box.disabled = !u.services.includes(box.value);
       box.checked = !box.disabled;
@@ -243,7 +269,8 @@
         encodeURIComponent($("admin-filter-form").elements.day.value),
     );
     $("user-details").hidden = false;
-    $("details-title").textContent = u.username + " · 账号详情";
+    $("details-title").textContent =
+      u.display_name + " (#" + u.id + ") · 账号详情";
     $("details-quotas").textContent =
       "RPM " +
       (u.rpm || "不限") +
@@ -511,7 +538,7 @@
       const tr = document.createElement("tr");
       cell(
         tr,
-        r.username +
+        r.display_name +
           " / " +
           (r.unit === "milliseconds"
             ? "识别毫秒"
@@ -625,7 +652,8 @@
     };
     $("notification-status").textContent =
       "默认接收位置：站内告警中心 " +
-      (notifications.destination_url ?? "https://accounts.hilex.me/admin#alerts") +
+      (notifications.destination_url ??
+        "https://accounts.hilex.me/admin#alerts") +
       (notifications.external_configured
         ? "；另已配置外部 HTTPS Webhook（" +
           notifications.destination_host +

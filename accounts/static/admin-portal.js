@@ -40,7 +40,7 @@ async function refresh() {
     location.replace("/");
     return;
   }
-  $("identity").textContent = user.username + " · 管理员";
+  $("identity").textContent = user.display_name + " · 管理员";
   for (const field of document.querySelectorAll(
     "[name=luna_monthly_tokens],[name=openai_asr_daily_seconds],[name=openai_tts_daily_characters]",
   )) {
@@ -153,7 +153,8 @@ $("user-form").addEventListener(
   run(async (e) => {
     const f = e.target;
     const data = await api("/admin/users", "POST", {
-      username: f.elements.username.value,
+      display_name: f.elements.display_name.value,
+      email: f.elements.email.value,
       services: selected(f),
       rpm: Number(f.elements.rpm.value),
       daily_requests: Number(f.elements.daily_requests.value),
@@ -161,7 +162,13 @@ $("user-form").addEventListener(
       ...lunaFields(f),
     });
     $("user-password").textContent =
-      data.user.username + "\n临时密码：" + data.temporary_password;
+      data.user.display_name +
+      " (#" +
+      data.user.id +
+      ") · " +
+      (data.user.email || "未设置邮箱") +
+      "\n临时密码：" +
+      data.temporary_password;
     $("user-secret").hidden = false;
     await loadUsers();
     message(data.message);

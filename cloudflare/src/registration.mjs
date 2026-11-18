@@ -115,9 +115,8 @@ export async function requestRegistrationCode(
       failure(409, "邮箱已验证绑定", "email_already_verified");
     if (
       await store.first(
-        "SELECT id FROM users WHERE id<>? AND (lower(email)=? OR lower(username)=?)",
+        "SELECT id FROM users WHERE id<>? AND email=? COLLATE NOCASE",
         bindingUser.id,
-        email,
         email,
       )
     )
@@ -168,8 +167,7 @@ export async function requestRegistrationCode(
   if (
     !bindingUser &&
     (await store.first(
-      "SELECT id FROM users WHERE username=? OR email=?",
-      email,
+      "SELECT id FROM users WHERE email=? COLLATE NOCASE",
       email,
     ))
   ) {

@@ -60,7 +60,7 @@ with sync_playwright() as p:
     page.route("**/*", respond)
     page.clock.install()
     page.goto("https://accounts.test/")
-    page.locator("#login-form [name=username]").fill("owner@example.net")
+    page.locator("#login-form [name=email]").fill("owner@example.net")
     page.locator("#show-password-reset").click()
     form = page.locator("#password-reset-form")
     expect(page.locator("#password-reset")).to_be_visible()
@@ -69,11 +69,13 @@ with sync_playwright() as p:
     assert abs(box["x"] + box["width"] / 2 - 640) < 3
     expect(page.locator(".client-download")).to_be_visible()
     expect(form.locator("[name=revoke_api_keys]")).not_to_be_checked()
+    page.locator("#verify-password-reset").click()
+    expect(page.locator("#send-password-reset-code")).to_be_enabled()
     page.locator("#send-password-reset-code").click()
     expect(page.locator("#send-password-reset-code")).to_be_disabled()
     expect(page.locator("#send-password-reset-code")).to_have_text("60 秒后重发")
     page.clock.run_for(61000)
-    expect(page.locator("#send-password-reset-code")).to_be_enabled()
+    expect(page.locator("#send-password-reset-code")).to_be_disabled()
     form.locator("[name=code]").fill("012345")
     form.locator("[name=new_password]").fill("sixsix")
     form.locator("[name=confirm_password]").fill("mismatch")
@@ -106,7 +108,7 @@ with sync_playwright() as p:
     page.locator("#show-credential-password").click()
     credential = page.locator("#credential-password-form")
     expect(page.locator("#credential-password")).to_be_visible()
-    credential.locator("[name=username]").fill("original-user")
+    credential.locator("[name=email]").fill("original-user@example.net")
     credential.locator("[name=current_password]").fill("old-pass")
     credential.locator("[name=new_password]").fill("new123")
     credential.locator("[name=confirm_password]").fill("new123")
@@ -115,7 +117,7 @@ with sync_playwright() as p:
     assert calls[-1] == (
         "/auth/password",
         {
-            "username": "original-user",
+            "email": "original-user@example.net",
             "current_password": "old-pass",
             "new_password": "new123",
         },

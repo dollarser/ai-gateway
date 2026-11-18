@@ -21,7 +21,7 @@ OpenAI 出站支持部署时切换 Worker 直连或本机转发，当前默认�
 
 | 接口 | 请求与处理 |
 |---|---|
-| `POST /auth/login` | `{ "username":"原登录名", "password":"用户密码" }`；保存返回的 token 对、有效期和 `user` |
+| `POST /auth/login` | `{ "email":"登录邮箱", "password":"用户密码" }`；保存返回的 token 对、有效期和 `user` |
 | `GET /account/me` | 获取最新 `user`；适合启动恢复会话或进入账号页，不要在每次推理前额外调用 |
 | `POST /auth/refresh` | `{ "refresh_token":"当前刷新令牌" }`；成功后原子替换 access_token、refresh_token 和有效期 |
 | `POST /account/password` | `{ "current_password":"旧密码", "new_password":"新密码" }`；成功后重新登录 |
@@ -49,11 +49,11 @@ OpenAI 出站支持部署时切换 Worker 直连或本机转发，当前默认�
 
 ### 历史账号
 
-登录返回的 `user.email_binding_required=true` 或 `/account/me` 中同名标记为 true 时展示可稍后处理的提醒。预填 `user.email`；为空且 `user.username` 是邮箱时可预填用户名。
+登录返回的 `user.email_binding_required=true` 或 `/account/me` 中同名标记为 true 时展示可稍后处理的提醒。只预填 `user.email`；显示名不能推导邮箱。无邮箱账号先由管理员按 ID 设置登录邮箱。
 
 - 用户主动发送：`POST /account/email/code`，提交 `{ "email":"user@example.net" }`。
 - 完成绑定：`POST /account/email/bind`，提交 `{ "email":"user@example.net","code":"012345" }`。
-- 成功后用返回的 user 更新状态并隐藏提醒。**绑定不修改原登录名和密码，也不新增邮箱登录别名**；不要覆盖客户端保存的原登录名。
+- 成功后用返回的 user 更新状态并隐藏提醒。**验证绑定后的 email 就是登录邮箱**；更新客户端保存的邮箱。账号 ID、密码、权限与既有令牌不变。
 
 不得在登录时自动发绑定邮件；注册和绑定验证码不能互换，绑定码也不能跨账号使用。已验证账号的换绑不是当前补绑定接口的用途。详细错误与限频见 [邮箱验证及绑定](email-verification.md)。发信服务的具体供应商属于服务端配置，客户端不保存 SMTP 凭据。
 
@@ -169,7 +169,7 @@ Chat 带工具时客户端使用 `reasoning_effort:"none"`，网关也会做兼�
 | 403、password_change_required | 展示封禁、权限或先改密提示，不自动重试 |
 | email_verification_required / email_verification_invalid | 输入六位码或重新获取，保留用户输入的邮箱 |
 | email_rate_limited | 至少遵守Retry-After，不自动循环发信 |
-| email_in_use / email_already_verified / email_binding_changed | 提示占用或刷新账号状态，不覆盖原登录名 |
+| email_in_use / email_already_verified / email_binding_changed | 提示占用或刷新账号状态，不按显示名猜测邮箱 |
 | email_delivery_unavailable / registration_disabled | 提示发信服务异常或暂停注册，不跳过验证码 |
 | provider_auth_failed / provider_credit_exhausted | 联系管理员；不清除用户登录状态 |
 | provider_region_restricted | 提示上游地区限制，不反复登录或自动重试 |
@@ -377,3 +377,17 @@ Response 非成功时读取 errorBody 并按服务端 error_code 分支，不能
 ## 网页个人账号与管理控制台
 
 个人账号页为 https://accounts.hilex.me/ ，管理控制台为 https://accounts.hilex.me/admin 。普通用户没有管理入口，管理员在个人页可进入控制台。管理页面使用同一登录会话并独立校验管理员角色。安卓等客户端继续使用原账号与模型 API，无需修改认证或模型调用路径；客户端的个人通知仍使用 `/account/notices`，不访问管理页面或 `/admin/*`。
+
+## 托管人机验证页自动启动
+
+`/auth/captcha?action=...` 首次进入自动启动一次 Turnstile 挑战，原生客户端需在加载前注册可信来源的 `HelixCaptcha` 消息桥。失败、取消、过期或超时后仅提供“重新验证”，不会自动重试；挑战成功只返回一次性 proof，不自动发送邮件。客户端返回原流程后，由用户手动发送注册、找回密码或绑定邮箱的验证码。
+
+proof 仅保存在内存，过期、取消、改邮箱、切换用途、离页或任何发送尝试后均清除，不能跨请求复用。服务端继续校验用途、域名、有效性和防重放；不会放宽验证要求。窄屏验证弹窗根据实际内容宽度使用 compact/flexible，字体放大时可纵向滚动。本次服务端静态构建和模拟浏览器测试不等同于安卓 Release 构建、真实设备 Turnstile 验证或真实邮件闭环验收。
+
+网页账号中心现已与安卓统一为“完成人机验证 → 手动发送验证码”。验证成功不自动发码；发送按钮只有当前邮箱、用途及账号对应的内存 proof 有效时可用。修改邮箱、切换流程、离开/隐藏页面、过期或任何发送尝试后清除 proof，失败后也必须重新验证；发送冷却结束不代表凭据恢复有效。
+
+安卓托管验证页现采用单张透明宿主卡片：加载、挑战、失败与重试均在同一 dialog 中。成功仍发送 `captcha-completed`；用户点击取消或触发网页 Escape 时发送 `{"type":"captcha-cancelled","action":"本次用途"}`，本次流程结束，客户端关闭验证窗口且丢弃凭据。安卓已对接取消事件；接收端仍须按可信来源、主框架和本次用途校验，忽略已结束流程的迟到消息。网页自行处理可视视口 resize/scroll、键盘遮挡及滚动，不要求原生计算卡片高度；普通账号网页验证弹窗保持原模式。
+
+## 邮箱登录与可重复显示名
+
+账号契约已改为唯一邮箱登录、`display_name` 可重复显示、固定 `id` 关联。登录请求用 `{email,password}`，匿名旧密码修改用 `{email,current_password,new_password}`；不保留 `username` 别名。注册可选填 `display_name`，资料修改用 `PATCH /account/profile`。客户端字段及历史账号处理详见 [邮箱身份迁移文档](client-migration-email-identity.md)，以该文档替代旧的用户名登录示例。

@@ -21,7 +21,14 @@ import { sendRegistrationEmail } from "./mail.mjs";
 import { noticesRoute } from "./notices.mjs";
 import { enqueueAlerts, deliverNotifications } from "./notifications.mjs";
 import { monitor, maintenance } from "./operations.mjs";
-import { Store, Denied, SERVICES, publicUser, day } from "./store.mjs";
+import {
+  Store,
+  Denied,
+  SERVICES,
+  publicUser,
+  day,
+  normalizeDisplayName,
+} from "./store.mjs";
 import { digest, equal, now, token, passwordHash } from "./crypto.mjs";
 import { budgetValue, lunaUsage, lunaCatalog, proxyLuna } from "./luna.mjs";
 import {
@@ -345,6 +352,7 @@ async function route(request, env, ctx) {
       p === "/static/notice-manager.js" ||
       p === "/static/password-reset.js" ||
       p === "/static/captcha.js" ||
+      p === "/static/email-verification.js" ||
       p === "/static/captcha-page.js" ||
       p === "/auth/captcha" ||
       p === "/static/style.css" ||
@@ -410,10 +418,19 @@ async function route(request, env, ctx) {
     );
   }
   if (p === "/auth/register" && method === "POST") {
-    const b = validate(await body(request), ["email", "password", "code"]);
+    const b = validate(await body(request), [
+      "email",
+      "password",
+      "code",
+      "display_name",
+    ]);
     text(b.email, 3, 254);
     text(b.password, 6, 128);
     const email = registrationEmail(b.email);
+    const display_name =
+      b.display_name === undefined || b.display_name === ""
+        ? "用户"
+        : normalizeDisplayName(b.display_name);
     const emailVerification = verificationEnabled(env)
       ? await verifyRegistrationCode(store, env, email, b.code)
       : null;
@@ -422,7 +439,7 @@ async function route(request, env, ctx) {
       "register",
       email,
     );
-    const user = await store.createUser(email, b.password, {
+    const user = await store.createUser(display_name, b.password, {
       email,
       emailVerification,
       must_change: 0,
@@ -476,11 +493,11 @@ async function route(request, env, ctx) {
     });
   }
   if (p === "/auth/login" && method === "POST") {
-    const b = validate(await body(request), ["username", "password"]);
-    text(b.username, 3, 254);
+    const b = validate(await body(request), ["email", "password"]);
+    const email = registrationEmail(b.email);
     text(b.password, 1, 128);
     const r = await store.login(
-      b.username,
+      email,
       b.password,
       request.headers.get("CF-Connecting-IP") || "local",
     );
@@ -538,6 +555,22 @@ async function route(request, env, ctx) {
     return json(await audioUsage(store, u.id));
   if (p === "/account/me" && method === "GET")
     return json({ user: publicUser(u), csrf: bearer(request) ? null : u.csrf });
+  if (p === "/account/profile" && method === "PATCH") {
+    const b = validate(await body(request), [
+      "display_name",
+      "current_password",
+    ]);
+    const updated = await store.changeDisplayName(
+      u.id,
+      b.display_name,
+      text(b.current_password, 1, 128),
+      request.headers.get("CF-Connecting-IP") || "local",
+    );
+    return json({
+      user: updated,
+      message: "显示名已更新，登录邮箱和账号 ID 不变",
+    });
+  }
   if (p === "/account/password" && method === "POST") {
     const b = validate(await body(request), [
       "current_password",
@@ -632,7 +665,8 @@ async function route(request, env, ctx) {
   if (p === "/admin/users" && method === "POST") {
     const b = quotas(
       validate(await body(request), [
-        "username",
+        "display_name",
+        "email",
         "luna_monthly_tokens",
         ...AUDIO_FIELDS,
         "services",
@@ -641,8 +675,8 @@ async function route(request, env, ctx) {
         "concurrency",
       ]),
     );
-    text(b.username, 3, 64);
-    if (!/^[a-zA-Z0-9_.-]+$/.test(b.username)) fail(422, "用户名无效");
+    b.display_name = normalizeDisplayName(b.display_name ?? "用户");
+    if (b.email !== undefined) b.email = registrationEmail(b.email);
     if (b.services !== undefined) {
       services(b.services);
       if (!b.services.length) fail(422, "至少一个服务");
@@ -650,11 +684,48 @@ async function route(request, env, ctx) {
     audioQuotas(b);
     if (b.luna_monthly_tokens !== undefined) budgetValue(b.luna_monthly_tokens);
     const temporary_password = token();
-    const user = await store.createUser(b.username, temporary_password, {
+    const user = await store.createUser(b.display_name, temporary_password, {
       ...b,
       actor: u.id,
     });
     return json({ user, temporary_password, message: "首次登录必须修改密码" });
+  }
+  const missingEmail = p.match(/^\/admin\/users\/(\d+)\/login-email$/);
+  if (missingEmail && method === "PUT") {
+    const b = validate(await body(request), ["email"]),
+      uid = Number(missingEmail[1]);
+    const email = registrationEmail(b.email);
+    let results;
+    try {
+      results = await store.db.batch([
+        store.stmt(
+          "UPDATE users SET email=?,email_verified_at=NULL WHERE id=? AND email IS NULL",
+          email,
+          uid,
+        ),
+        store.stmt(
+          "INSERT INTO audit(actor,action,target,ts) SELECT ?,'set_login_email',?,? WHERE changes()=1",
+          u.id,
+          String(uid),
+          now(),
+        ),
+      ]);
+    } catch (error) {
+      if (String(error).includes("UNIQUE")) {
+        const e = new Denied(409, "邮箱已被使用");
+        e.code = "email_in_use";
+        throw e;
+      }
+      throw error;
+    }
+    if (!results[0].meta.changes)
+      fail(409, "账号不存在或已经设置邮箱，不能覆盖已有邮箱");
+    return json({
+      user: publicUser(
+        await store.first("SELECT * FROM users WHERE id=?", uid),
+      ),
+      message: "登录邮箱已设置，账号本人仍需完成邮箱验证码验证",
+    });
   }
   const match = p.match(/^\/admin\/users\/(\d+)(\/reset-password)?$/);
   if (match) {
@@ -763,6 +834,21 @@ async function route(request, env, ctx) {
 }
 export default {
   async fetch(request, env, ctx) {
+    const path = new URL(request.url).pathname;
+    // Planned schema cutovers block new public work, while existing signed
+    // internal settlements may complete and preserve usage accounting.
+    if (env.ACCOUNT_MAINTENANCE === "true" && !path.startsWith("/internal/"))
+      return json(
+        {
+          detail: "账号结构升级中，请稍后重试",
+          error_code: "maintenance",
+          retryable: true,
+          ready: false,
+          release: env.RELEASE_SHA ?? null,
+        },
+        503,
+        { "Retry-After": "60" },
+      );
     try {
       return await route(request, env, ctx);
     } catch (e) {
@@ -833,6 +919,7 @@ export default {
     }
   },
   async scheduled(event, env, ctx) {
+    if (env.ACCOUNT_MAINTENANCE === "true") return;
     const store = new Store(env.DB);
     ctx.waitUntil(
       (async () => {

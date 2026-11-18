@@ -5,6 +5,15 @@ export class Denied extends Error {
     this.status = status;
   }
 }
+export function normalizeDisplayName(value) {
+  const name = typeof value === "string" ? value.normalize("NFC").trim() : "";
+  if (!name || [...name].length > 80 || /[\p{C}]/u.test(name)) {
+    const e = new Denied(422, "显示名须为 1–80 个可见字符");
+    e.code = "display_name_invalid";
+    throw e;
+  }
+  return name;
+}
 export const SERVICES = ["asr", "qwen", "tts"];
 export const day = () =>
   new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
@@ -52,7 +61,7 @@ export class Store {
       ).value,
     );
   }
-  async createUser(username, password, options = {}) {
+  async createUser(display_name, password, options = {}) {
     const encoded = await passwordHash(password);
     const o = {
       role: "user",
@@ -64,6 +73,7 @@ export class Store {
       email: null,
       ...options,
     };
+    if (o.email !== null) o.email = o.email.trim().toLowerCase();
     const lunaDefaults = JSON.parse(
       (
         await this.first(
@@ -83,12 +93,12 @@ export class Store {
     try {
       const verification = o.emailVerification;
       const insert = this.stmt(
-        "INSERT INTO users(username,password,role,services,rpm,daily_requests,concurrency,must_change,created,email,luna_monthly_tokens,openai_asr_daily_seconds,openai_tts_daily_characters,email_verified_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?" +
+        "INSERT INTO users(display_name,password,role,services,rpm,daily_requests,concurrency,must_change,created,email,luna_monthly_tokens,openai_asr_daily_seconds,openai_tts_daily_characters,email_verified_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?" +
           (verification
             ? " WHERE EXISTS(SELECT 1 FROM registration_codes WHERE email_hash=? AND id=? AND code_hash=? AND state='sent' AND expires>? AND attempts<=5)"
             : "") +
           " RETURNING *",
-        username.toLowerCase(),
+        normalizeDisplayName(display_name),
         encoded,
         o.role,
         JSON.stringify(o.services),
@@ -124,7 +134,11 @@ export class Store {
         }
       } else row = await insert.first();
     } catch (e) {
-      if (String(e).includes("UNIQUE")) throw new Denied(409, "账号已存在");
+      if (String(e).includes("UNIQUE")) {
+        const error = new Denied(409, "邮箱已被使用");
+        error.code = "email_in_use";
+        throw error;
+      }
       throw e;
     }
     await this.audit(options.actor ?? null, "create_user", row.id);
@@ -208,15 +222,66 @@ export class Store {
       },
     };
   }
-  async login(username, password, ip) {
-    await this.rateLimit(ip, "login", username);
-    const u = await this.first(
-      "SELECT * FROM users WHERE username=?",
-      username.trim().toLowerCase(),
+  async findLoginUser(email) {
+    if (typeof email !== "string" || !email.includes("@")) return null;
+    return this.first(
+      "SELECT * FROM users WHERE email=? COLLATE NOCASE",
+      email.trim().toLowerCase(),
     );
+  }
+  async changeDisplayName(uid, value, currentPassword, ip) {
+    const display_name = normalizeDisplayName(value),
+      u = await this.first("SELECT * FROM users WHERE id=?", uid);
+    await this.rateLimit(ip, "login", "account:" + uid);
+    if (!u || !u.enabled || !(await checkPassword(currentPassword, u.password)))
+      throw new Denied(403, "当前密码错误");
+    if (u.must_change) throw new Denied(403, "请先修改初始密码");
+    if (display_name === u.display_name) return publicUser(u);
+    const ts = now(),
+      cutoff = ts - 86400;
+    const limited = () => {
+      const e = new Denied(429, "显示名每 24 小时可修改一次");
+      e.code = "display_name_change_limited";
+      e.retryable = false;
+      return e;
+    };
+    if (u.display_name_updated_at > cutoff) throw limited();
+    const result = await this.db.batch([
+      this.stmt(
+        "UPDATE users SET display_name=?,display_name_updated_at=? WHERE id=? AND password=? AND enabled=1 AND must_change=0 AND (display_name_updated_at=0 OR display_name_updated_at<=?)",
+        display_name,
+        ts,
+        uid,
+        u.password,
+        cutoff,
+      ),
+      this.stmt(
+        "INSERT INTO audit(actor,action,target,ts) SELECT ?,'change_display_name',?,? WHERE changes()=1",
+        uid,
+        JSON.stringify({
+          user_id: uid,
+          from: u.display_name,
+          to: display_name,
+        }),
+        ts,
+      ),
+    ]);
+    if (!result[0].meta.changes) {
+      const latest = await this.first(
+        "SELECT display_name_updated_at FROM users WHERE id=?",
+        uid,
+      );
+      if (latest?.display_name_updated_at > cutoff) throw limited();
+      throw new Denied(409, "账号状态已变化，请刷新后重试");
+    }
+    return publicUser(await this.first("SELECT * FROM users WHERE id=?", uid));
+  }
+  async login(email, password, ip) {
+    const u = await this.findLoginUser(email);
+    await this.rateLimit(ip, "login", u ? "account:" + u.id : email);
     const dummy = "00000000000000000000000000000000:" + "0".repeat(128);
     const valid = await checkPassword(password, u?.password ?? dummy);
-    if (!u || !valid || !u.enabled) throw new Denied(401, "用户名或密码错误");
+    if (!u || !valid || !u.enabled) throw new Denied(401, "邮箱或密码错误");
     const cookie = token(),
       csrf = token(),
       family = token(),
