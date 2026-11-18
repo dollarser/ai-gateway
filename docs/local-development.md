@@ -51,3 +51,9 @@ bash scripts/start.sh
 使用 API Key 时不需要后端私有 Client ID 文件。使用登录令牌时通过 `SPEECH_CLIENT_ID` 提供服务约定的 Client ID。
 
 Worker/D1 的现行邮箱身份结构见 [邮箱身份迁移](client-migration-email-identity.md)。历史 SQLite 工具继续只用于隔离测试和旧数据导出，不承载本次生产账号契约；不要将生产静态账号门户指向历史 SQLite 登录接口。
+
+## 历史实现隔离
+
+旧 Python 账号实现已移入 `legacy/accounts/`；数据目录仍是私有 `accounts/data`，未搬迁或重新导入。显式本地模式只提供旧 API，不挂载 `/`、`/admin` 或门户静态资源。现行邮箱登录、注册、人机验证及换邮箱均以 Worker/D1 为准，不应使用本地旧 API 验收客户端。
+
+完整浏览器门禁：`.venv-dev/bin/python -m scripts.ops.check_browsers`。与 CI 使用同一入口，覆盖管理员隔离、找回密码、人机验证和换邮箱；测试拦截邮件及账号请求，不向真实用户发信。

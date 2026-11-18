@@ -8,7 +8,7 @@ import wave
 from dataclasses import replace
 import httpx
 import test_accounts as baseline
-from accounts.store import Denied
+from legacy.accounts.store import Denied
 from gateway.audio import transcode
 from gateway.auth import inference_metadata
 

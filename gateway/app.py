@@ -46,7 +46,7 @@ def create_app(config: Settings = settings) -> FastAPI:
         }
 
     if not config.accounts_worker_url:
-        from accounts.router import router as accounts_router
+        from legacy.accounts.router import router as accounts_router
 
         app.include_router(accounts_router)
     app.include_router(openai_relay_router)

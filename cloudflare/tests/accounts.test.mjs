@@ -5160,3 +5160,501 @@ test("Schema maintenance blocks public requests before reading the database", as
     await maintenance.dispose();
   }
 });
+
+async function emailChangeFixture(name) {
+  const store = new Store(db);
+  await store.run("DELETE FROM email_send_attempts");
+  const user = await store.createUser(name, "change-pass", {
+    email: name + "@example.net",
+    must_change: 0,
+    rpm: 0,
+    daily_requests: 0,
+  });
+  await store.run(
+    "UPDATE users SET email_verified_at=? WHERE id=?",
+    Date.now() / 1000,
+    user.id,
+  );
+  const current = await store.first("SELECT * FROM users WHERE id=?", user.id);
+  const mails = [],
+    jobs = [];
+  const send = async (_config, email, code, purpose) => {
+    mails.push({ email, code, purpose });
+  };
+  const ctx = {
+    waitUntil(job) {
+      jobs.push(job);
+    },
+  };
+  const { requestEmailChange, confirmEmailChange } =
+    await import("../src/email-change.mjs");
+  return {
+    store,
+    user: current,
+    mails,
+    jobs,
+    send,
+    ctx,
+    requestEmailChange,
+    confirmEmailChange,
+  };
+}
+test("Email change proves current password and new mailbox, preserves ID/keys/receipts and revokes every session", async () => {
+  const f = await emailChangeFixture("email-change-main"),
+    { store, user } = f;
+  const oldLogin = await store.login(
+    user.email,
+    "change-pass",
+    "email-change-main-login",
+  );
+  const key = await store.createKey(user.id, user.id, {
+    name: "retained-email-change",
+    services: ["qwen"],
+    days: 1,
+  });
+  const notice = "c".repeat(48),
+    ts = Date.now() / 1000;
+  await store.run(
+    "INSERT INTO customer_notices(id,title,body,state,starts_at,created,updated,published_at) VALUES(?,?,?,'published',?,?,?,?)",
+    notice,
+    "Synthetic change notice",
+    "body",
+    ts - 1,
+    ts,
+    ts,
+    ts,
+  );
+  await store.run(
+    "INSERT INTO customer_notice_reads VALUES(?,?,?)",
+    notice,
+    user.id,
+    ts,
+  );
+  const newEmail = "email-change-main-new@example.net";
+  const sent = await f.requestEmailChange(
+    store,
+    registrationEnv,
+    user,
+    { email: newEmail, current_password: "change-pass" },
+    "email-change-main-ip",
+    f.send,
+  );
+  assert.equal(sent.retry_after, 60);
+  assert.equal(f.mails[0].purpose, "email-change");
+  const result = await f.confirmEmailChange(
+    store,
+    registrationEnv,
+    user,
+    { email: newEmail, code: f.mails[0].code },
+    f.send,
+    f.ctx,
+  );
+  await Promise.all(f.jobs);
+  assert.equal(result.api_keys_revoked, false);
+  const updated = await store.first("SELECT * FROM users WHERE id=?", user.id);
+  assert.equal(updated.email, newEmail);
+  assert.equal(updated.id, user.id);
+  assert.equal(updated.display_name, user.display_name);
+  assert.ok(updated.email_verified_at);
+  assert.equal((await store.catalogUser(key.key)).id, user.id);
+  assert.equal(
+    (
+      await store.first(
+        "SELECT read_at FROM customer_notice_reads WHERE notice_id=? AND user_id=?",
+        notice,
+        user.id,
+      )
+    ).read_at,
+    ts,
+  );
+  await assert.rejects(
+    store.access(oldLogin.body.access_token),
+    (e) => e.status === 401,
+  );
+  await assert.rejects(
+    store.refresh(oldLogin.body.refresh_token),
+    (e) => e.status === 401,
+  );
+  await assert.rejects(
+    store.login(user.email, "change-pass", "old-email-after"),
+    (e) => e.status === 401,
+  );
+  assert.equal(
+    (await store.login(newEmail, "change-pass", "new-email-after")).body.user
+      .id,
+    user.id,
+  );
+  assert.equal(f.mails[1].purpose, "email-changed");
+  assert.equal(f.mails[1].email, user.email);
+  assert.equal(f.mails[1].code, "");
+  assert.equal(
+    (
+      await store.first(
+        "SELECT count(*) n FROM audit WHERE actor=? AND action='change_email'",
+        user.id,
+      )
+    ).n,
+    1,
+  );
+  await assert.rejects(
+    f.confirmEmailChange(
+      store,
+      registrationEnv,
+      updated,
+      { email: newEmail, code: f.mails[0].code },
+      f.send,
+      f.ctx,
+    ),
+    (e) => e.code === "email_change_invalid",
+  );
+});
+test("Email change rejects bad passwords, unverified/initial-password accounts, occupied or unchanged destinations", async () => {
+  const f = await emailChangeFixture("email-change-guards");
+  await assert.rejects(
+    f.requestEmailChange(
+      f.store,
+      registrationEnv,
+      f.user,
+      { email: "change-guard-new@example.net", current_password: "wrong" },
+      "change-guard-ip",
+      f.send,
+    ),
+    (e) => e.code === "current_password_invalid",
+  );
+  await assert.rejects(
+    f.requestEmailChange(
+      f.store,
+      registrationEnv,
+      f.user,
+      { email: f.user.email, current_password: "change-pass" },
+      "change-guard-ip",
+      f.send,
+    ),
+    (e) => e.code === "email_unchanged",
+  );
+  await f.store.run(
+    "UPDATE users SET email_verified_at=NULL WHERE id=?",
+    f.user.id,
+  );
+  await assert.rejects(
+    f.requestEmailChange(
+      f.store,
+      registrationEnv,
+      f.user,
+      {
+        email: "change-guard-new@example.net",
+        current_password: "change-pass",
+      },
+      "change-guard-ip",
+      f.send,
+    ),
+    (e) => e.code === "email_verification_required",
+  );
+  await f.store.run(
+    "UPDATE users SET email_verified_at=?,must_change=1 WHERE id=?",
+    Date.now() / 1000,
+    f.user.id,
+  );
+  await assert.rejects(
+    f.requestEmailChange(
+      f.store,
+      registrationEnv,
+      f.user,
+      {
+        email: "change-guard-new@example.net",
+        current_password: "change-pass",
+      },
+      "change-guard-ip",
+      f.send,
+    ),
+    (e) => e.code === "password_change_required",
+  );
+  assert.equal(f.mails.length, 0);
+});
+test("Email change proof is purpose/user/mailbox scoped and limited to five attempts and ten minutes", async () => {
+  const f = await emailChangeFixture("email-change-proof");
+  const target = "email-change-proof-new@example.net";
+  await f.requestEmailChange(
+    f.store,
+    registrationEnv,
+    f.user,
+    { email: target, current_password: "change-pass" },
+    "change-proof-ip",
+    f.send,
+  );
+  const other = await f.store.createUser("other-change-user", "change-pass", {
+    email: "other-change-user@example.net",
+    must_change: 0,
+  });
+  await assert.rejects(
+    f.confirmEmailChange(
+      f.store,
+      registrationEnv,
+      other,
+      { email: target, code: f.mails[0].code },
+      f.send,
+      f.ctx,
+    ),
+    (e) => e.code === "email_change_invalid",
+  );
+  await assert.rejects(
+    f.confirmEmailChange(
+      f.store,
+      registrationEnv,
+      f.user,
+      { email: "different-target@example.net", code: f.mails[0].code },
+      f.send,
+      f.ctx,
+    ),
+    (e) => e.code === "email_change_invalid",
+  );
+  const bad = f.mails[0].code === "000000" ? "111111" : "000000";
+  for (let i = 0; i < 5; i++)
+    await assert.rejects(
+      f.confirmEmailChange(
+        f.store,
+        registrationEnv,
+        f.user,
+        { email: target, code: bad },
+        f.send,
+        f.ctx,
+      ),
+      (e) => e.code === "email_change_invalid",
+    );
+  await assert.rejects(
+    f.confirmEmailChange(
+      f.store,
+      registrationEnv,
+      f.user,
+      { email: target, code: f.mails[0].code },
+      f.send,
+      f.ctx,
+    ),
+    (e) => e.code === "email_change_invalid",
+  );
+  assert.equal(
+    (await f.store.first("SELECT email FROM users WHERE id=?", f.user.id))
+      .email,
+    f.user.email,
+  );
+  const exp = await emailChangeFixture("email-change-expired");
+  const expTarget = "email-change-expired-new@example.net";
+  await exp.requestEmailChange(
+    exp.store,
+    registrationEnv,
+    exp.user,
+    { email: expTarget, current_password: "change-pass" },
+    "change-exp-ip",
+    exp.send,
+  );
+  await exp.store.run(
+    "UPDATE email_change_challenges SET expires=0 WHERE user_id=?",
+    exp.user.id,
+  );
+  await assert.rejects(
+    exp.confirmEmailChange(
+      exp.store,
+      registrationEnv,
+      exp.user,
+      { email: expTarget, code: exp.mails[0].code },
+      exp.send,
+      exp.ctx,
+    ),
+    (e) => e.code === "email_change_invalid",
+  );
+});
+test("Email change password-version and uniqueness guards roll back stale or racing confirmations", async () => {
+  const f = await emailChangeFixture("email-change-password-version");
+  const target = "email-change-version-new@example.net";
+  await f.requestEmailChange(
+    f.store,
+    registrationEnv,
+    f.user,
+    { email: target, current_password: "change-pass" },
+    "change-version-ip",
+    f.send,
+  );
+  await f.store.changePassword(f.user.id, "change-pass", "changed-password");
+  await assert.rejects(
+    f.confirmEmailChange(
+      f.store,
+      registrationEnv,
+      f.user,
+      { email: target, code: f.mails[0].code },
+      f.send,
+      f.ctx,
+    ),
+    (e) => e.code === "email_change_invalid",
+  );
+  const conflict = await emailChangeFixture("email-change-conflict");
+  const next = "email-change-conflict-new@example.net";
+  await conflict.requestEmailChange(
+    conflict.store,
+    registrationEnv,
+    conflict.user,
+    { email: next, current_password: "change-pass" },
+    "change-conflict-ip",
+    conflict.send,
+  );
+  await conflict.store.createUser("Occupied", "other-pass", { email: next });
+  await assert.rejects(
+    conflict.confirmEmailChange(
+      conflict.store,
+      registrationEnv,
+      conflict.user,
+      { email: next, code: conflict.mails[0].code },
+      conflict.send,
+      conflict.ctx,
+    ),
+    (e) => e.code === "email_in_use",
+  );
+  assert.equal(
+    (
+      await conflict.store.first(
+        "SELECT email FROM users WHERE id=?",
+        conflict.user.id,
+      )
+    ).email,
+    conflict.user.email,
+  );
+  assert.equal(
+    (
+      await conflict.store.first(
+        "SELECT state FROM email_change_challenges WHERE user_id=?",
+        conflict.user.id,
+      )
+    ).state,
+    "sent",
+  );
+  const race = await emailChangeFixture("email-change-race");
+  const final = "email-change-race-new@example.net";
+  await race.requestEmailChange(
+    race.store,
+    registrationEnv,
+    race.user,
+    { email: final, current_password: "change-pass" },
+    "change-race-ip",
+    race.send,
+  );
+  const out = await Promise.allSettled(
+    [1, 2].map(() =>
+      race.confirmEmailChange(
+        race.store,
+        registrationEnv,
+        race.user,
+        { email: final, code: race.mails[0].code },
+        race.send,
+        race.ctx,
+      ),
+    ),
+  );
+  assert.equal(out.filter((r) => r.status === "fulfilled").length, 1);
+  await Promise.all(race.jobs);
+  assert.equal(
+    (
+      await race.store.first(
+        "SELECT count(*) n FROM audit WHERE actor=? AND action='change_email'",
+        race.user.id,
+      )
+    ).n,
+    1,
+  );
+  assert.equal(
+    race.mails.filter((m) => m.purpose === "email-changed").length,
+    1,
+  );
+});
+test("Email change mail failures consume send budget, clear proof and cannot alter the account", async () => {
+  const f = await emailChangeFixture("email-change-failure");
+  const target = "email-change-failure-new@example.net";
+  await assert.rejects(
+    f.requestEmailChange(
+      f.store,
+      registrationEnv,
+      f.user,
+      { email: target, current_password: "change-pass" },
+      "change-fail-ip",
+      async () => {
+        throw new Error("private smtp details");
+      },
+    ),
+    (e) =>
+      e.code === "email_delivery_unavailable" && !e.message.includes("private"),
+  );
+  const proof = await f.store.first(
+    "SELECT state,code_hash FROM email_change_challenges WHERE user_id=?",
+    f.user.id,
+  );
+  assert.equal(proof.state, "failed");
+  assert.equal(proof.code_hash, "");
+  await assert.rejects(
+    f.requestEmailChange(
+      f.store,
+      registrationEnv,
+      f.user,
+      { email: target, current_password: "change-pass" },
+      "change-fail-ip",
+      f.send,
+    ),
+    (e) => e.code === "email_rate_limited",
+  );
+  assert.equal(
+    (await f.store.first("SELECT email FROM users WHERE id=?", f.user.id))
+      .email,
+    f.user.email,
+  );
+});
+test("Email change routes reject API keys, wrong CSRF and unavailable current-password proof", async () => {
+  const f = await emailChangeFixture("email-change-auth");
+  const key = await f.store.createKey(f.user.id, f.user.id, {
+    name: "not-account",
+    services: ["qwen"],
+    days: 1,
+  });
+  assert.equal(
+    (
+      await call(
+        "/account/email/change/code",
+        {
+          email: "change-auth-new@example.net",
+          current_password: "change-pass",
+        },
+        { access: key.key },
+      )
+    ).status,
+    401,
+  );
+  const signed = await call(
+    "/auth/login",
+    { email: f.user.email, password: "change-pass" },
+    { headers: { "CF-Connecting-IP": "change-auth-login" } },
+  );
+  assert.equal(
+    (
+      await call(
+        "/account/email/change",
+        { email: "change-auth-new@example.net", code: "123456" },
+        {
+          cookie: signed.headers.get("set-cookie").split(";")[0],
+          csrf: "wrong",
+        },
+      )
+    ).status,
+    403,
+  );
+  const noPassword = await call(
+    "/account/email/change/code",
+    { email: "change-auth-new@example.net" },
+    { access: signed.body.access_token },
+  );
+  assert.equal(noPassword.status, 422);
+  const badPassword = await call(
+    "/account/email/change/code",
+    { email: "change-auth-new@example.net", current_password: "wrong" },
+    {
+      access: signed.body.access_token,
+      headers: { "CF-Connecting-IP": "change-auth-password" },
+    },
+  );
+  assert.equal(badPassword.status, 403);
+});

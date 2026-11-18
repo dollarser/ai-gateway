@@ -82,19 +82,25 @@ export async function smtpSession(
     await write("DATA");
     await reply(354);
     const content =
-      purpose === "password-reset"
-        ? "您的 Helix AI 密码重置验证码为：" +
-          code +
-          "\n验证码 10 分钟内有效，请勿向他人透露。只有您发起找回密码时才使用此码。如果不是您本人操作，请忽略此邮件，密码不会因此改变。"
-        : purpose === "password-changed"
-          ? "您的 Helix AI 账号密码已通过邮箱验证重置，原登录会话均已退出。\n" +
-            (code === "keys-revoked"
-              ? "所有 API Key 已停用。"
-              : "API Key 保持有效。") +
-            "\n如果不是您本人操作，请立即联系管理员并检查邮箱安全。此邮件不包含密码。"
-          : "您的 Helix AI 邮箱验证码为：" +
+      purpose === "email-changed"
+        ? "您的 Helix AI 登录邮箱已变更，原登录会话均已退出，API Key 保持有效。如果不是您本人操作，请立即联系管理员并检查账号安全。"
+        : purpose === "email-change"
+          ? "您的 Helix AI 换绑邮箱验证码为：" +
             code +
-            "\n验证码 10 分钟内有效，请勿向他人透露。\n如果不是您本人操作，请忽略此邮件。";
+            "\n验证码 10 分钟内有效，请勿向他人透露。只有您发起修改登录邮箱时才使用此码；如果不是本人操作，请忽略此邮件。"
+          : purpose === "password-reset"
+            ? "您的 Helix AI 密码重置验证码为：" +
+              code +
+              "\n验证码 10 分钟内有效，请勿向他人透露。只有您发起找回密码时才使用此码。如果不是您本人操作，请忽略此邮件，密码不会因此改变。"
+            : purpose === "password-changed"
+              ? "您的 Helix AI 账号密码已通过邮箱验证重置，原登录会话均已退出。\n" +
+                (code === "keys-revoked"
+                  ? "所有 API Key 已停用。"
+                  : "API Key 保持有效。") +
+                "\n如果不是您本人操作，请立即联系管理员并检查邮箱安全。此邮件不包含密码。"
+              : "您的 Helix AI 邮箱验证码为：" +
+                code +
+                "\n验证码 10 分钟内有效，请勿向他人透露。\n如果不是您本人操作，请忽略此邮件。";
     const body = base64(content)
       .match(/.{1,76}/g)
       .join("\r\n");
@@ -106,11 +112,15 @@ export async function smtpSession(
         ">",
       "To: <" + recipient + ">",
       "Subject: Helix AI " +
-        (purpose === "password-reset"
-          ? "password reset code"
-          : purpose === "password-changed"
-            ? "password changed"
-            : "email verification code"),
+        (purpose === "email-changed"
+          ? "login email changed"
+          : purpose === "email-change"
+            ? "email change code"
+            : purpose === "password-reset"
+              ? "password reset code"
+              : purpose === "password-changed"
+                ? "password changed"
+                : "email verification code"),
       "Date: " + new Date().toUTCString(),
       "Message-ID: <" +
         crypto.randomUUID() +

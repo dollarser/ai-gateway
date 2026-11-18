@@ -20,7 +20,7 @@ async def lifespan(app):
             )
             stack.callback(store.close)
         else:
-            from accounts.store import Store
+            from legacy.accounts.store import Store
 
             settings.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
             lock = stack.enter_context((settings.data_dir / "instance.lock").open("a"))

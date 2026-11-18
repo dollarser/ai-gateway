@@ -70,7 +70,7 @@
 - `POST /account/email/code`，JSON `{"email":"user@example.net","captcha_token":"本次人机验证token"}`：向目标邮箱发送六位验证码，返回 message、expires_in=600、retry_after=60。
 - `POST /account/email/bind`，JSON `{"email":"user@example.net","code":"012345"}`：校验验证码并完成绑定，返回 `{"user":{...},"message":"邮箱已验证并绑定，可用于登录和找回密码"}`。返回的 user.email_binding_required=false，并包含 email_verified_at。
 
-绑定更新登录邮箱和验证时间，**不修改账号 ID、显示名、密码、权限、额度或现有登录令牌**。绑定成功后使用返回的 email 登录；显示名不参与登录。此功能用于补绑定，已验证账号不提供修改邮箱操作。
+绑定更新登录邮箱和验证时间，**不修改账号 ID、显示名、密码、权限、额度或现有登录令牌**。绑定成功后使用返回的 email 登录；显示名不参与登录。此接口仅用于补绑定；已验证账号使用独立的[更换登录邮箱流程](email-change.md)。
 
 除注册已有的邮箱错误码外，新增：409 email_in_use（被其他账号的邮箱占用）、409 email_already_verified（已完成绑定）、409 email_binding_changed（并发导致账号或挑战状态改变，刷新后重试）、403 password_change_required（先改初始密码）。客户端应在收到 true 时提示用户绑定，允许稍后处理；用户主动打开表单后才发送验证码，不能在每次登录时自动发邮件。
 

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 import httpx
 from fastapi.testclient import TestClient
-from accounts.store import Denied
+from legacy.accounts.store import Denied
 from gateway.remote_store import RemoteStore
 from gateway.settings import Settings
 from gateway.app import create_app

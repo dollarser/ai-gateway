@@ -77,3 +77,5 @@ ACCOUNTS_WORKER_SECRET=<与 Worker 的 INTERNAL_SECRET 相同>
 运行管理与标准发布见 [维护流程](docs/maintenance-audit.md)：开放注册限频、全站 Luna 每月 200 美元估算预算、管理员运行告警及分批保留策略均由 Worker/D1 实施。云语音 CLI 见 [当前接入入口](docs/client-integration.md)，自建语音 WebSocket 示例为 `scripts.clients.local_ws`。
 
 网络排障入口见 [地区与节点诊断](docs/network-diagnostics.md)，外部通知接收协议与私有配置见 [告警投递](docs/alert-delivery.md)。
+
+当前发布命令与故障恢复见[发布流程](docs/releasing.md)，已验证账号的邮箱换绑接口见[更换登录邮箱](docs/email-change.md)。

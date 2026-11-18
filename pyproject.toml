@@ -16,8 +16,8 @@ dependencies = [
 clients = ["numpy>=1.26", "soundfile>=0.12"]
 
 [tool.setuptools.packages.find]
-include = ["accounts*", "gateway*", "scripts*"]
-exclude = ["accounts.data*"]
+include = ["accounts*", "legacy*", "gateway*", "scripts*"]
+exclude = ["accounts.data*", "legacy.accounts.data*"]
 
 [tool.setuptools.package-data]
 accounts = ["static/*"]

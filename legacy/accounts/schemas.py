@@ -2,7 +2,7 @@
 
 import re
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
-from accounts.store import SERVICES
+from legacy.accounts.store import SERVICES
 
 
 class StrictModel(BaseModel):

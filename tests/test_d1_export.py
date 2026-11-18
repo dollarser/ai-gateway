@@ -2,7 +2,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
-from accounts.store import Store, check_password
+from legacy.accounts.store import Store, check_password
 from scripts.migrations.export_d1 import export, ROOT
 
 

@@ -4,6 +4,7 @@ export const CAPTCHA_ACTIONS = [
   "registration_code",
   "password_reset_code",
   "email_binding_code",
+  "email_change_code",
 ];
 const fail = (status, message, code) => {
   const e = new Denied(status, message);

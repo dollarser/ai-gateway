@@ -1,6 +1,6 @@
 # 邮件发送前的人机验证
 
-生产使用 Cloudflare Turnstile Managed 验证框，覆盖注册、找回密码、登录后绑定邮箱的验证码发送。服务端先验证 proof，再进入原有邮件发送预算和 SMTP 流程。登录、模型调用、最终提交邮件验证码不新增此验证，原有密码/验证码尝试限制继续生效。
+生产使用 Cloudflare Turnstile Managed 验证框，覆盖注册、找回密码、登录后绑定及更换邮箱的验证码发送。服务端先验证 proof，再进入原有邮件发送预算和 SMTP 流程。登录、模型调用、最终提交邮件验证码不新增此验证，原有密码/验证码尝试限制继续生效。
 
 ## API 契约
 
@@ -11,6 +11,7 @@
 | POST /auth/registration-code | registration_code |
 | POST /auth/password-reset/code | password_reset_code |
 | POST /account/email/code | email_binding_code |
+| POST /account/email/change/code | email_change_code |
 
 请求原 email 字段不变，新增必需的 `captcha_token`：
 
@@ -18,7 +19,7 @@
 {"email":"owner@example.net","captcha_token":"本次人机验证返回的token"}
 ```
 
-前两个接口仍匿名；绑定邮箱接口仍使用账号认证。最终 `/auth/register`、`/auth/password-reset`、`/account/email/bind` 提交的是邮件中收到的 code，不传 Turnstile token。不要把两种验证码混用。
+前两个接口仍匿名；绑定及更换邮箱接口使用账号认证。最终 `/auth/register`、`/auth/password-reset`、`/account/email/bind`、`/account/email/change` 提交的是邮件中收到的 code，不传 Turnstile token。不要把两种验证码混用。
 
 Turnstile proof 有效期五分钟，发送前新获取、每次只能使用一次。服务端检查 Siteverify success、hostname=accounts.hilex.me、对应 action，并在 D1 原子登记 token 摘要，避免跨节点并发重放。上游失败或邮件发送限频后同一个 proof 也不能重用，下一次手动发送须重新验证。不要自动重发整条发送请求。
 
@@ -46,7 +47,7 @@ https://accounts.hilex.me/auth/captcha?action=password_reset_code
 
 页面检查有效用途和原生消息桥后自动启动一次挑战，不需要再点击“开始验证”；失败、过期或超时后在同一验证卡内显示“重试”，取消回传客户端并结束本次窗口，不保留中间页。失败后，必须手动点击重试，不自动重复启动。验证弹窗按打开后的实际容器宽度选择 compact（小于 300px）或 flexible，并支持窄屏、字体放大和垂直滚动。尺寸依据 [Cloudflare 官方配置说明](https://developers.cloudflare.com/turnstile/get-started/client-side-rendering/widget-configurations/)。
 
-注册和绑定换成表格中对应 action。页面不接收任意 return_url、不把 proof 放进 URL，也不通过自定义 scheme 回传。
+注册、绑定和更换邮箱换成表格中对应 action。页面不接收任意 return_url、不把 proof 放进 URL，也不通过自定义 scheme 回传。
 
 1. 打开可信的上述 HTTPS 页面，启用 JavaScript、DOM storage，保持 WebView 默认且稳定的 UA。允许 challenges.cloudflare.com 的必要脚本/iframe/网络请求及其 about:blank、about:srcdoc 子文档；不要把主页面导航放开到任意域名。按官方要求允许此验证 WebView 使用 Cookie；不要在验证进行中清空存储。
 2. 加载页面**之前**注册 AndroidX WebKit 的 WebViewCompat.addWebMessageListener，JS 对象名为 `HelixCaptcha`，allowedOriginRules 仅包含 `https://accounts.hilex.me`。先检查 WEB_MESSAGE_LISTENER 是否可用；不支持时提示升级 Android System WebView，不回退到对任意页面公开的 addJavascriptInterface。
@@ -56,7 +57,7 @@ https://accounts.hilex.me/auth/captcha?action=password_reset_code
 {"type":"captcha-completed","action":"password_reset_code","token":"短期一次性proof"}
 ```
 
-4. 关闭验证窗口，把 proof 交回原生页面；用户手动点击发送验证码后，在发送请求的 captcha_token 中提交，再处理邮件验证码。验证页不会自动发送邮件。不要把 proof 当登录凭证或永久缓存；仅保存在内存。验证码发送接口不因为获得 proof 而需要 Authorization / X-Client-ID，绑定接口除外。
+4. 关闭验证窗口，把 proof 交回原生页面；用户手动点击发送验证码后，在发送请求的 captcha_token 中提交，再处理邮件验证码。验证页不会自动发送邮件。不要把 proof 当登录凭证或永久缓存；仅保存在内存。验证码发送接口不因为获得 proof 而需要 Authorization / X-Client-ID，绑定及更换邮箱接口除外。
 5. 用户返回/取消、加载失败、proof 过期、修改邮箱、切换用途或离开当前流程时立即丢弃内存中的 proof。账号上下文变化时也立即丢弃 proof。任何发送尝试后均清除 proof，即使发送失败或结果不明确，下次也必须重新验证。收到 proof 后也不能在多个并发发送请求中复用。
 
 桥接示意（沿用现有 AndroidX WebKit 依赖，省略页面生命周期）：
@@ -105,3 +106,5 @@ cloudflare/node_modules/.bin/wrangler secret bulk .runtime/secrets/turnstile.jso
 | 键盘、视口平移 | 主要依赖布局视口的弹窗居中 | 按 visualViewport 的大小与偏移定位，监听 resize/scroll，长内容滚动 |
 
 成功消息 `captcha-completed` 的字段不变。普通账号网页继续采用先验证、再手动发码的两步流程；发码接口、Turnstile 服务端校验、防重放、账号鉴权及模型路由不变。新增回归覆盖布局视口不变但可视视口缩小、平移和恢复的情况；模拟测试不代替安卓软键盘真机验收。
+
+更换已验证登录邮箱还要求当前密码，完整字段和会话撤销规则见[更换登录邮箱](email-change.md)。

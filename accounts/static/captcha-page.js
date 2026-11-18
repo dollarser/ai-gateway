@@ -51,6 +51,7 @@ document.addEventListener("DOMContentLoaded", () => {
           "registration_code",
           "password_reset_code",
           "email_binding_code",
+          "email_change_code",
         ].includes(action)
       ) {
         retry.disabled = true;

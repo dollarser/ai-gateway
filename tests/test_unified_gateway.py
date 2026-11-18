@@ -2,7 +2,7 @@ import asyncio
 import json
 import unittest
 import httpx
-from accounts.store import Denied
+from legacy.accounts.store import Denied
 from gateway.auth import is_local_listener
 from gateway.usage import UsageTracker
 import test_accounts as baseline

@@ -9,6 +9,7 @@ import {
   logInferenceFailure,
   failureCategory,
 } from "./worker-logs.mjs";
+import { requestEmailChange, confirmEmailChange } from "./email-change.mjs";
 import { accountEmailRoute } from "./email-binding.mjs";
 import {
   verificationEnabled,
@@ -353,6 +354,7 @@ async function route(request, env, ctx) {
       p === "/static/password-reset.js" ||
       p === "/static/captcha.js" ||
       p === "/static/email-verification.js" ||
+      p === "/static/email-change.js" ||
       p === "/static/captcha-page.js" ||
       p === "/auth/captcha" ||
       p === "/static/style.css" ||
@@ -530,6 +532,40 @@ async function route(request, env, ctx) {
     store,
     p.startsWith("/admin/") || p.startsWith("/account/keys"),
   );
+  if (p === "/account/email/change/code" && method === "POST") {
+    const b = validate(await body(request), [
+      "email",
+      "current_password",
+      "captcha_token",
+    ]);
+    await verifyCaptcha(
+      request,
+      env,
+      store,
+      b.captcha_token,
+      "email_change_code",
+    );
+    return json(
+      await requestEmailChange(
+        store,
+        env,
+        u,
+        b,
+        request.headers.get("CF-Connecting-IP") || "local",
+        sendRegistrationEmail,
+      ),
+    );
+  }
+  if (p === "/account/email/change" && method === "POST") {
+    const b = validate(await body(request), ["email", "code"]);
+    return json(
+      await confirmEmailChange(store, env, u, b, sendRegistrationEmail, ctx),
+      200,
+      {
+        "Set-Cookie": `${COOKIE}=; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`,
+      },
+    );
+  }
   if (p.startsWith("/account/email/")) {
     const response = await accountEmailRoute(
       request,
@@ -939,6 +975,10 @@ export default {
           ),
           store.stmt(
             "DELETE FROM account_email_codes WHERE user_id IN(SELECT user_id FROM account_email_codes WHERE expires<? OR state IN ('consumed','failed') LIMIT 500)",
+            now(),
+          ),
+          store.stmt(
+            "DELETE FROM email_change_challenges WHERE user_id IN (SELECT user_id FROM email_change_challenges WHERE expires<? OR state IN ('consumed','failed') LIMIT 500)",
             now(),
           ),
           store.stmt(

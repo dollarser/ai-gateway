@@ -26,6 +26,12 @@ window.emailVerification = (() => {
           "/account/email/code",
           "binding",
         ],
+        [
+          "email-change-form",
+          "email_change_code",
+          "/account/email/change/code",
+          "email-change",
+        ],
       ]) {
         const form = document.getElementById(formId);
         if (!form) continue;
@@ -51,6 +57,16 @@ window.emailVerification = (() => {
           proof.owner === identity() &&
           Date.now() < proof.expires &&
           visible();
+        function passwordValid() {
+          const field = form.elements.current_password;
+          if (!field) return true;
+          if (!field.value) {
+            message("请填写当前密码", true);
+            field.focus();
+            return false;
+          }
+          return field.reportValidity();
+        }
         function render() {
           const remaining = Math.max(
             0,
@@ -82,7 +98,8 @@ window.emailVerification = (() => {
             working ||
             sending ||
             cooldown > Date.now() ||
-            !email.reportValidity()
+            !email.reportValidity() ||
+            !passwordValid()
           )
             return;
           clearAll();
@@ -119,7 +136,7 @@ window.emailVerification = (() => {
         });
         send.addEventListener("click", async () => {
           if (sending || cooldown > Date.now()) return;
-          if (!valid() || !email.reportValidity()) {
+          if (!valid() || !email.reportValidity() || !passwordValid()) {
             clear();
             return;
           }
@@ -131,10 +148,17 @@ window.emailVerification = (() => {
           sending = true;
           render();
           try {
-            const data = await api(endpoint, "POST", {
+            const payload = {
               email: target,
               captcha_token: token,
-            });
+              ...(form.elements.current_password
+                ? { current_password: form.elements.current_password.value }
+                : {}),
+            };
+            const request = api(endpoint, "POST", payload);
+            if (form.elements.current_password)
+              form.elements.current_password.value = "";
+            const data = await request;
             cooldown =
               Date.now() + Math.max(1, Number(data.retry_after) || 60) * 1000;
             if (revision === version && identity() === owner && visible()) {
@@ -154,8 +178,11 @@ window.emailVerification = (() => {
         email.addEventListener("change", () => clear());
         form.addEventListener("reset", () => clear());
         setInterval(() => {
-          if (proof && !valid()) clear("验证已失效，请重新完成人机验证");
-          else render();
+          if (proof && !valid()) {
+            if (form.elements.current_password)
+              form.elements.current_password.value = "";
+            clear("验证已失效，请重新完成人机验证");
+          } else render();
         }, 1000);
         new MutationObserver(() => {
           if (!visible()) clear();

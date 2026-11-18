@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
-from accounts.store import Store, Denied
+from legacy.accounts.store import Store, Denied
 from gateway.auth import authorize_inference, source_ip
 from gateway.tracking import safe_id
 from gateway.usage import UsageTracker
@@ -48,7 +48,7 @@ class FailureLimitTests(unittest.TestCase):
         self.assertEqual(self.attempt(), 401)
         self.scope["client"] = ("203.0.113.5", 1111)
         now = time.time()
-        with patch("accounts.store.time.time", return_value=now + 61):
+        with patch("legacy.accounts.store.time.time", return_value=now + 61):
             self.assertEqual(self.attempt(), 401)
         stored = self.store.db.execute(
             "SELECT ip_hash FROM inference_auth_failures"

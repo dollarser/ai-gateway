@@ -2,8 +2,8 @@
 
 import hmac
 from fastapi import Depends, Request
-from accounts.store import Denied
-from accounts.auth import bearer
+from legacy.accounts.store import Denied
+from gateway.credentials import bearer
 
 COOKIE = "__Host-ai_session"
 

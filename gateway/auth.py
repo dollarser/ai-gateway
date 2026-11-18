@@ -1,6 +1,6 @@
 """Remote account-token+Client-ID or API-key-only; local trust is listener-based."""
 
-from accounts.auth import bearer
+from gateway.credentials import bearer
 import hmac
 import ipaddress
 from gateway.errors import Denied

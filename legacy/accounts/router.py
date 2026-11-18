@@ -2,12 +2,11 @@
 
 import asyncio
 import secrets
-from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
-from accounts.auth import bearer
-from accounts.dependencies import COOKIE, store, session, admin
-from accounts.schemas import (
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
+from gateway.credentials import bearer
+from legacy.accounts.dependencies import COOKIE, store, session, admin
+from legacy.accounts.schemas import (
     Login,
     Register,
     RegistrationDefaults,
@@ -17,47 +16,14 @@ from accounts.schemas import (
     UpdateUser,
     NewKey,
 )
-from accounts.store import Denied, SERVICES
+from legacy.accounts.store import Denied, SERVICES
 
-ROOT = Path(__file__).resolve().parent
 router = APIRouter()
 
 
 def validate_services(values):
     if not set(values).issubset(SERVICES):
         raise Denied(400, "未知服务权限")
-
-
-@router.get("/")
-def index():
-    return FileResponse(ROOT / "static/index.html")
-
-
-@router.get("/admin")
-@router.get("/admin/")
-@router.get("/admin/index.html")
-def admin_page(user=Depends(admin)):
-    return FileResponse(
-        ROOT / "static/admin.html", headers={"Cache-Control": "no-store"}
-    )
-
-
-@router.get("/static/{name}")
-def static(name: str):
-    if name not in {
-        "app.js",
-        "portal-common.js",
-        "admin-portal.js",
-        "admin.js",
-        "notice-manager.js",
-        "notices.js",
-        "captcha.js",
-        "email-verification.js",
-        "password-reset.js",
-        "style.css",
-    }:
-        raise HTTPException(404)
-    return FileResponse(ROOT / "static" / name)
 
 
 @router.post("/auth/login")

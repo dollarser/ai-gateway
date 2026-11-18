@@ -3,8 +3,8 @@
 import tempfile
 import unittest
 from pathlib import Path
-from accounts.store import Store, Denied
-from accounts.schemas import NewUser, UpdateUser, RegistrationDefaults
+from legacy.accounts.store import Store, Denied
+from legacy.accounts.schemas import NewUser, UpdateUser, RegistrationDefaults
 
 
 class UnlimitedQuotaTests(unittest.TestCase):

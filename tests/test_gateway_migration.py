@@ -3,7 +3,7 @@ import sqlite3
 import tempfile
 from pathlib import Path
 from datetime import datetime, timezone
-from accounts.store import Store, digest
+from legacy.accounts.store import Store, digest
 from scripts.migrations.migrate_legacy_gateway import migrate
 
 

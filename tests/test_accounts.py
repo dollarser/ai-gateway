@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 from fastapi.testclient import TestClient
 
-from accounts.store import Denied, Store
+from legacy.accounts.store import Denied, Store
 from gateway.auth import authorize_inference
 from gateway.settings import Settings
 import gateway.app as web
@@ -1020,25 +1020,9 @@ class HTTPTests(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 200, r.text)
 
-    def test_admin_html_is_separate_and_requires_admin_on_all_aliases(self):
-        personal = self.client.get("/")
-        self.assertNotIn('id="admin-panel"', personal.text)
-        self.assertNotIn('id="notice-form"', personal.text)
-        for path in ("/admin", "/admin/", "/admin/index.html"):
-            self.assertEqual(self.client.get(path).status_code, 403)
-        login = self.client.post(
-            "/auth/login",
-            json={"username": "key-manager", "password": "manager-password-123"},
-        )
-        self.assertEqual(login.status_code, 200)
-        for path in ("/admin", "/admin/", "/admin/index.html"):
-            response = self.client.get(path)
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.headers["cache-control"], "no-store")
-            self.assertIn('id="admin-panel"', response.text)
-            self.assertNotIn('id="password-form"', response.text)
-        self.client.cookies.clear()
-        self.assertEqual(self.client.get("/admin").status_code, 401)
+    def test_legacy_api_never_serves_the_production_portal(self):
+        for path in ("/", "/admin", "/admin/", "/admin/index.html", "/static/app.js"):
+            self.assertEqual(self.client.get(path).status_code,404)
 
     def test_secure_cookie_and_public_static(self):
         r = self.client.post(
@@ -1050,7 +1034,7 @@ class HTTPTests(unittest.TestCase):
         self.assertIn("SameSite=strict", cookie)
         r = self.client.get("/")
         self.assertIn("frame-ancestors 'none'", r.headers["content-security-policy"])
-        self.assertEqual(self.client.get("/static/app.js").status_code, 200)
+        self.assertEqual(self.client.get("/static/app.js").status_code, 404)
 
 
 if __name__ == "__main__":

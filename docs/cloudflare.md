@@ -107,3 +107,5 @@ npm run check
 静态资源源文件仍在 accounts/static；部署目录改为 `.runtime/portal-assets`，只由 scripts/ops/build_assets.py 生成公开文件。npm dev/deploy/check/test 的前置脚本会自动构建；直接调用 Wrangler 前先运行 `python3 scripts/ops/build_assets.py`，不要将整个 .runtime 作为 assets.directory。标准release通过worker-tests构建后部署，版本不变时文件名稳定，内容改变自动变更哈希。
 
 迁移0016回填全站月消费、每日语音汇总及事务触发器。旧Worker的写入/结算仍会同步更新汇总，允许迁移和Worker发布之间存在在途请求。发布过程先私有备份、验证恢复、应用迁移，再运行 `python -m scripts.ops.check_spend_totals --remote`，通过才继续部署。发现差异停止并排查，不清空财务账本或盲目覆盖汇总。
+
+标准发布现在自动判断迁移维护、执行离线预演、重试版本及资源传播检查，并按实际网关代码变更决定源站重启。完整命令和失败恢复见[发布流程](releasing.md)。请优先使用该入口，避免跳过门禁直接运行 Wrangler。

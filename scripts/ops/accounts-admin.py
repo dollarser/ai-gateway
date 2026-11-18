@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from accounts.store import password_hash
+from legacy.accounts.store import password_hash
 
 parser = argparse.ArgumentParser()
 parser.add_argument("command", choices=["bootstrap", "create-user", "disable-user"])

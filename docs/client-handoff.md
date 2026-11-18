@@ -368,7 +368,7 @@ Response 非成功时读取 errorBody 并按服务端 error_code 分支，不能
 
 本地模型已开启目录发现，首次查询即可返回；目录不占推理并发。默认 /v1/models 只列文本输出，嵌入模型需要 ?output_modalities=embeddings 或 all。新增的付费云嵌入仅为 text-embedding-3-small；POST /v1/embeddings、input 字段、默认1536维/可选dimensions，账号token+ClientID或API Key鉴权不变，沿用qwen权限。Luna与small共享云文本月token额度及全站预算，small按自己的价格结算。完整限制和实例见[嵌入与模型发现](openai-embeddings.md)。
 
-记得旧密码时，匿名 `POST https://accounts.hilex.me/auth/password`，提交 username/current_password/new_password 即可修改，无需邮箱验证码、账号token或ClientID。新密码至少6字符，原用户名不变；成功后清除该账号旧access/refresh并返回登录，不自动登录；API Key保留。该接口的401表示原用户名/旧密码校验失败，不能触发刷新令牌。详细流程见[旧密码改密](password-recovery.md#记得旧密码按原用户名改密)。
+记得旧密码时，匿名 `POST https://accounts.hilex.me/auth/password`，提交 email/current_password/new_password 即可修改，无需邮箱验证码、账号token或ClientID。新密码至少6字符，账号 ID 和显示名不变；成功后清除该账号旧access/refresh并返回登录，不自动登录；API Key保留。该接口的401表示邮箱/旧密码校验失败，不能触发刷新令牌。详细流程见[旧密码改密](password-recovery.md#记得旧密码使用邮箱和旧密码改密)。
 
 ## 合并用量快照
 
@@ -391,3 +391,7 @@ proof 仅保存在内存，过期、取消、改邮箱、切换用途、离页�
 ## 邮箱登录与可重复显示名
 
 账号契约已改为唯一邮箱登录、`display_name` 可重复显示、固定 `id` 关联。登录请求用 `{email,password}`，匿名旧密码修改用 `{email,current_password,new_password}`；不保留 `username` 别名。注册可选填 `display_name`，资料修改用 `PATCH /account/profile`。客户端字段及历史账号处理详见 [邮箱身份迁移文档](client-migration-email-identity.md)，以该文档替代旧的用户名登录示例。
+
+## 更换登录邮箱
+
+已验证邮箱的账号可在资料中更换邮箱；安卓采用相同接口和验证顺序。先填写新邮箱和当前密码，再以 `email_change_code` 用途完成人机验证，手动发送验证码；最终提交新邮箱与邮件验证码。成功后所有设备退出，使用新邮箱与原密码重新登录；Key、额度、显示名和通知已读状态保留。请求字段、错误码和生命周期见 [更换登录邮箱](email-change.md)。不要用历史补绑定接口修改已验证邮箱。

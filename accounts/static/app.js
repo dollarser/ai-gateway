@@ -329,6 +329,7 @@ $("email-binding-form").addEventListener(
 );
 
 function refreshProfile() {
+  $("open-email-change").hidden = !user.email_verified_at || !!user.must_change;
   $("profile-display_name").textContent = user.display_name;
   $("profile-email").textContent =
     (user.email || "尚未设置") +

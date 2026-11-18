@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from accounts.store import Store, password_hash
+from legacy.accounts.store import Store, password_hash
 
 ROOT = Path(__file__).resolve().parents[2]
 

@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import replace
 import unittest
 import httpx
-from accounts.store import Denied
+from legacy.accounts.store import Denied
 from gateway.catalog import build_catalog, discover_models, parse_output_modalities
 from gateway.deployments import MODEL_DEPLOYMENTS
 from gateway.routes import HTTP_ROUTES
