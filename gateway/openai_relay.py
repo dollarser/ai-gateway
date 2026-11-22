@@ -34,13 +34,34 @@ async def relay(operation: str, request: Request):
         data.extend(chunk)
         if len(data) > 26 * 1024 * 1024:
             raise Denied(413, "提供方请求体过大")
+    return await send_upstream(request, operation, bytes(data))
+
+
+@router.get("/__openai/v1/organization/costs")
+async def costs(request: Request):
+    edge_grant(request.app, request.headers, request.scope)
+    params = request.query_params
+    keys = list(params.keys())
+    if (
+        len(params.multi_items()) != len(keys)
+        or set(keys) - {"start_time", "end_time", "bucket_width", "limit", "page"}
+        or len(request.url.query) > 4096
+    ):
+        raise Denied(422, "费用查询参数无效")
+    return await send_upstream(request, "organization/costs", None, params=params)
+
+
+async def send_upstream(request, operation, content, *, params=None):
     client = request.app.state.client
     upstream_request = client.build_request(
-        "POST",
+        request.method,
         "https://api.openai.com/v1/" + operation,
         headers=provider_headers(request.headers),
-        content=bytes(data),
-        timeout=httpx.Timeout(850, connect=10),
+        content=content,
+        params=params,
+        timeout=httpx.Timeout(
+            8 if params is not None else 850, connect=5 if params is not None else 10
+        ),
     )
     try:
         upstream = await client.send(

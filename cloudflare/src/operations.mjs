@@ -8,7 +8,8 @@ import {
   deliverNotifications,
 } from "./notifications.mjs";
 import { Denied, day } from "./store.mjs";
-import { now } from "./crypto.mjs";
+import { openaiRoute } from "./openai-route.mjs";
+import { now, token } from "./crypto.mjs";
 import { globalUsage, validateLimits } from "./budgets.mjs";
 const reply = (v) =>
   Response.json(v, { headers: { "Cache-Control": "no-store" } });
@@ -205,6 +206,7 @@ export async function operationsRoute(
       await organizationCosts(
         env.OPENAI_ADMIN_KEY,
         new URL(request.url).searchParams.get("period") ?? "month",
+        openaiRoute(env, token(), token()),
       ),
     );
   if (p === "/admin/operations" && m === "GET")

@@ -65,6 +65,44 @@ class RelayTests(unittest.TestCase):
             self.call(operation="responses?url=https://evil.test").status_code, 404
         )
 
+    def test_costs_are_private_and_read_only(self):
+        def upstream(request):
+            self.assertEqual(request.method, "GET")
+            self.assertEqual(request.url.host, "api.openai.com")
+            self.assertEqual(request.url.path, "/v1/organization/costs")
+            self.assertEqual(
+                dict(request.url.params), {"start_time": "1", "page": "a+b"}
+            )
+            self.assertIsNone(request.headers.get("X-Edge-Secret"))
+            return httpx.Response(200, json={"data": []})
+
+        async def run():
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(upstream)
+            ) as relay:
+                self.app.state.client = relay
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(
+                        app=self.app, client=("127.0.0.1", 1)
+                    ),
+                    base_url="http://localhost",
+                ) as client:
+                    path = "/__openai/v1/organization/costs"
+                    self.assertEqual((await client.get(path)).status_code, 401)
+                    self.assertEqual(
+                        (await client.post(path, headers=self.headers)).status_code, 404
+                    )
+                    invalid = await client.get(
+                        path + "?url=https://example.net", headers=self.headers
+                    )
+                    self.assertEqual(invalid.status_code, 422)
+                    response = await client.get(
+                        path + "?start_time=1&page=a%2Bb", headers=self.headers
+                    )
+                    self.assertEqual(response.json(), {"data": []})
+
+        asyncio.run(run())
+
     def test_http_stream_and_safe_headers(self):
         def upstream(request):
             self.assertEqual(str(request.url), "https://api.openai.com/v1/responses")

@@ -1,5 +1,7 @@
 import { Denied } from "./store.mjs";
 
+import { writeWorkerLog } from "./worker-logs.mjs";
+
 const endpoint = "https://api.openai.com/v1/organization/costs";
 const daySeconds = 86400;
 
@@ -29,17 +31,41 @@ export async function organizationCosts(key, period, fetchCosts = fetch) {
   try {
     for (;;) {
       const response = await fetchCosts(url, {
+        method: "GET",
         headers: { Authorization: "Bearer " + key, Accept: "application/json" },
         redirect: "manual",
         signal,
       });
       if (!response.ok) {
-        await response.body?.cancel();
-        if (response.status === 401 || response.status === 403)
-          throw new Denied(
-            502,
-            "OpenAI 拒绝费用查询，请检查组织 Admin API Key 权限",
-          );
+        const error = response.headers
+          .get("content-type")
+          ?.includes("application/json")
+          ? await response.json().catch(() => null)
+          : (await response.body?.cancel(), null);
+        const code = error?.error?.code;
+        const region = code === "unsupported_country_region_territory";
+        const invalidKey =
+          response.status === 401 || code === "invalid_api_key";
+        const permission =
+          response.status === 403 &&
+          ["insufficient_permissions", "permission_denied"].includes(code);
+        writeWorkerLog(
+          "openai_costs_rejected",
+          {
+            upstream_status: response.status,
+            reason: region
+              ? "region"
+              : invalidKey
+                ? "key"
+                : permission
+                  ? "permission"
+                  : "upstream",
+          },
+          "warn",
+        );
+        if (region) throw new Denied(502, "OpenAI 费用查询受到上游地区限制");
+        if (invalidKey || permission)
+          throw new Denied(502, "OpenAI 费用查询凭据无效或缺少组织权限");
         throw new Denied(502, "OpenAI 费用暂时不可用，请稍后重试");
       }
       const page = await response.json();
@@ -82,6 +108,7 @@ export async function organizationCosts(key, period, fetchCosts = fetch) {
     }
   } catch (error) {
     if (error instanceof Denied) throw error;
+    writeWorkerLog("openai_costs_unavailable", {}, "warn");
     throw new Denied(502, "读取 OpenAI 费用失败，请稍后重试");
   }
 

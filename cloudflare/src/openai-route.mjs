@@ -1,4 +1,5 @@
 import { Denied } from "./store.mjs";
+const costsPath = "/v1/organization/costs";
 const paths = new Set([
   "/v1/chat/completions",
   "/v1/responses",
@@ -16,7 +17,10 @@ export function openaiRoute(env, lease, requestId, transport = fetch) {
     const upstream = new URL(url);
     if (
       upstream.origin !== "https://api.openai.com" ||
-      !paths.has(upstream.pathname)
+      !(
+        paths.has(upstream.pathname) ||
+        (upstream.pathname === costsPath && options.method === "GET")
+      )
     )
       throw new Denied(502, "OpenAI 转发目标无效");
     const target = new URL("https://" + (env.API_HOST ?? "api.hilex.me"));
