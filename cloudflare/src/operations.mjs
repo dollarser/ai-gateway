@@ -1,3 +1,4 @@
+import { organizationCosts } from "./openai-costs.mjs";
 import { writeWorkerLog } from "./worker-logs.mjs";
 import { mailConfiguration } from "./smtp-core.mjs";
 import {
@@ -199,6 +200,13 @@ export async function operationsRoute(
     );
     return reply(await siteInbox(store, user));
   }
+  if (p === "/admin/openai-costs" && m === "GET")
+    return reply(
+      await organizationCosts(
+        env.OPENAI_ADMIN_KEY,
+        new URL(request.url).searchParams.get("period") ?? "month",
+      ),
+    );
   if (p === "/admin/operations" && m === "GET")
     return reply({
       ...(await globalUsage(store)),

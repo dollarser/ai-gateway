@@ -633,7 +633,7 @@
       r.elements[k].value = data.registration[k];
     $("global-budget-summary").textContent =
       data.month +
-      "（北京时间）云文本估算用量 $" +
+      "（北京时间）网关云文本估算用量 $" +
       data.luna.used_usd.toFixed(4) +
       "，其中预留 $" +
       data.luna.reserved_usd.toFixed(4) +
@@ -850,7 +850,7 @@
   $("show-operational-alerts").addEventListener(
     "click",
     run(async () => {
-      await tab("admin");
+      await tab("costs");
       $("operations-panel").open = true;
       $("operations-panel").scrollIntoView({ behavior: "smooth" });
     }),

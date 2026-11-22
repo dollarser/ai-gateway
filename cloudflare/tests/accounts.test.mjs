@@ -77,6 +77,35 @@ async function provider(request) {
     "CF-Ray",
   ])
     assert.equal(request.headers.get(name), null);
+  const costUrl = new URL(request.url);
+  if (costUrl.pathname === "/v1/organization/costs") {
+    assert.equal(request.method, "GET");
+    assert.equal(
+      request.headers.get("Authorization"),
+      "Bearer test-admin-cost-key",
+    );
+    assert.equal(request.headers.get("Cookie"), null);
+    const first = !costUrl.searchParams.has("page");
+    const start = Number(costUrl.searchParams.get("start_time"));
+    return Response.json({
+      data: [
+        {
+          start_time: start + (first ? 0 : 86400),
+          results: first
+            ? [
+                { amount: { value: 1, currency: "usd" } },
+                { amount: { value: 2, currency: "usd" } },
+              ]
+            : [
+                { amount: { value: -0.5, currency: "usd" } },
+                { amount: { value: 10, currency: "eur" } },
+              ],
+        },
+      ],
+      has_more: first,
+      next_page: first ? "costs-page-2" : null,
+    });
+  }
   assert.equal(request.headers.get("Authorization"), "Bearer test-openai-key");
   if (new URL(request.url).pathname === "/v1/audio/transcriptions") {
     const form = await request.formData();
@@ -234,6 +263,7 @@ before(async () => {
       ...registrationEnv,
       INTERNAL_SECRET: secret,
       OPENAI_API_KEY: "test-openai-key",
+      OPENAI_ADMIN_KEY: "test-admin-cost-key",
       INFERENCE_CLIENT_IDS: JSON.stringify(["test-client-id"]),
       ACCOUNT_ORIGIN: "https://accounts.test",
     },
@@ -1751,6 +1781,24 @@ test("OpenAI 403 records reference probe and provider identifiers without changi
   } finally {
     globalThis.fetch = original;
   }
+});
+
+test("Organization costs are admin-only and aggregate paginated amounts by currency", async () => {
+  const path = "/admin/openai-costs";
+  assert.equal((await call(path)).status, 401);
+  const { key } = await lunaUser("costs-auth");
+  assert.equal((await call(path, undefined, { access: key })).status, 401);
+  assert.equal(
+    (await call(path + "?period=999d", undefined, { access: admin })).status,
+    422,
+  );
+  const result = await call(path + "?period=7d", undefined, { access: admin });
+  assert.equal(result.status, 200);
+  assert.equal(result.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(
+    result.body.days.map((day) => day.amounts),
+    [{ usd: 3 }, { usd: -0.5, eur: 10 }],
+  );
 });
 
 test("Global budget controls are admin-only, atomic across accounts, and zero prevents provider calls", async () => {

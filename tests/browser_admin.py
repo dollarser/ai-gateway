@@ -227,6 +227,18 @@ def handle(route):
     if path == "/auth/register":
         assert data["code"] == "123456"
         return respond({"message": "注册成功，请登录"}, 201)
+    if path == "/admin/openai-costs":
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(req.url).query)
+        if query.get("period") == ["7d"]:
+            return respond({"detail": "OpenAI 费用暂时不可用"}, 502)
+        return respond(
+            {
+                "start_time": 1761955200,
+                "end_time": 1762041600,
+                "fetched_at": 1762041600,
+                "days": [{"date": "2025-11-01", "amounts": {"usd": 1.25}}],
+            },
+        )
     if path == "/admin/operations":
         return respond(
             {
@@ -542,22 +554,6 @@ with sync_playwright() as p:
     page.locator("#quota-review-list button").click()
     page.wait_for_timeout(100)
     assert ledger["charged_units"] == 1 and ledger["settled"] == 1
-    page.locator("#operations-panel>summary").click()
-    page.locator("#global-budget-summary").get_by_text(
-        "云文本估算用量", exact=False
-    ).wait_for()
-    page.locator("#global-limits-form [name=luna_monthly_usd]").fill("200")
-    page.locator("#global-limits-form button").click()
-    page.wait_for_timeout(100)
-    assert limits["luna_monthly_usd"] == 200 and limits["asr_daily_minutes"] is None
-    page.locator("#registration-policy-form [name=global_minute]").fill("12")
-    page.locator("#registration-policy-form button").click()
-    page.wait_for_timeout(100)
-    assert policy["global_minute"] == 12
-    page.locator("#operational-alerts button").click()
-    page.wait_for_timeout(100)
-    assert alert_state[0] == "acknowledged"
-    assert not page.locator("#test-notification").is_disabled()
     page.locator("#network-panel>summary").click()
     page.locator("#network-stats-form button").click()
     page.locator("#network-groups tr").nth(1).wait_for()
@@ -575,6 +571,40 @@ with sync_playwright() as p:
     artifact.parent.mkdir(parents=True, exist_ok=True)
     download.value.save_as(artifact)
     assert json.loads(artifact.read_text())["schema"] == "provider-diagnostic-v1"
+    page.locator("#costs-tab").click()
+    page.locator("#costs-totals").get_by_text("USD", exact=False).wait_for()
+    assert "1.25" in page.locator("#costs-totals").inner_text()
+    page.locator("#costs-breakdown>summary").click()
+    assert page.get_by_role("rowheader", name="2025-11-01").is_visible()
+    page.locator("#costs-period").select_option("7d")
+    page.locator("#costs-status").get_by_text("暂时不可用", exact=False).wait_for()
+    assert page.locator("#costs-data").is_hidden()
+    assert page.locator("#costs-refresh").is_enabled()
+    page.locator("#costs-period").select_option("month")
+    page.locator("#costs-totals").get_by_text("USD", exact=False).wait_for()
+    for width in (1280, 320):
+        page.set_viewport_size({"width": width, "height": 900})
+        assert page.evaluate("document.documentElement.scrollWidth") <= width
+        page.screenshot(
+            path=str(ROOT / f".runtime/tests/browser/admin-costs-{width}.png")
+        )
+    page.set_viewport_size({"width": 1280, "height": 900})
+    page.locator("#operations-panel>summary").click()
+    page.locator("#global-budget-summary").get_by_text(
+        "云文本估算用量", exact=False
+    ).wait_for()
+    page.locator("#global-limits-form [name=luna_monthly_usd]").fill("200")
+    page.locator("#global-limits-form button").click()
+    page.wait_for_timeout(100)
+    assert limits["luna_monthly_usd"] == 200 and limits["asr_daily_minutes"] is None
+    page.locator("#registration-policy-form [name=global_minute]").fill("12")
+    page.locator("#registration-policy-form button").click()
+    page.wait_for_timeout(100)
+    assert policy["global_minute"] == 12
+    page.locator("#operational-alerts button").click()
+    page.wait_for_timeout(100)
+    assert alert_state[0] == "acknowledged"
+    assert not page.locator("#test-notification").is_disabled()
     notification_enabled[0] = True
     page.locator("#load-operations").click()
     page.wait_for_timeout(100)

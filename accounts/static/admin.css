@@ -1,0 +1,166 @@
+.admin-console {
+  --console-ink: #172d34;
+  --console-muted: #4d656d;
+  --console-border: #dce6e7;
+  --console-accent: #086659;
+  color: var(--console-ink);
+  background: #f3f7f7;
+}
+.admin-console > header {
+  background: #123539;
+  padding: 19px max(24px, calc((100vw - 1320px) / 2));
+}
+.admin-console h1 {
+  margin: 0;
+  font-size: 24px;
+}
+.admin-console #identity {
+  color: #c9e0dc;
+  font-size: 13px;
+}
+.admin-console > main {
+  max-width: 1368px;
+}
+.admin-navigation {
+  align-items: center;
+  gap: 5px;
+  padding: 6px;
+  margin: 16px 0;
+  border: 1px solid var(--console-border);
+  border-radius: 12px;
+  background: white;
+}
+.admin-navigation button {
+  background: transparent;
+  color: var(--console-muted);
+  padding: 9px 12px;
+  font-weight: 650;
+}
+.admin-navigation button[aria-current="page"] {
+  color: var(--console-accent);
+  background: #e1f1ea;
+}
+.admin-navigation #logout {
+  margin-left: auto;
+}
+.admin-console :is(a, button, select, summary):focus-visible {
+  outline: 2px solid #218475;
+  outline-offset: 3px;
+}
+.admin-console #workspace > section {
+  margin-top: 12px;
+  border-color: var(--console-border);
+  border-radius: 16px;
+}
+.admin-console .section-heading h2 {
+  margin: 0 0 4px;
+  font-size: 24px;
+}
+.admin-console .section-heading p,
+.costs-toolbar p {
+  margin: 0;
+}
+.admin-console .admin-summary {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+.admin-console .admin-summary > div {
+  background: #f6f9f8;
+  padding: 12px 14px;
+}
+.admin-console .admin-summary strong {
+  overflow-wrap: anywhere;
+}
+.admin-console .admin-users th {
+  background: #f6f9f8;
+}
+.admin-console .admin-users tr:hover td {
+  background: #f8faf9;
+}
+.billing-link {
+  color: var(--console-accent);
+  font-weight: 650;
+  text-underline-offset: 3px;
+}
+.costs-card {
+  border: 1px solid var(--console-border);
+  border-radius: 13px;
+  padding: clamp(14px, 3vw, 24px);
+  margin: 22px 0;
+}
+.costs-toolbar,
+.costs-controls {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.costs-toolbar h3 {
+  margin: 0 0 4px;
+}
+#costs-status {
+  font-size: 13px;
+  color: var(--console-muted);
+}
+#costs-status.error {
+  color: #912f32;
+}
+.costs-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 12px 0;
+}
+.costs-totals > div {
+  flex: 1 1 180px;
+  border-radius: 10px;
+  padding: 14px 18px;
+  color: #12594e;
+  background: #eaf5ef;
+}
+.costs-totals span,
+.costs-totals strong {
+  display: block;
+}
+.costs-totals span {
+  font-size: 13px;
+}
+.costs-totals strong {
+  font-size: clamp(21px, 3vw, 32px);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.costs-amount {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.costs-amount progress {
+  width: 40%;
+  height: 8px;
+  accent-color: #288772;
+}
+.costs-amount progress.negative {
+  accent-color: #9b4d2a;
+}
+@media (max-width: 960px) {
+  .admin-console .admin-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 600px) {
+  .admin-console > header {
+    padding: 16px;
+  }
+  .admin-console .section-heading {
+    flex-wrap: wrap;
+  }
+  .admin-console .admin-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .admin-navigation button {
+    font-size: 13px;
+  }
+}

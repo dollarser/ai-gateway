@@ -11,10 +11,10 @@ const lunaFields = (f) =>
         ].map((k) => [k, Number(f.elements[k].value)]),
       );
 
+const adminSections = ["admin", "keys", "costs", "alerts", "notices"];
 async function tab(name) {
-  if (!["admin", "keys", "alerts", "notices"].includes(name)) name = "admin";
-  for (const item of ["admin", "keys", "alerts", "notices"])
-    $(item + "-panel").hidden = item !== name;
+  if (!adminSections.includes(name)) name = "admin";
+  for (const item of adminSections) $(item + "-panel").hidden = item !== name;
   if (name !== "keys") {
     $("key-value").textContent = "";
     $("key-secret").hidden = true;
@@ -23,9 +23,15 @@ async function tab(name) {
     $("user-password").textContent = "";
     $("user-secret").hidden = true;
   }
-  history.replaceState(null, "", "#" + name);
+  for (const button of document.querySelectorAll("[data-tab]")) {
+    if (button.dataset.tab === name)
+      button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  }
+  if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
   if (name === "admin") await loadUsers();
   if (name === "keys") await loadKeys();
+  if (name === "costs") void window.adminCosts.load();
   if (name === "alerts") await window.adminUI.loadInbox();
   if (name === "notices") await window.noticeManager.load();
 }
@@ -57,7 +63,9 @@ async function refresh() {
 document.querySelectorAll("[data-tab]").forEach((b) =>
   b.addEventListener(
     "click",
-    run(() => tab(b.dataset.tab)),
+    run(() => {
+      if (location.hash !== "#" + b.dataset.tab) location.hash = b.dataset.tab;
+    }),
   ),
 );
 $("logout").addEventListener(

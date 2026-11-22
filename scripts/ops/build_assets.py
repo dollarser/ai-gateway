@@ -18,6 +18,8 @@ FILES = (
     "admin-portal.js",
     "notice-manager.js",
     "admin.js",
+    "admin-costs.js",
+    "admin.css",
     "notices.js",
     "style.css",
 )
