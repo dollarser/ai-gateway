@@ -11,6 +11,38 @@ const lunaFields = (f) =>
         ].map((k) => [k, Number(f.elements[k].value)]),
       );
 
+function panelStatus(id, text, retry) {
+  const status = $(id);
+  status.textContent = text;
+  status.classList.toggle("error", Boolean(retry));
+  if (retry) status.append(" ", action("重试", retry));
+}
+
+function adminListReader(statusId, listId, retry) {
+  let pending;
+  return async (path) => {
+    pending?.abort();
+    const request = new AbortController();
+    pending = request;
+    const list = $(listId);
+    list.inert = true;
+    list.setAttribute("aria-busy", "true");
+    panelStatus(statusId, "正在加载…");
+    try {
+      const data = await api(path, "GET", undefined, request.signal);
+      if (request.signal.aborted) return null;
+      panelStatus(statusId, "");
+      list.inert = false;
+      return data;
+    } catch (error) {
+      if (!request.signal.aborted) panelStatus(statusId, error.message, retry);
+      return null;
+    } finally {
+      if (!request.signal.aborted) list.removeAttribute("aria-busy");
+    }
+  };
+}
+
 const adminSections = ["admin", "keys", "costs", "alerts", "notices"];
 async function tab(name) {
   if (!adminSections.includes(name)) name = "admin";
@@ -29,7 +61,7 @@ async function tab(name) {
     else button.removeAttribute("aria-current");
   }
   if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
-  if (name === "admin") await loadUsers();
+  if (name === "admin") await window.adminUI.load({ reuse: true });
   if (name === "keys") await loadKeys();
   if (name === "costs") void window.adminCosts.load();
   if (name === "alerts") await window.adminUI.loadInbox();
@@ -88,11 +120,28 @@ document.addEventListener(
     }),
   { once: true },
 );
+const readKeys = adminListReader("keys-load-status", "keys-list", () =>
+  loadKeys(),
+);
+let renderedKeyTarget;
 async function loadKeys() {
-  const keys = await api(
-    keyTarget ? "/admin/keys/" + keyTarget : "/account/keys",
+  if (renderedKeyTarget !== keyTarget) {
+    $("keys-list").replaceChildren();
+    $("key-value").textContent = "";
+    $("key-secret").hidden = true;
+  }
+  const target = keyTarget;
+  const keys = await readKeys(
+    target ? "/admin/keys/" + target : "/account/keys",
   );
+  if (!keys || target !== keyTarget) return;
+  renderedKeyTarget = target;
   $("keys-list").replaceChildren();
+  if (!keys.length) {
+    const cell = $("keys-list").insertRow().insertCell();
+    cell.colSpan = 5;
+    cell.textContent = "暂无 API Key";
+  }
   for (const key of keys)
     row(
       "keys-list",
@@ -126,8 +175,9 @@ $("key-form").addEventListener(
   "submit",
   run(async (e) => {
     const f = e.target;
+    const target = keyTarget;
     const data = await api(
-      keyTarget ? "/admin/keys/" + keyTarget : "/account/keys",
+      target ? "/admin/keys/" + target : "/account/keys",
       "POST",
       {
         name: f.elements.name.value,
@@ -135,6 +185,7 @@ $("key-form").addEventListener(
         services: selected(f),
       },
     );
+    if (target !== keyTarget) return;
     $("key-value").textContent = data.key;
     $("key-secret").hidden = false;
     await loadKeys();

@@ -17,8 +17,21 @@
       .toISOString()
       .slice(0, 16);
   };
+  const readNotices = adminListReader(
+    "notices-load-status",
+    "notice-admin-items",
+    () => loadAdmin(),
+  );
   async function loadAdmin() {
-    const data = await api("/admin/notices?page=" + adminPage);
+    $("notice-admin-prev").disabled = true;
+    $("notice-admin-next").disabled = true;
+    const data = await readNotices("/admin/notices?page=" + adminPage);
+    if (!data) return;
+    const last = Math.max(1, Math.ceil(data.total / 30));
+    if (adminPage > last) {
+      adminPage = last;
+      return loadAdmin();
+    }
     $("notice-admin-items").replaceChildren();
     $("notice-admin-page").textContent =
       "第 " + adminPage + " 页 · 共 " + data.total + " 条";

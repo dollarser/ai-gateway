@@ -164,3 +164,27 @@
     font-size: 13px;
   }
 }
+
+.load-status {
+  color: var(--console-muted);
+  font-size: 13px;
+  min-height: 1.6em;
+}
+.load-status:empty {
+  display: none;
+}
+.load-status.error {
+  color: #912f32;
+  padding: 8px 12px;
+  background: #fff2ef;
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.load-status button {
+  margin-left: 6px;
+  padding: 4px 10px;
+  font-size: 13px;
+}
+#admin-results[inert] {
+  opacity: 0.64;
+}

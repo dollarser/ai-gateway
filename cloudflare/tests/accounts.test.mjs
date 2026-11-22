@@ -1916,11 +1916,12 @@ test("Maintenance preserves live refresh replay evidence and financial ledgers w
   );
   await maintenance(store);
   const historical = await call(
-    "/admin/overview?day=2026-01-01&q=retention-test",
+    "/admin/overview?day=2026-01-01&q=retention-test&summary=0",
     undefined,
     { access: admin },
   );
   assert.equal(historical.status, 200);
+  assert.equal(historical.body.summary, undefined);
   assert.equal(historical.body.users.find((u) => u.id === uid).day_requests, 1);
   assert.equal(
     await store.first("SELECT * FROM requests WHERE id='old-archive'"),

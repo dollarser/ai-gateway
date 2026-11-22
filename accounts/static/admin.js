@@ -13,8 +13,14 @@
     total: 0,
     selected: new Map(),
     defaults: null,
-    loaded: false,
-    sequence: 0,
+    filters: null,
+    overview: null,
+    details: null,
+    summary: null,
+    shown: false,
+    loading: false,
+    stale: false,
+    defaultsRequest: null,
   };
   const num = (n) => Number(n ?? 0).toLocaleString("zh-CN");
   const minutes = (n) => (Number(n ?? 0) / 60000).toFixed(2);
@@ -30,21 +36,69 @@
       ? "已选择 " + n + " 个账号"
       : "未选择账号";
     for (const id of ["bulk-defaults", "bulk-enable", "bulk-disable"])
-      $(id).disabled = !n;
+      $(id).disabled = !n || state.loading || state.stale;
     const boxes = [...$("users-list").querySelectorAll("input[type=checkbox]")];
+    $("select-page").disabled = !boxes.length || state.loading || state.stale;
     $("select-page").checked =
       boxes.length > 0 && boxes.every((b) => b.checked);
     $("select-page").indeterminate =
       boxes.some((b) => b.checked) && !$("select-page").checked;
   }
-  function filter() {
-    const f = $("admin-filter-form");
-    return new URLSearchParams({
-      q: f.elements.q.value.trim(),
-      status: f.elements.status.value,
-      day: f.elements.day.value,
-      page: String(state.page),
-      page_size: "50",
+  const filterForm = $("admin-filter-form");
+  const today = () =>
+    new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai" }).format(
+      new Date(),
+    );
+  function readFilters() {
+    return {
+      q: filterForm.elements.q.value.trim(),
+      status: filterForm.elements.status.value,
+      day: filterForm.elements.day.value,
+    };
+  }
+  function closeDetails() {
+    state.details?.abort();
+    $("user-details").hidden = true;
+  }
+  function refreshControls() {
+    const unavailable = state.loading || state.stale;
+    $("admin-results").inert = unavailable;
+    $("admin-results").setAttribute("aria-busy", String(state.loading));
+    $("admin-prev").disabled = unavailable || state.page <= 1;
+    $("admin-next").disabled = unavailable || state.page * 50 >= state.total;
+    selection();
+  }
+  async function getDefaults() {
+    if (state.defaults) return state.defaults;
+    state.defaultsRequest ??= api("/admin/quota-defaults")
+      .then((data) => (state.defaults = data))
+      .finally(() => {
+        state.defaultsRequest = null;
+      });
+    return state.defaultsRequest;
+  }
+  async function loadDefaultsForm(panelId, formId) {
+    const statusId = panelId + "-status";
+    const form = $(formId);
+    if (!form.hidden) return;
+    panelStatus(statusId, "正在读取默认额度…");
+    try {
+      const defaults = await getDefaults();
+      for (const k of quotaFields) form.elements[k].value = defaults[k];
+      form.hidden = false;
+      panelStatus(statusId, "");
+    } catch (error) {
+      panelStatus(statusId, error.message, () =>
+        loadDefaultsForm(panelId, formId),
+      );
+    }
+  }
+  for (const [panel, form] of [
+    ["quota-defaults", "quota-defaults-form"],
+    ["create-user", "user-form"],
+  ]) {
+    $(panel).addEventListener("toggle", () => {
+      if ($(panel).open) void loadDefaultsForm(panel, form);
     });
   }
   function appendMeter(td, used, limit, suffix = "") {
@@ -62,33 +116,93 @@
       td.append(small);
     }
   }
-  async function load() {
+  async function load({ forceSummary = true, reuse = false } = {}) {
     if (user?.role !== "admin") return;
-    const sequence = ++state.sequence;
-    if (!state.loaded) {
-      const info = await api("/auth/registration-info");
-      $("admin-filter-form").elements.day.value = info.today;
-      state.loaded = true;
+    if (!state.filters) {
+      filterForm.elements.day.value = today();
+      state.filters = readFilters();
     }
-    if (!state.defaults) state.defaults = await api("/admin/quota-defaults");
-    for (const k of quotaFields) {
-      $("quota-defaults-form").elements[k].value = state.defaults[k];
-      $("user-form").elements[k].value = state.defaults[k];
+    if (
+      reuse &&
+      (state.loading ||
+        (!state.stale &&
+          state.shown &&
+          state.summary &&
+          Date.now() - state.summary.at < 30000))
+    )
+      return;
+    state.overview?.abort();
+    const request = new AbortController();
+    state.overview = request;
+    const filters = state.filters;
+    const query = new URLSearchParams({
+      ...filters,
+      page: String(state.page),
+      page_size: "50",
+    });
+    if (
+      !forceSummary &&
+      state.summary?.day === filters.day &&
+      Date.now() - state.summary.at < 30000
+    )
+      query.set("summary", "0");
+
+    state.loading = true;
+    refreshControls();
+    panelStatus(
+      "admin-load-status",
+      state.shown ? "正在更新账号列表…" : "正在加载账号与用量…",
+    );
+    try {
+      const data = await api(
+        "/admin/overview?" + query,
+        "GET",
+        undefined,
+        request.signal,
+      );
+      if (request.signal.aborted) return;
+      const last = Math.max(1, Math.ceil(data.matching / 50));
+      if (state.page > last) {
+        state.page = last;
+        return await load({ forceSummary });
+      }
+      if (data.summary) {
+        renderSummary(data.summary);
+        state.summary = { day: filters.day, at: Date.now() };
+      }
+      renderUsers(data);
+      state.shown = true;
+      state.stale = false;
+      panelStatus(
+        "admin-load-status",
+        filters.day +
+          " · 北京时间" +
+          (filters.q ? " · 搜索：" + filters.q : ""),
+      );
+    } catch (error) {
+      if (request.signal.aborted) return;
+      state.stale = true;
+      panelStatus(
+        "admin-load-status",
+        error.message + (state.shown ? "。当前保留上一次结果。" : ""),
+        () => load({ forceSummary }),
+      );
+    } finally {
+      if (!request.signal.aborted) {
+        state.loading = false;
+        refreshControls();
+      }
     }
-    const data = await api("/admin/overview?" + filter());
-    if (sequence !== state.sequence) return;
-    state.total = data.matching;
+  }
+  function renderSummary(summary) {
     $("admin-summary").replaceChildren();
     for (const [label, value] of [
-      ["账号总数", num(data.summary.users.total)],
-      ["已启用", num(data.summary.enabled_users)],
-      ["当日请求", num(data.summary.total)],
-      [
-        "失败 / 进行中",
-        num(data.summary.failed) + " / " + num(data.summary.inflight),
-      ],
-      ["识别分钟", minutes(data.summary.asr_ms)],
-      ["合成字符", num(data.summary.tts_characters)],
+      ["账号总数", num(summary.users.total)],
+      ["已启用", num(summary.enabled_users)],
+      ["当日请求", num(summary.total)],
+      ["失败 / 进行中", num(summary.failed) + " / " + num(summary.inflight)],
+      ["识别分钟", minutes(summary.asr_ms)],
+      ["合成字符", num(summary.tts_characters)],
     ]) {
       const card = document.createElement("div");
       const small = document.createElement("span");
@@ -98,6 +212,9 @@
       card.append(small, strong);
       $("admin-summary").append(card);
     }
+  }
+  function renderUsers(data) {
+    state.total = data.matching;
     $("users-list").replaceChildren();
     for (const u of data.users) {
       const tr = document.createElement("tr");
@@ -235,9 +352,6 @@
     }
     $("admin-page-info").textContent =
       "第 " + state.page + " 页 · 共 " + num(data.matching) + " 个匹配账号";
-    $("admin-prev").disabled = state.page <= 1;
-    $("admin-next").disabled = state.page * 50 >= data.matching;
-    selection();
   }
   function edit(u) {
     const f = $("edit-form");
@@ -262,15 +376,36 @@
     await tab("keys");
   }
   async function details(u) {
-    const data = await api(
-      "/admin/users/" +
-        u.id +
-        "/details?day=" +
-        encodeURIComponent($("admin-filter-form").elements.day.value),
-    );
-    $("user-details").hidden = false;
+    state.details?.abort();
+    const request = new AbortController();
+    state.details = request;
+    const panel = $("user-details");
+    panel.hidden = false;
+    panel.open = true;
+    $("details-content").hidden = true;
     $("details-title").textContent =
       u.display_name + " (#" + u.id + ") · 账号详情";
+    panelStatus("details-status", "正在读取账号详情…");
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+    let data;
+    try {
+      data = await api(
+        "/admin/users/" +
+          u.id +
+          "/details?day=" +
+          encodeURIComponent(state.filters.day),
+        "GET",
+        undefined,
+        request.signal,
+      );
+    } catch (error) {
+      if (!request.signal.aborted)
+        panelStatus("details-status", error.message, () => details(u));
+      return;
+    }
+    if (request.signal.aborted) return;
+    panelStatus("details-status", "");
+    $("details-content").hidden = false;
     $("details-quotas").textContent =
       "RPM " +
       (u.rpm || "不限") +
@@ -324,7 +459,11 @@
       cell(tr, r.request_id || r.id);
       $("details-requests").append(tr);
     }
-    $("user-details").scrollIntoView({ behavior: "smooth", block: "start" });
+    if (!data.requests.length) {
+      const row = document.createElement("tr");
+      cell(row, "所选日期暂无请求").colSpan = 7;
+      $("details-requests").append(row);
+    }
   }
   async function bulk(patch, label) {
     if (!state.selected.size) return;
@@ -351,14 +490,16 @@
     "submit",
     run(async () => {
       state.page = 1;
+      state.filters = readFilters();
       state.selected.clear();
-      await load();
+      closeDetails();
+      await load({ forceSummary: false });
     }),
   );
   $("admin-refresh").addEventListener(
     "click",
     run(async () => {
-      state.defaults = null;
+      closeDetails();
       await load();
     }),
   );
@@ -381,25 +522,24 @@
     "click",
     run(async () => {
       state.page--;
-      await load();
+      closeDetails();
+      await load({ forceSummary: false });
     }),
   );
   $("admin-next").addEventListener(
     "click",
     run(async () => {
       state.page++;
-      await load();
+      closeDetails();
+      await load({ forceSummary: false });
     }),
   );
   $("bulk-defaults").addEventListener(
     "click",
-    run(() =>
-      bulk(
-        state.defaults,
-        "将已保存的默认额度应用到以下账号：\n" +
-          JSON.stringify(state.defaults, null, 2),
-      ),
-    ),
+    run(async () => {
+      const defaults = await getDefaults();
+      await bulk(defaults, "将已保存的默认额度应用到以下账号？");
+    }),
   );
   $("bulk-enable").addEventListener(
     "click",
@@ -409,6 +549,10 @@
     "click",
     run(() => bulk({ enabled: false }, "封禁以下账号并撤销现有登录？")),
   );
+  $("user-form").addEventListener("input", (event) => {
+    if (quotaFields.includes(event.target.name))
+      event.target.dataset.edited = "true";
+  });
   $("quota-defaults-form").addEventListener(
     "submit",
     run(async (e) => {
@@ -417,6 +561,10 @@
       );
       await api("/admin/quota-defaults", "PATCH", b);
       state.defaults = b;
+      const create = $("user-form");
+      for (const k of quotaFields) {
+        if (!create.elements[k].dataset.edited) create.elements[k].value = b[k];
+      }
       message("默认额度已保存，仅对后续新账号生效。");
     }),
   );
@@ -777,13 +925,25 @@
     inboxState.page = 1;
     await loadInbox();
   }
+  const readInbox = adminListReader("inbox-load-status", "inbox-list", () =>
+    loadInbox(),
+  );
   async function loadInbox() {
     if (user?.role !== "admin" || user.must_change) return;
-    const state = $("inbox-filter").value,
-      data = await api(
-        "/admin/notifications?" +
-          new URLSearchParams({ page: String(inboxState.page), state }),
-      );
+    const state = $("inbox-filter").value;
+    for (const id of ["inbox-prev", "inbox-next", "read-inbox-page"])
+      $(id).disabled = true;
+    const data = await readInbox(
+      "/admin/notifications?" +
+        new URLSearchParams({ page: String(inboxState.page), state }),
+    );
+    if (!data) return;
+    const count = state === "unread" ? data.unread : data.total;
+    const last = Math.max(1, Math.ceil(count / data.page_size));
+    if (inboxState.page > last) {
+      inboxState.page = last;
+      return loadInbox();
+    }
     inboxState.items = data.items;
     inboxBadge(data.unread);
     $("inbox-summary").textContent =

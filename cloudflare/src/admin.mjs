@@ -210,38 +210,69 @@ export async function adminRoute(request, store, u, readBody, env = {}) {
       status,
       status === "enabled" ? 1 : 0,
     ];
-    const rows = await store.all(
-      `SELECT u.*,coalesce(d.requests,0) day_requests,coalesce(d.tokens,0) day_tokens,coalesce(l.used,0) luna_used_tokens,coalesce(a.ms,0) asr_used_ms,coalesce(a.chars,0) tts_used_characters,(SELECT client_ip FROM requests r WHERE r.user_id=u.id AND r.client_ip IS NOT NULL ORDER BY started DESC LIMIT 1) last_request_ip,(SELECT max(started) FROM requests r WHERE r.user_id=u.id) last_request_at,(SELECT count(*) FROM keys k WHERE k.user_id=u.id AND k.revoked=0 AND k.expires>unixepoch()) active_keys FROM users u LEFT JOIN (SELECT user_id,sum(requests) requests,sum(tokens) tokens FROM (SELECT user_id,count(*) requests,sum(prompt_tokens+completion_tokens) tokens FROM requests WHERE day=? GROUP BY user_id UNION ALL SELECT user_id,total requests,prompt_tokens+completion_tokens tokens FROM request_history WHERE day=?) GROUP BY user_id) d ON d.user_id=u.id LEFT JOIN (SELECT user_id,sum(charged_tokens) used FROM luna_usage WHERE month=? GROUP BY user_id) l ON l.user_id=u.id LEFT JOIN (SELECT user_id,sum(CASE WHEN kind='asr' THEN charged_units ELSE 0 END) ms,sum(CASE WHEN kind='tts' THEN charged_units ELSE 0 END) chars FROM audio_usage WHERE day=? GROUP BY user_id) a ON a.user_id=u.id WHERE ${where} ORDER BY u.id DESC LIMIT ? OFFSET ?`,
-      date,
-      date,
-      date.slice(0, 7),
-      date,
-      ...args,
-      pageSize,
-      (page - 1) * pageSize,
-    );
-    const matching = await store.first(
-      `SELECT count(*) n FROM users u WHERE ${where}`,
-      ...args,
-    );
-    const users = await store.first(
-      "SELECT count(*) total,coalesce(sum(enabled=1),0) enabled FROM users",
-    );
-    const requests = await store.first(
-      "SELECT coalesce(sum(total),0) total,coalesce(sum(failed),0) failed,coalesce(sum(inflight),0) inflight,coalesce(sum(tokens),0) tokens FROM (SELECT count(*) total,coalesce(sum(status>=400),0) failed,coalesce(sum(ended IS NULL),0) inflight,coalesce(sum(prompt_tokens+completion_tokens),0) tokens FROM requests WHERE day=? UNION ALL SELECT total,failed,0 inflight,prompt_tokens+completion_tokens tokens FROM request_history WHERE day=?)",
-      date,
-      date,
-    );
-    const speech = await store.first(
-      "SELECT coalesce(sum(CASE WHEN kind='asr' THEN charged_units ELSE 0 END),0) asr_ms,coalesce(sum(CASE WHEN kind='tts' THEN charged_units ELSE 0 END),0) tts_characters FROM audio_usage WHERE day=?",
-      date,
-    );
+    const includeSummary = url.searchParams.get("summary") !== "0";
+    const statements = [
+      store.stmt(
+        `WITH page_users AS (
+           SELECT u.* FROM users u WHERE ${where} ORDER BY u.id DESC LIMIT ? OFFSET ?
+         )
+         SELECT u.*,
+           (SELECT count(*) FROM requests WHERE user_id=u.id AND day=?)
+             + coalesce((SELECT sum(total) FROM request_history WHERE user_id=u.id AND day=?),0) day_requests,
+           coalesce((SELECT sum(prompt_tokens+completion_tokens) FROM requests WHERE user_id=u.id AND day=?),0)
+             + coalesce((SELECT sum(prompt_tokens+completion_tokens) FROM request_history WHERE user_id=u.id AND day=?),0) day_tokens,
+           coalesce((SELECT sum(charged_tokens) FROM luna_usage WHERE user_id=u.id AND month=?),0) luna_used_tokens,
+           coalesce((SELECT sum(charged_units) FROM audio_usage WHERE user_id=u.id AND day=? AND kind='asr'),0) asr_used_ms,
+           coalesce((SELECT sum(charged_units) FROM audio_usage WHERE user_id=u.id AND day=? AND kind='tts'),0) tts_used_characters,
+           (SELECT client_ip FROM requests WHERE user_id=u.id AND client_ip IS NOT NULL ORDER BY started DESC LIMIT 1) last_request_ip,
+           (SELECT max(started) FROM requests WHERE user_id=u.id) last_request_at,
+           (SELECT count(*) FROM keys WHERE user_id=u.id AND revoked=0 AND expires>unixepoch()) active_keys
+         FROM page_users u ORDER BY u.id DESC`,
+        ...args,
+        pageSize,
+        (page - 1) * pageSize,
+        date,
+        date,
+        date,
+        date,
+        date.slice(0, 7),
+        date,
+        date,
+      ),
+      store.stmt(`SELECT count(*) n FROM users u WHERE ${where}`, ...args),
+    ];
+    if (includeSummary) {
+      statements.push(
+        store.stmt(
+          "SELECT count(*) total,coalesce(sum(enabled=1),0) enabled FROM users",
+        ),
+        store.stmt(
+          "SELECT coalesce(sum(total),0) total,coalesce(sum(failed),0) failed,coalesce(sum(inflight),0) inflight,coalesce(sum(tokens),0) tokens FROM (SELECT count(*) total,coalesce(sum(status>=400),0) failed,coalesce(sum(ended IS NULL),0) inflight,coalesce(sum(prompt_tokens+completion_tokens),0) tokens FROM requests WHERE day=? UNION ALL SELECT total,failed,0 inflight,prompt_tokens+completion_tokens tokens FROM request_history WHERE day=?)",
+          date,
+          date,
+        ),
+        store.stmt(
+          "SELECT coalesce(sum(CASE WHEN kind='asr' THEN charged_units ELSE 0 END),0) asr_ms,coalesce(sum(CASE WHEN kind='tts' THEN charged_units ELSE 0 END),0) tts_characters FROM audio_usage WHERE day=?",
+          date,
+        ),
+      );
+    }
+    const [rows, matching, allUsers, requests, speech] =
+      await store.db.batch(statements);
+    const users = allUsers?.results[0];
     return result({
       day: date,
       timezone: "Asia/Shanghai",
-      summary: { users, ...requests, enabled_users: users.enabled, ...speech },
-      users: rows.map(publicUser),
-      matching: matching.n,
+      ...(includeSummary && {
+        summary: {
+          users,
+          ...requests.results[0],
+          enabled_users: users.enabled,
+          ...speech.results[0],
+        },
+      }),
+      users: rows.results.map(publicUser),
+      matching: matching.results[0].n,
       page,
       page_size: pageSize,
     });

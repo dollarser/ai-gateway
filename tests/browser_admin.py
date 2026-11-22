@@ -54,6 +54,7 @@ customer_notices = []
 logged_in = [True]
 asset_calls = []
 api_calls = []
+overview_queries = []
 notice_failure = [False]
 mutations = []
 errors = []
@@ -388,6 +389,13 @@ def handle(route):
             defaults.update(data)
         return respond(defaults)
     if path == "/admin/overview":
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(req.url).query)
+        overview_queries.append(query)
+        if (
+            query.get("q") == ["retry-test"]
+            and sum(x.get("q") == ["retry-test"] for x in overview_queries) == 1
+        ):
+            return respond({"detail": "账号列表暂时不可用"}, 503)
         return respond(
             {
                 "summary": {
@@ -499,6 +507,23 @@ with sync_playwright() as p:
     page.locator("#users-list tr").nth(1).wait_for()
     assert page.locator("#password-form,#usage-panel").count() == 0
     assert page.locator("#admin-summary>div").count() == 6
+    assert ("GET", "/admin/quota-defaults") not in api_calls
+    search = page.locator("#admin-filter-form [name=q]")
+    search.fill("retry-test")
+    page.locator("#admin-filter-form button").click()
+    page.locator("#admin-load-status").get_by_text(
+        "账号列表暂时不可用", exact=False
+    ).wait_for()
+    assert page.locator("#admin-results").get_attribute("inert") is not None
+    assert page.locator("#users-list tr").count() == 2
+    page.locator("#admin-load-status").get_by_role("button", name="重试").click()
+    page.locator("#admin-load-status").get_by_text(
+        "搜索：retry-test", exact=False
+    ).wait_for()
+    assert overview_queries[-1].get("summary") == ["0"]
+    search.fill("")
+    page.locator("#admin-filter-form button").click()
+    page.wait_for_function("!document.getElementById('admin-results').inert")
     page.locator("#users-list tr").nth(1).get_by_role(
         "button", name="设置", exact=True
     ).click()
