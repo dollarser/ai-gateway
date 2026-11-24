@@ -309,6 +309,28 @@ before(async () => {
   });
   assert.equal(result.status, 200);
   admin = result.body.access_token;
+  const initial = await call("/admin/models", undefined, { access: admin });
+  assert.equal(initial.status, 200);
+  assert.equal(initial.body.models.length, 8);
+  assert.ok(initial.body.models.every((model) => !model.enabled));
+  // Existing inference fixtures opt in explicitly; production starts closed.
+  const ids = [
+    "gpt-6-luna",
+    "Qwen3.8-27B",
+    "text-embedding-3-small",
+    "Qwen/Qwen3-Embedding-0.6B",
+    "gpt-transcribe",
+    "funasr",
+    "gpt-realtime-2.1-mini",
+    "cosyvoice",
+  ];
+  await db.batch(
+    ids.map((id) =>
+      db
+        .prepare("INSERT INTO settings(name,value) VALUES(?, 'true')")
+        .bind("public_model:" + id),
+    ),
+  );
 });
 after(async () => {
   await mf?.dispose();
@@ -1483,6 +1505,57 @@ async function apiCall(path, key, payload, headers = {}) {
   });
   return { status: r.status, headers: r.headers, body: await r.json() };
 }
+test("Admin model switches control discovery and direct calls, including local voice aliases", async () => {
+  const { uid, key } = await lunaUser("public-model-switch");
+  await db
+    .prepare("UPDATE users SET services=? WHERE id=?")
+    .bind('["qwen","asr","tts"]', uid)
+    .run();
+  await db
+    .prepare("UPDATE keys SET services=? WHERE user_id=?")
+    .bind('["qwen","asr","tts"]', uid)
+    .run();
+  const path = "/admin/models";
+  const update = (id, enabled, access = admin) =>
+    call(path, { id, enabled }, { method: "PATCH", access });
+  assert.equal((await call(path)).status, 401);
+  assert.equal((await update("gpt-6-luna", true, key)).status, 401);
+  assert.equal((await update("unknown", true)).status, 422);
+  try {
+    assert.equal((await update("gpt-6-luna", false)).status, 200);
+    assert.equal((await update("cosyvoice", false)).status, 200);
+    const catalog = await apiCall("/v1/models?output_modalities=all", key);
+    assert.ok(
+      !catalog.body.data.some(({ id }) =>
+        ["gpt-6-luna", "cosyvoice"].includes(id),
+      ),
+    );
+    const before = { providerCalls, originCalls };
+    const chat = await apiCall("/v1/chat/completions", key, {
+      model: "gpt-6-luna",
+      messages: [{ role: "user", content: "hi" }],
+    });
+    const speech = await apiCall("/v1/audio/speech", key, {
+      model: "cosyvoice3",
+      input: "hi",
+    });
+    const ws = await apiCall("/ws/tts", key, undefined, {
+      Upgrade: "websocket",
+    });
+    for (const response of [chat, speech, ws]) {
+      assert.equal(response.status, 403);
+      assert.equal(response.body.error_code, "model_disabled");
+    }
+    assert.deepEqual({ providerCalls, originCalls }, before);
+    assert.equal((await update("gpt-6-luna", true)).status, 200);
+    const enabled = await apiCall("/v1/models", key);
+    assert.ok(enabled.body.data.some(({ id }) => id === "gpt-6-luna"));
+  } finally {
+    await update("gpt-6-luna", true);
+    await update("cosyvoice", true);
+  }
+});
+
 test("edge API authenticates directly, discovers cloud models without origin and settles Luna once", async () => {
   const { uid, key } = await lunaUser("edge-luna");
   const origins = originCalls;
@@ -3342,7 +3415,7 @@ test("Cloud catalog is read-only and immediately reflects key revocation and per
   const restricted = await apiCall("/v1/models?output_modalities=all", key);
   assert.deepEqual(
     restricted.body.data.map((m) => m.id),
-    ["gpt-transcribe"],
+    ["gpt-transcribe", "funasr"],
   );
   await store.run("UPDATE users SET enabled=0 WHERE id=?", uid);
   assert.equal((await apiCall("/v1/models", key)).status, 403);

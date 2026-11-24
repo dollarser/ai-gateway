@@ -43,7 +43,7 @@ function adminListReader(statusId, listId, retry) {
   };
 }
 
-const adminSections = ["admin", "keys", "costs", "alerts", "notices"];
+const adminSections = ["admin", "models", "keys", "costs", "alerts", "notices"];
 async function tab(name) {
   if (!adminSections.includes(name)) name = "admin";
   for (const item of adminSections) $(item + "-panel").hidden = item !== name;
@@ -62,6 +62,7 @@ async function tab(name) {
   }
   if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
   if (name === "admin") await window.adminUI.load({ reuse: true });
+  if (name === "models") await window.modelManager.load();
   if (name === "keys") await loadKeys();
   if (name === "costs") void window.adminCosts.load();
   if (name === "alerts") await window.adminUI.loadInbox();

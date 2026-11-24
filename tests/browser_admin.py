@@ -54,6 +54,14 @@ customer_notices = []
 logged_in = [True]
 asset_calls = []
 api_calls = []
+model_state = {
+    "id": "gpt-6-luna",
+    "name": "GPT-6 Luna",
+    "service": "qwen",
+    "provider": "openai",
+    "endpoints": ["/v1/chat/completions"],
+    "enabled": False,
+}
 overview_queries = []
 notice_failure = [False]
 mutations = []
@@ -240,6 +248,12 @@ def handle(route):
                 "days": [{"date": "2025-11-01", "amounts": {"usd": 1.25}}],
             },
         )
+    if path == "/admin/models":
+        if req.method == "PATCH":
+            assert data["id"] == model_state["id"]
+            model_state.update(data)
+            return respond(data)
+        return respond({"models": [model_state]})
     if path == "/admin/operations":
         return respond(
             {
@@ -508,6 +522,12 @@ with sync_playwright() as p:
     assert page.locator("#password-form,#usage-panel").count() == 0
     assert page.locator("#admin-summary>div").count() == 6
     assert ("GET", "/admin/quota-defaults") not in api_calls
+    page.locator('[data-tab="models"]').click()
+    page.get_by_role("button", name="开启 GPT-6 Luna").click()
+    page.locator("#model-list").get_by_text("已开放", exact=True).wait_for()
+    page.get_by_role("button", name="停用 GPT-6 Luna").click()
+    page.locator("#model-list").get_by_text("已关闭", exact=True).wait_for()
+    page.locator("#admin-tab").click()
     search = page.locator("#admin-filter-form [name=q]")
     search.fill("retry-test")
     page.locator("#admin-filter-form button").click()

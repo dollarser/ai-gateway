@@ -1,4 +1,11 @@
 import {
+  enabledModels,
+  LOCAL_ASR,
+  LOCAL_TTS,
+  localVoiceCatalog,
+  requirePublicModel,
+} from "./model-access.mjs";
+import {
   embeddingCatalog,
   EMBEDDING_MODELS,
   proxyEmbedding,
@@ -432,17 +439,21 @@ export async function edgeAPI(request, env, ctx) {
       raw = credentials(request, env);
       if (path === "/v1/models") {
         const u = await store.catalogUser(raw);
+        const enabled = await enabledModels(store);
         const data = [
           ...(u.permitted.includes("qwen")
             ? lunaCatalogForUser(u, env).data
             : []),
           ...audioModelsForUser(u, env),
           ...(u.permitted.includes("qwen") ? embeddingCatalog(u, env) : []),
+          ...localVoiceCatalog(u.permitted, enabled),
         ];
         let partial = false;
         if (
           u.permitted.includes("qwen") &&
-          env.LOCAL_MODELS_ENABLED === "true"
+          env.LOCAL_MODELS_ENABLED === "true" &&
+          (enabled.has("Qwen3.8-27B") ||
+            enabled.has("Qwen/Qwen3-Embedding-0.6B"))
         ) {
           const key = new Request(
             "https://" + url.hostname + "/__local-model-catalog",
@@ -489,14 +500,24 @@ export async function edgeAPI(request, env, ctx) {
               partial = true;
             }
         }
-        return json({ object: "list", data: filterCatalog(data, url) }, 200, {
-          "X-Request-ID": id,
-          "X-Inference-Execution": "edge",
-          "Cache-Control": "no-store",
-          ...(partial
-            ? { "X-Model-Catalog-Partial": "local_unavailable" }
-            : {}),
-        });
+        return json(
+          {
+            object: "list",
+            data: filterCatalog(
+              data.filter((model) => enabled.has(model.id)),
+              url,
+            ),
+          },
+          200,
+          {
+            "X-Request-ID": id,
+            "X-Inference-Execution": "edge",
+            "Cache-Control": "no-store",
+            ...(partial
+              ? { "X-Model-Catalog-Partial": "local_unavailable" }
+              : {}),
+          },
+        );
       }
       lease = await store.acquire(raw, service, path, {
         client_ip: ip ?? null,
@@ -520,6 +541,10 @@ export async function edgeAPI(request, env, ctx) {
     if (ws) {
       if (url.searchParams.get("model")?.startsWith("gpt-"))
         throw new Denied(422, "云语音使用 HTTP 接口，不能使用自建 WebSocket");
+      trace.model =
+        url.searchParams.get("model") ||
+        (service === "asr" ? LOCAL_ASR : LOCAL_TTS);
+      await requirePublicModel(store, trace.model, path);
       trace.provider = "local";
       trace.protocol = "websocket";
       const r = await origin(request, env, lease, id, null);
@@ -541,7 +566,9 @@ export async function edgeAPI(request, env, ctx) {
           "multipart/form-data",
         )
       ) {
-        if (local)
+        if (local) {
+          trace.model = LOCAL_ASR;
+          await requirePublicModel(store, trace.model, path);
           return track(
             await origin(request, env, lease, id, bytes),
             store,
@@ -550,6 +577,7 @@ export async function edgeAPI(request, env, ctx) {
             ctx,
             start,
           );
+        }
         throw new Denied(
           422,
           "识别需要 multipart/form-data，包含 model 和 file",
@@ -566,7 +594,10 @@ export async function edgeAPI(request, env, ctx) {
         throw new Denied(422, "无效的识别表单");
       }
       trace.model = form.get("model");
-      if (badAudio(trace.model, ASR_MODEL, local))
+      const localASR = badAudio(trace.model, ASR_MODEL, local);
+      if (localASR && !trace.model) trace.model = LOCAL_ASR;
+      await requirePublicModel(store, trace.model, path);
+      if (localASR)
         return track(
           await origin(request, env, lease, id, bytes),
           store,
@@ -645,7 +676,10 @@ export async function edgeAPI(request, env, ctx) {
         throw new Denied(422, "请求必须为 JSON 对象");
       trace.model = payload.model;
       if (path === "/v1/audio/speech") {
-        if (badAudio(payload.model, TTS_MODEL, local))
+        const localTTS = badAudio(payload.model, TTS_MODEL, local);
+        if (localTTS && !trace.model) trace.model = LOCAL_TTS;
+        await requirePublicModel(store, trace.model, path);
+        if (localTTS)
           return track(
             await origin(request, env, lease, id, bytes),
             store,
@@ -679,6 +713,7 @@ export async function edgeAPI(request, env, ctx) {
         path === "/v1/embeddings" &&
         Object.hasOwn(EMBEDDING_MODELS, payload.model)
       ) {
+        await requirePublicModel(store, payload.model, path);
         trace.provider = "openai";
         trace.protocol = "http";
         const result = await proxyEmbedding(
@@ -700,6 +735,7 @@ export async function edgeAPI(request, env, ctx) {
         trace.protocol = payload.stream ? "sse" : "http";
         if (!["/v1/chat/completions", "/v1/responses"].includes(path))
           throw new Denied(422, "Luna 使用 Chat Completions 或 Responses");
+        await requirePublicModel(store, payload.model, path);
         response = await proxyLuna(
           internalRequest(request, lease, JSON.stringify(payload)),
           env,
@@ -712,6 +748,7 @@ export async function edgeAPI(request, env, ctx) {
       } else {
         if (path === "/v1/responses")
           throw new Denied(422, "Responses 当前仅支持 gpt-6-luna");
+        await requirePublicModel(store, payload.model, path);
         trace.provider = "local";
         if (["/v1/chat/completions", "/v1/completions"].includes(path))
           trace.estimated_input_tokens = Math.ceil(bytes.length / 2);

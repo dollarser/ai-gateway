@@ -17,6 +17,7 @@ FILES = (
     "portal-common.js",
     "admin-portal.js",
     "notice-manager.js",
+    "model-manager.js",
     "admin.js",
     "admin-costs.js",
     "admin.css",

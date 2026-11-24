@@ -1,3 +1,4 @@
+import { adminModelRoute } from "./model-access.mjs";
 import { networkAdminRoute } from "./network-admin.mjs";
 import { operationsRoute } from "./operations.mjs";
 import { Denied, publicUser, day } from "./store.mjs";
@@ -61,6 +62,8 @@ const result = (v) =>
     },
   });
 export async function adminRoute(request, store, u, readBody, env = {}) {
+  const models = await adminModelRoute(request, store, u, readBody);
+  if (models) return models;
   const network = await networkAdminRoute(request, env, store, u, readBody);
   if (network) return network;
   const operational = await operationsRoute(request, store, u, readBody, env);
