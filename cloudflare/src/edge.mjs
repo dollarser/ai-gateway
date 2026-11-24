@@ -1,6 +1,5 @@
 import {
   discoverableModels,
-  filterUserModels,
   LOCAL_ASR,
   LOCAL_TTS,
   localVoiceCatalog,
@@ -441,10 +440,7 @@ export async function edgeAPI(request, env, ctx) {
       raw = credentials(request, env);
       if (path === "/v1/models") {
         const u = await store.catalogUser(raw);
-        const enabled = filterUserModels(
-          await discoverableModels(store),
-          u.allowed_model_ids,
-        );
+        const enabled = await discoverableModels(store, u.allowed_model_ids);
         const data = [
           ...(u.permitted.includes("qwen")
             ? lunaCatalogForUser(u, env).data

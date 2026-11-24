@@ -1,7 +1,6 @@
 import { CLOUD_TEXT_MODELS } from "./cloud-text-models.mjs";
 import {
   discoverableModels,
-  filterUserModels,
   requirePublicModel,
   validateModelAllowlist,
 } from "./model-access.mjs";
@@ -264,10 +263,7 @@ async function internal(request, env, store, path, ctx) {
     const luna = permissions.includes("qwen")
       ? await lunaCatalog(store, env, b.lease)
       : { data: [] };
-    const enabled = filterUserModels(
-      await discoverableModels(store),
-      r.allowed_model_ids,
-    );
+    const enabled = await discoverableModels(store, r.allowed_model_ids);
     return json({
       data: [...luna.data, ...(await audioModels(store, env, b.lease))].filter(
         (model) => enabled.has(model.id),
@@ -283,10 +279,7 @@ async function internal(request, env, store, path, ctx) {
       "SELECT u.allowed_model_ids FROM requests r JOIN users u ON u.id=r.user_id WHERE r.id=?",
       lease,
     );
-    const enabled = filterUserModels(
-      await discoverableModels(store),
-      owner.allowed_model_ids,
-    );
+    const enabled = await discoverableModels(store, owner.allowed_model_ids);
     return json({
       data: catalog.data.filter((model) => enabled.has(model.id)),
     });
@@ -874,9 +867,7 @@ async function route(request, env, ctx) {
         k === "services"
           ? JSON.stringify(b[k])
           : k === "allowed_model_ids"
-            ? b[k] === null
-              ? null
-              : JSON.stringify(b[k])
+            ? JSON.stringify(b[k])
             : k === "enabled"
               ? Number(b[k])
               : b[k],

@@ -8,7 +8,7 @@ GPT-6 系列及 OpenAI 嵌入模型共用同一云文本额度。现有账号和
 | GPT-6.1 | `gpt-6.1-sol`、`gpt-6.1-terra` |
 | GPT-6.2 | `gpt-6.2-sol`、`gpt-6.2-astra` |
 
-在管理后台「模型管理」逐个开放。Luna 初始开启，其余初始关闭。各模型按 [OpenAI Standard 费率](https://developers.openai.com/api/docs/pricing)分别预留并估算计费。本机中继继续转发对话请求。对不支持关闭推理的模型，带客户端自定义函数的调用使用 Responses。
+在用户详情页逐个授权；「模型管理」仅维护新账号默认模型，初始包含 Luna。各模型按 [OpenAI Standard 费率](https://developers.openai.com/api/docs/pricing)分别预留并估算计费。本机中继继续转发对话请求。对不支持关闭推理的模型，带客户端自定义函数的调用使用 Responses。
 
 ## 配置与发布
 

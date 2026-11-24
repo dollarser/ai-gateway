@@ -10,7 +10,7 @@ import { now } from "./crypto.mjs";
 
 export const LOCAL_ASR = "funasr";
 export const LOCAL_TTS = "cosyvoice";
-const prefix = "public_model:";
+
 const definitions = [
   ...[...CLOUD_TEXT_MODELS].map(([id, model]) => ({
     id,
@@ -80,31 +80,29 @@ const aliases = new Map(
   definitions.flatMap((m) => (m.aliases ?? []).map((id) => [id, m.id])),
 );
 
-async function modelSwitches(store) {
+async function modelDefaults(store) {
   const rows = await store.all(
-    "SELECT name,value FROM settings WHERE (name >= ? AND name < ?) OR name='global_limits'",
-    prefix,
-    "public_model;",
+    "SELECT name,value FROM settings WHERE name IN ('new_account_model_ids','global_limits')",
   );
-  const enabled = new Set([LUNA_MODEL]);
-  let cloudPaused = false;
-  for (const { name, value } of rows) {
-    if (name === "global_limits") {
-      cloudPaused = JSON.parse(value).cloud_enabled === false;
-      continue;
-    }
-    const id = name.slice(prefix.length);
-    if (value === "true") enabled.add(id);
-    else enabled.delete(id);
-  }
-  return { enabled, cloudPaused };
+  const settings = Object.fromEntries(
+    rows.map(({ name, value }) => [name, JSON.parse(value)]),
+  );
+  return {
+    enabled: new Set(settings.new_account_model_ids),
+    cloudPaused: settings.global_limits.cloud_enabled === false,
+  };
 }
 
-export async function discoverableModels(store) {
-  const { enabled, cloudPaused } = await modelSwitches(store);
-  if (cloudPaused)
-    for (const id of enabled)
-      if (registry.get(id)?.provider === "openai") enabled.delete(id);
+export async function discoverableModels(store, encoded) {
+  const enabled = new Set(JSON.parse(encoded ?? "[]"));
+  if ([...enabled].some((id) => registry.get(id)?.provider === "openai")) {
+    const setting = await store.first(
+      "SELECT json_extract(value,'$.cloud_enabled') enabled FROM settings WHERE name='global_limits'",
+    );
+    if (setting?.enabled === 0)
+      for (const id of enabled)
+        if (registry.get(id)?.provider === "openai") enabled.delete(id);
+  }
   return enabled;
 }
 
@@ -128,19 +126,13 @@ export function localVoiceCatalog(permissions, enabled) {
 }
 
 export function validateModelAllowlist(value) {
-  if (value === null) return;
   if (
     !Array.isArray(value) ||
     value.length > registry.size ||
     new Set(value).size !== value.length ||
     value.some((id) => !registry.has(id))
   )
-    throw new Denied(422, "模型白名单必须为有效的模型 ID 列表或 null");
-}
-
-export function filterUserModels(enabled, encoded) {
-  if (encoded == null) return enabled;
-  return new Set(JSON.parse(encoded).filter((id) => enabled.has(id)));
+    throw new Denied(422, "模型白名单必须为有效的模型 ID 列表");
 }
 
 export async function requirePublicModel(store, requested, path, lease) {
@@ -152,18 +144,12 @@ export async function requirePublicModel(store, requested, path, lease) {
     throw error;
   }
   const flag = await store.first(
-    "SELECT s.value, (u.allowed_model_ids IS NULL OR EXISTS(SELECT 1 FROM json_each(u.allowed_model_ids) WHERE value=?)) allowed FROM requests r JOIN users u ON u.id=r.user_id LEFT JOIN settings s ON s.name=? WHERE r.id=? AND r.path=? AND r.ended IS NULL AND u.enabled=1 AND u.must_change=0",
+    "SELECT EXISTS(SELECT 1 FROM json_each(u.allowed_model_ids) WHERE value=?) allowed FROM requests r JOIN users u ON u.id=r.user_id WHERE r.id=? AND r.path=? AND r.ended IS NULL AND u.enabled=1 AND u.must_change=0",
     id,
-    prefix + id,
     lease,
     path,
   );
   if (!flag) throw new Denied(403, "推理请求凭证已失效");
-  if (flag.value === null ? id !== LUNA_MODEL : flag.value !== "true") {
-    const error = new Denied(403, "此模型尚未开放或已停用");
-    error.code = "model_disabled";
-    throw error;
-  }
   if (!flag.allowed) {
     const error = new Denied(403, "该账号没有此模型的使用权限");
     error.code = "model_not_allowed";
@@ -175,7 +161,7 @@ export async function adminModelRoute(request, store, user, readBody) {
   const { pathname } = new URL(request.url);
   if (pathname !== "/admin/models") return null;
   if (request.method === "GET") {
-    const { enabled, cloudPaused } = await modelSwitches(store);
+    const { enabled, cloudPaused } = await modelDefaults(store);
     return Response.json(
       {
         models: definitions.map((model) => ({
@@ -199,14 +185,16 @@ export async function adminModelRoute(request, store, user, readBody) {
 
   await store.db.batch([
     store.stmt(
-      "INSERT INTO settings(name,value) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET value=excluded.value",
-      prefix + update.id,
-      String(update.enabled),
+      update.enabled
+        ? "UPDATE settings SET value=json_insert(value,'$[#]',?) WHERE name='new_account_model_ids' AND NOT EXISTS(SELECT 1 FROM json_each(settings.value) WHERE value=?)"
+        : "UPDATE settings SET value=(SELECT json_group_array(value) FROM json_each(settings.value) WHERE value<>?) WHERE name='new_account_model_ids'",
+      update.id,
+      ...(update.enabled ? [update.id] : []),
     ),
     store.stmt(
       "INSERT INTO audit(actor,action,target,ts) VALUES(?,?,?,?)",
       user.id,
-      update.enabled ? "enable_public_model" : "disable_public_model",
+      update.enabled ? "enable_default_model" : "disable_default_model",
       update.id,
       now(),
     ),

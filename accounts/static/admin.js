@@ -378,7 +378,7 @@
     const form = $("edit-form"),
       list = $("user-model-list");
     form.elements.id.value = u.id;
-    const allowed = u.allowed_model_ids ?? null;
+    const allowed = u.allowed_model_ids ?? [];
     list.querySelectorAll("label").forEach((label) => label.remove());
     list.hidden = true;
     form.elements.web_search_daily_calls.value = u.web_search_daily_calls ?? 30;
@@ -410,16 +410,11 @@
           box.type = "checkbox";
           box.name = "allowed_models";
           box.value = model.id;
-          box.checked = allowed?.includes(model.id) ?? model.enabled;
+          box.checked = allowed.includes(model.id);
           box.defaultChecked = box.checked;
           option.append(
             box,
-            model.name +
-              (!model.enabled
-                ? " · 全站关闭"
-                : model.cloud_paused
-                  ? " · 云模型已暂停"
-                  : ""),
+            model.name + (model.cloud_paused ? " · 云模型已暂停" : ""),
           );
           list.append(option);
         }
@@ -510,9 +505,7 @@
       u.enabled ? "已启用" : "已封禁",
       u.must_change ? "待修改初始密码" : "",
       u.created ? "创建于 " + date(u.created) : "",
-      u.allowed_model_ids == null
-        ? "使用全站默认模型"
-        : "模型白名单 " + u.allowed_model_ids.length + " 项",
+      "已授权模型 " + (u.allowed_model_ids?.length ?? 0) + " 项",
     ]
       .filter(Boolean)
       .join(" · ");

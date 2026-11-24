@@ -94,7 +94,7 @@ export class Store {
     try {
       const verification = o.emailVerification;
       const insert = this.stmt(
-        "INSERT INTO users(display_name,password,role,services,rpm,daily_requests,concurrency,must_change,created,email,luna_monthly_tokens,openai_asr_daily_seconds,openai_tts_daily_characters,email_verified_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?" +
+        "INSERT INTO users(display_name,password,role,services,rpm,daily_requests,concurrency,must_change,created,email,luna_monthly_tokens,openai_asr_daily_seconds,openai_tts_daily_characters,email_verified_at,allowed_model_ids) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT value FROM settings WHERE name='new_account_model_ids')" +
           (verification
             ? " WHERE EXISTS(SELECT 1 FROM registration_codes WHERE email_hash=? AND id=? AND code_hash=? AND state='sent' AND expires>? AND attempts<=5)"
             : "") +

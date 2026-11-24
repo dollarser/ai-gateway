@@ -372,13 +372,10 @@ before(async () => {
     "gpt-realtime-2.1-mini",
     "cosyvoice",
   ];
-  await db.batch(
-    ids.map((id) =>
-      db
-        .prepare("INSERT INTO settings(name,value) VALUES(?, 'true')")
-        .bind("public_model:" + id),
-    ),
-  );
+  await db
+    .prepare("UPDATE settings SET value=? WHERE name='new_account_model_ids'")
+    .bind(JSON.stringify(ids))
+    .run();
 });
 after(async () => {
   await mf?.dispose();
@@ -1553,7 +1550,7 @@ async function apiCall(path, key, payload, headers = {}) {
   });
   return { status: r.status, headers: r.headers, body: await r.json() };
 }
-test("Admin model switches control discovery and direct calls, including local voice aliases", async () => {
+test("Default model edits only affect new accounts; account grants cover local voice aliases", async () => {
   const { uid, key } = await lunaUser("public-model-switch");
   await db
     .prepare("UPDATE users SET services=? WHERE id=?")
@@ -1573,11 +1570,19 @@ test("Admin model switches control discovery and direct calls, including local v
     assert.equal((await update("gpt-6-luna", false)).status, 200);
     assert.equal((await update("cosyvoice", false)).status, 200);
     const catalog = await apiCall("/v1/models?output_modalities=all", key);
+    assert.ok(catalog.body.data.some(({ id }) => id === "gpt-6-luna"));
+    const newborn = await lunaUser("new-after-model-default-edit");
     assert.ok(
-      !catalog.body.data.some(({ id }) =>
-        ["gpt-6-luna", "cosyvoice"].includes(id),
+      !(await apiCall("/v1/models", newborn.key)).body.data.some(
+        ({ id }) => id === "gpt-6-luna",
       ),
     );
+    const saved = await call(
+      "/admin/users/" + uid,
+      { allowed_model_ids: [] },
+      { method: "PATCH", access: admin },
+    );
+    assert.equal(saved.status, 200);
     const before = { providerCalls, originCalls };
     const chat = await apiCall("/v1/chat/completions", key, {
       model: "gpt-6-luna",
@@ -1592,12 +1597,11 @@ test("Admin model switches control discovery and direct calls, including local v
     });
     for (const response of [chat, speech, ws]) {
       assert.equal(response.status, 403);
-      assert.equal(response.body.error_code, "model_disabled");
+      assert.equal(response.body.error_code, "model_not_allowed");
     }
     assert.deepEqual({ providerCalls, originCalls }, before);
     assert.equal((await update("gpt-6-luna", true)).status, 200);
-    const enabled = await apiCall("/v1/models", key);
-    assert.ok(enabled.body.data.some(({ id }) => id === "gpt-6-luna"));
+    assert.deepEqual((await apiCall("/v1/models", key)).body.data, []);
   } finally {
     await update("gpt-6-luna", true);
     await update("cosyvoice", true);
@@ -1674,11 +1678,11 @@ test("User allowlists bound to the account filter model discovery and account-to
     assert.equal(providerCalls, before);
     assert.equal((await chat(b.key, astra)).status, 200);
     await switchAstra(false);
-    assert.equal((await chat(b.key, astra)).body.error_code, "model_disabled");
+    assert.equal((await chat(b.key, astra)).status, 200);
     await set(a.uid, []);
     assert.deepEqual(await models(a.key), []);
-    await set(a.uid, null);
-    assert.deepEqual(await models(a.key), [luna]);
+    assert.equal((await set(a.uid, null)).status, 422);
+    assert.deepEqual(await models(a.key), []);
   } finally {
     await switchAstra(false);
   }
@@ -1694,15 +1698,19 @@ test("Each new cloud language model is closed by default and can be independentl
     "gpt-6.2-sol": [2000, 10000],
     "gpt-6.2-astra": [8000, 40000],
   };
-  const update = (id, enabled) =>
-    call("/admin/models", { id, enabled }, { method: "PATCH", access: admin });
+  const update = (ids) =>
+    call(
+      "/admin/users/" + uid,
+      { allowed_model_ids: ids },
+      { method: "PATCH", access: admin },
+    );
   for (const [id, [input, output]] of Object.entries(prices)) {
     const payload = { model: id, messages: [{ role: "user", content: "hi" }] };
     const endpoint = "/v1/chat/completions";
     const blocked = await apiCall(endpoint, key, payload);
-    assert.equal(blocked.body.error_code, "model_disabled");
+    assert.equal(blocked.body.error_code, "model_not_allowed");
     try {
-      assert.equal((await update(id, true)).status, 200);
+      assert.equal((await update([id])).status, 200);
       const list = await apiCall("/v1/models", key);
       assert.ok(list.body.data.some((model) => model.id === id));
       const result = await apiCall(endpoint, key, payload);
@@ -1730,7 +1738,7 @@ test("Each new cloud language model is closed by default and can be independentl
           charge.completion_tokens * output,
       );
     } finally {
-      await update(id, false);
+      await update([]);
     }
   }
 });

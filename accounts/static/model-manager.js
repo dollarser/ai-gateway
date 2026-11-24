@@ -15,37 +15,39 @@
     list.replaceChildren();
     for (const model of result.models) {
       const enabled = model.enabled;
-      const switchButton = action(enabled ? "停用" : "开启", async () => {
-        switchButton.disabled = true;
-        const next = !model.enabled;
-        try {
-          const updated = await api("/admin/models", "PATCH", {
-            id: model.id,
-            enabled: next,
-          });
-          model.enabled = updated.enabled;
-          status.textContent = model.enabled
-            ? model.cloud_paused
-              ? "全站云模型已暂停"
-              : "已开放"
-            : "已关闭";
-          status.classList.toggle("status-ok", model.enabled);
-          status.classList.toggle("status-disabled", !model.enabled);
-          switchButton.textContent = model.enabled ? "停用" : "开启";
-          switchButton.setAttribute(
-            "aria-label",
-            switchButton.textContent + " " + model.name,
-          );
-          panelStatus(
-            "model-write-status",
-            model.name + (model.enabled ? " 已开放" : " 已停用"),
-          );
-        } catch (error) {
-          panelStatus("model-write-status", error.message, () => load());
-        } finally {
-          switchButton.disabled = false;
-        }
-      });
+      const switchButton = action(
+        enabled ? "移出默认" : "设为默认",
+        async () => {
+          switchButton.disabled = true;
+          const next = !model.enabled;
+          try {
+            const updated = await api("/admin/models", "PATCH", {
+              id: model.id,
+              enabled: next,
+            });
+            model.enabled = updated.enabled;
+            status.textContent = model.enabled ? "默认开启" : "默认关闭";
+            status.classList.toggle("status-ok", model.enabled);
+            status.classList.toggle("status-disabled", !model.enabled);
+            switchButton.textContent = model.enabled ? "移出默认" : "设为默认";
+            switchButton.setAttribute(
+              "aria-label",
+              switchButton.textContent + " " + model.name,
+            );
+            panelStatus(
+              "model-write-status",
+              model.name +
+                (model.enabled
+                  ? " 已加入新账号默认列表"
+                  : " 已从新账号默认列表移除"),
+            );
+          } catch (error) {
+            panelStatus("model-write-status", error.message, () => load());
+          } finally {
+            switchButton.disabled = false;
+          }
+        },
+      );
       switchButton.setAttribute(
         "aria-label",
         switchButton.textContent + " " + model.name,
@@ -65,11 +67,7 @@
       const status = document.createElement("span");
       status.className =
         "status-badge " + (enabled ? "status-ok" : "status-disabled");
-      status.textContent = enabled
-        ? model.cloud_paused
-          ? "全站云模型已暂停"
-          : "已开放"
-        : "已关闭";
+      status.textContent = enabled ? "默认开启" : "默认关闭";
       cells[4].append(status);
     }
   }
