@@ -32,6 +32,7 @@ async function api(path, method = "GET", body, signal) {
         (typeof data.detail === "string" ? data.detail : "请求失败")) +
         (data.request_id ? " · 请求 ID：" + data.request_id : ""),
     );
+    error.status = response.status;
     error.code = data.error_code;
     error.retryable = data.retryable === true;
     error.request_id = data.request_id;

@@ -20,6 +20,8 @@ const registrationEnv = {
   }),
 };
 let mf, db, admin;
+const costFailures = [];
+let costCalls = 0;
 let openaiMode = "json",
   providerCalls = 0;
 let originCalls = 0,
@@ -79,12 +81,15 @@ async function provider(request) {
     assert.equal(request.headers.get(name), null);
   const costUrl = new URL(request.url);
   if (costUrl.pathname === "/v1/organization/costs") {
+    costCalls++;
     assert.equal(request.method, "GET");
     assert.equal(
       request.headers.get("Authorization"),
       "Bearer test-admin-cost-key",
     );
     assert.equal(request.headers.get("Cookie"), null);
+    if (costFailures.length)
+      return Response.json({}, { status: costFailures.shift() });
     const first = !costUrl.searchParams.has("page");
     const start = Number(costUrl.searchParams.get("start_time"));
     return Response.json({
@@ -2008,6 +2013,27 @@ test("Organization costs are admin-only and aggregate paginated amounts by curre
     result.body.days.map((day) => day.amounts),
     [{ usd: 3 }, { usd: -0.5, eur: 10 }],
   );
+});
+
+test("Organization costs retry one temporary failure without retrying invalid credentials", async () => {
+  const query = () =>
+    call("/admin/openai-costs?period=7d", undefined, { access: admin });
+  const before = costCalls;
+  try {
+    costFailures.push(503);
+    assert.equal((await query()).status, 200);
+    assert.equal(costCalls - before, 3); // Temporary failure plus two successful pages.
+    costFailures.push(502, 503);
+    assert.equal((await query()).status, 502);
+    assert.equal(costCalls - before, 5);
+    costFailures.push(401);
+    const denied = await query();
+    assert.equal(denied.status, 502);
+    assert.match(denied.body.detail, /凭据/);
+    assert.equal(costCalls - before, 6);
+  } finally {
+    costFailures.length = 0;
+  }
 });
 
 test("Global budget controls are admin-only, atomic across accounts, and zero prevents provider calls", async () => {

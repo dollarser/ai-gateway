@@ -754,8 +754,15 @@ with sync_playwright() as p:
         full_page=True,
     )
     assert page.evaluate("document.documentElement.scrollWidth") <= 390
+    session_requests = []
+    page.route("**/account/me", lambda route: session_requests.append(route), times=1)
     page.locator('a[href="/"]').click()
+    page.locator("#session-check").wait_for(state="visible")
+    assert page.locator("#login").is_hidden()
+    assert page.locator("#workspace").is_hidden()
+    handle(session_requests[0])
     page.locator("#usage-panel").wait_for(state="visible")
+    assert page.locator("#login").is_hidden()
     page.locator('[data-tab="notices"]').click()
     page.locator('[data-tab="profile"]').click()
     page.locator("#display_name-form [name=display_name]").fill("demo")

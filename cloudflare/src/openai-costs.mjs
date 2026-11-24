@@ -1,9 +1,11 @@
 import { Denied } from "./store.mjs";
-
 import { writeWorkerLog } from "./worker-logs.mjs";
 
 const endpoint = "https://api.openai.com/v1/organization/costs";
 const daySeconds = 86400;
+const transientStatuses = new Set([
+  500, 502, 503, 504, 520, 521, 522, 523, 524,
+]);
 
 export async function organizationCosts(key, period, fetchCosts = fetch) {
   if (!["month", "7d", "30d"].includes(period))
@@ -26,16 +28,47 @@ export async function organizationCosts(key, period, fetchCosts = fetch) {
   });
   const buckets = new Map();
   const cursors = new Set();
-  const signal = AbortSignal.timeout(10000);
+  const signal = AbortSignal.timeout(20000);
+  let canRetry = true;
+  let stage = "fetch";
+  async function fetchPage() {
+    for (;;) {
+      let status;
+      let category;
+      try {
+        const response = await fetchCosts(url, {
+          method: "GET",
+          headers: {
+            Authorization: "Bearer " + key,
+            Accept: "application/json",
+          },
+          redirect: "manual",
+          signal: AbortSignal.any([signal, AbortSignal.timeout(9000)]),
+        });
+        if (!canRetry || !transientStatuses.has(response.status))
+          return response;
+        status = response.status;
+        category = "temporary_http_failure";
+        await response.body?.cancel().catch(() => {});
+      } catch (error) {
+        if (!canRetry || signal.aborted || error instanceof Denied) throw error;
+        category = "transport_failure";
+      }
+      canRetry = false;
+      writeWorkerLog(
+        "openai_costs_retry",
+        { upstream_status: status, failure_category: category },
+        "warn",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
 
   try {
     for (;;) {
-      const response = await fetchCosts(url, {
-        method: "GET",
-        headers: { Authorization: "Bearer " + key, Accept: "application/json" },
-        redirect: "manual",
-        signal,
-      });
+      stage = "fetch";
+      const response = await fetchPage();
+      stage = "read";
       if (!response.ok) {
         const error = response.headers
           .get("content-type")
@@ -53,7 +86,7 @@ export async function organizationCosts(key, period, fetchCosts = fetch) {
           "openai_costs_rejected",
           {
             upstream_status: response.status,
-            reason: region
+            failure_category: region
               ? "region"
               : invalidKey
                 ? "key"
@@ -63,6 +96,8 @@ export async function organizationCosts(key, period, fetchCosts = fetch) {
           },
           "warn",
         );
+        if (response.status === 429)
+          throw new Denied(503, "OpenAI 费用查询受到限流，请稍后刷新");
         if (region) throw new Denied(502, "OpenAI 费用查询受到上游地区限制");
         if (invalidKey || permission)
           throw new Denied(502, "OpenAI 费用查询凭据无效或缺少组织权限");
@@ -108,7 +143,15 @@ export async function organizationCosts(key, period, fetchCosts = fetch) {
     }
   } catch (error) {
     if (error instanceof Denied) throw error;
-    writeWorkerLog("openai_costs_unavailable", {}, "warn");
+    writeWorkerLog(
+      "openai_costs_unavailable",
+      {
+        stage,
+        failure_category:
+          stage === "fetch" ? "transport_failure" : "invalid_response",
+      },
+      "warn",
+    );
     throw new Denied(502, "读取 OpenAI 费用失败，请稍后重试");
   }
 

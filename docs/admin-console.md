@@ -73,7 +73,7 @@ GPT-6 Luna 初始开启，其余模型初始关闭。管理员保存的模型开
 
 「费用概览」按 UTC 显示本月至今、最近 7 天或 30 天的 OpenAI 组织费用，并按币种分开汇总。当天费用可能延迟入账。组织预付余额可通过同页的「OpenAI 账单与余额」查看。网关预算按北京时间统计，反映网关内部估算和预留。
 
-在 Worker `hilex-accounts` 使用 Secret `OPENAI_ADMIN_KEY`。管理员打开该页时，Worker 按 `OPENAI_TRANSPORT` 配置向 OpenAI Costs API 发起只读请求，生产环境通过受保护的本机中继。浏览器只接收汇总后的日期与分币种金额。模型调用仍按 `OPENAI_TRANSPORT` 配置走本机中继。
+在 Worker `hilex-accounts` 使用 Secret `OPENAI_ADMIN_KEY`。管理员打开该页时，Worker 按 `OPENAI_TRANSPORT` 配置向 OpenAI Costs API 发起只读请求，生产环境通过受保护的本机中继。浏览器只接收汇总后的日期与分币种金额。查询遇到临时连接或服务故障时最多重试一次，鉴权错误或限流会直接提示。模型调用仍按 `OPENAI_TRANSPORT` 配置走本机中继。
 
 ## 全站运行管理
 

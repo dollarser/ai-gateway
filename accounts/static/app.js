@@ -15,10 +15,11 @@ async function tab(name) {
   if (name === "notices") await window.noticeUI.load();
   if (name === "usage") await loadUsage();
 }
-async function refresh() {
-  const data = await api("/account/me");
+async function refresh(signal) {
+  const data = await api("/account/me", "GET", undefined, signal);
   user = data.user;
   csrf = data.csrf;
+  $("session-check").hidden = true;
   for (const id of [
     "login",
     "register",
@@ -235,7 +236,24 @@ $("password-form").addEventListener(
     location.reload();
   }),
 );
-document.addEventListener("DOMContentLoaded", () => refresh().catch(() => {}), {
+async function initializeSession() {
+  const status = $("session-check-status");
+  status.textContent = "正在确认登录状态…";
+  try {
+    await refresh(AbortSignal.timeout(10000));
+  } catch (error) {
+    if (user) {
+      message(error.message, true);
+    } else if (error.status === 401) {
+      $("session-check").hidden = true;
+      $("login").hidden = false;
+    } else {
+      status.textContent = "暂时无法确认登录状态。";
+      status.append(" ", action("重试", initializeSession));
+    }
+  }
+}
+document.addEventListener("DOMContentLoaded", initializeSession, {
   once: true,
 });
 
