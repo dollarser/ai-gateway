@@ -10,6 +10,8 @@ import {
   CLOUD_TEXT_PATHS,
   LUNA_MODEL,
 } from "./cloud-text-models.mjs";
+const webSearchPriceNanos = 10000000;
+const webSearchContextTokens = 128000;
 const month = () => day().slice(0, 7);
 const integer = (n) => Number.isSafeInteger(n) && n >= 0;
 export function budgetValue(value) {
@@ -69,6 +71,7 @@ export function lunaCatalogForUser(r, env) {
             object: "model",
             owned_by: "openai",
             endpoints: CLOUD_TEXT_PATHS,
+            ...(id === LUNA_MODEL && { responses_tools: ["web_search"] }),
             tool_calling: {
               ...(model.reasoningNone && {
                 chat_completions_reasoning_effort: "none",
@@ -85,8 +88,7 @@ export function lunaCatalogForUser(r, env) {
   };
 }
 
-// No file inputs, server-side tools, hidden conversation state, or paid
-// processing tiers: every billable input must be present in this bounded request.
+// Allow bounded inputs and the explicitly metered Luna web search tool.
 export function preparePayload(payload, responses) {
   const allowed = responses
     ? [
@@ -94,6 +96,8 @@ export function preparePayload(payload, responses) {
         "input",
         "instructions",
         "max_output_tokens",
+        "max_tool_calls",
+        "include",
         "stream",
         "reasoning",
         "text",
@@ -195,12 +199,38 @@ export function preparePayload(payload, responses) {
   }
   // Check input/tool descriptors only; JSON schemas may legitimately contain type.
   check(responses ? payload.input : payload.messages);
+  const supportedSearch = responses && payload.model === LUNA_MODEL;
   if (
     payload.tools !== undefined &&
     (!Array.isArray(payload.tools) ||
-      payload.tools.some((t) => !t || t.type !== "function"))
+      payload.tools.some(
+        (tool) =>
+          !tool ||
+          (tool.type !== "function" &&
+            !(supportedSearch && tool.type === "web_search")),
+      ))
   )
-    throw new Denied(422, "仅开放客户端自定义函数工具");
+    throw new Denied(
+      422,
+      "内置 web_search 仅支持 gpt-6-luna 的 Responses；其他工具仅允许自定义函数",
+    );
+  const searchTools =
+    payload.tools?.filter((tool) => tool.type === "web_search") ?? [];
+  const webSearch = searchTools.length > 0;
+  if (
+    searchTools.length > 1 ||
+    (payload.max_tool_calls !== undefined &&
+      (!webSearch || payload.max_tool_calls !== 1))
+  )
+    throw new Denied(422, "每个响应最多允许一次内置搜索工具调用");
+  if (
+    payload.include !== undefined &&
+    (!webSearch ||
+      !Array.isArray(payload.include) ||
+      payload.include.length !== 1 ||
+      payload.include[0] !== "web_search_call.action.sources")
+  )
+    throw new Denied(422, "include 仅支持 web_search_call.action.sources");
   if (
     payload.max_tokens !== undefined &&
     payload.max_completion_tokens !== undefined
@@ -215,11 +245,29 @@ export function preparePayload(payload, responses) {
     [field]: max,
     service_tier: "default",
     store: false,
+    ...(webSearch && { max_tool_calls: 1 }),
   };
   delete result.max_tokens;
   const compatibility = [];
   if (payload.tools) {
     result.tools = payload.tools.map((t) => {
+      if (t.type === "web_search") {
+        if (
+          Object.keys(t).some(
+            (key) => !["type", "search_context_size"].includes(key),
+          ) ||
+          (t.search_context_size !== undefined &&
+            !["low", "medium", "high"].includes(t.search_context_size))
+        )
+          throw new Denied(
+            422,
+            "web_search 仅支持 search_context_size 为 low、medium 或 high",
+          );
+        return {
+          type: "web_search",
+          search_context_size: t.search_context_size ?? "low",
+        };
+      }
       const f = t.function ?? t;
       if (typeof f.name !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(f.name))
         throw new Denied(
@@ -273,7 +321,7 @@ export function preparePayload(payload, responses) {
   if (!responses && result.stream)
     result.stream_options = { include_usage: true };
   // A conservative upper bound for text tokenization, framing and function schemas.
-  const inputBound =
+  const suppliedInputBound =
     vision.inputBytes(result) +
     4096 +
     (responses
@@ -282,17 +330,20 @@ export function preparePayload(payload, responses) {
         : 1
       : payload.messages.length) *
       64;
-  if (inputBound > 250000)
+  const inputLimit = webSearch ? webSearchContextTokens : 250000;
+  if (suppliedInputBound > inputLimit)
     throw new Denied(
       413,
-      "Luna 输入预留超过 250000 tokens，请缩短上下文或减少图片",
+      "输入预留超过 " + inputLimit + " tokens，请缩短上下文或减少图片",
     );
+  const inputBound = webSearch ? webSearchContextTokens : suppliedInputBound;
   // Reserve an upper bound for input plus the full requested output limit.
   return {
     payload: result,
     inputBound,
     max,
     reservation: inputBound + max,
+    webSearch,
     compatibility: [...new Set(compatibility)].join(","),
   };
 }
@@ -336,16 +387,18 @@ export async function proxyLuna(
   const expectedPath = responses ? "/v1/responses" : "/v1/chat/completions";
   if (r.path !== expectedPath) throw new Denied(403, "请求凭证路径不匹配");
   const p = preparePayload(payload, responses);
-  const reserveCost = lunaCost(
-    { input: p.inputBound, output: p.max, cached: 0, writes: p.inputBound },
-    payload.model,
-  );
+  const today = day();
+  const reserveCost =
+    lunaCost(
+      { input: p.inputBound, output: p.max, cached: 0, writes: p.inputBound },
+      payload.model,
+    ) + (p.webSearch ? webSearchPriceNanos : 0);
   try {
     await store.run(
-      "INSERT INTO luna_usage(lease,user_id,month,reserved_tokens,charged_tokens,prompt_tokens,completion_tokens,reserved_cost_nanos,charged_cost_nanos,model) VALUES(?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO luna_usage(lease,user_id,month,reserved_tokens,charged_tokens,prompt_tokens,completion_tokens,reserved_cost_nanos,charged_cost_nanos,model,web_search_day,web_search_calls) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
       lease,
       r.user_id,
-      month(),
+      today.slice(0, 7),
       p.reservation,
       p.reservation,
       p.inputBound,
@@ -353,8 +406,16 @@ export async function proxyLuna(
       reserveCost,
       reserveCost,
       payload.model,
+      p.webSearch ? today : null,
+      p.webSearch ? 1 : null,
     );
   } catch (e) {
+    if (String(e).includes("web_search_daily_limit")) {
+      const error = new Denied(429, "该账号今日网页搜索额度已用完或已停用");
+      error.code = "web_search_daily_limit";
+      error.retryable = false;
+      throw error;
+    }
     const global = budgetError(e);
     if (global) throw global;
     if (String(e).includes("luna_budget_exhausted")) {
@@ -370,17 +431,25 @@ export async function proxyLuna(
       throw new Denied(409, "该请求已提交，不能重复调用");
     throw e;
   }
+  function responseCost(value) {
+    const usage = usageTokens(value?.usage);
+    if (!p.webSearch) return usage;
+    const calls = value?.tool_usage?.web_search?.num_requests;
+    return usage && integer(calls) ? { ...usage, searchCalls: calls } : null;
+  }
   async function settle(cost, id = null) {
     if (!cost) return; // Unknown usage keeps its conservative reservation charged.
     await store.run(
-      "UPDATE luna_usage SET charged_tokens=?,settled=1,prompt_tokens=?,completion_tokens=?,cached_tokens=?,cache_write_tokens=?,response_id=?,charged_cost_nanos=? WHERE lease=? AND settled=0",
+      "UPDATE luna_usage SET charged_tokens=?,settled=1,prompt_tokens=?,completion_tokens=?,cached_tokens=?,cache_write_tokens=?,response_id=?,charged_cost_nanos=?,web_search_calls=? WHERE lease=? AND settled=0",
       cost.total,
       cost.input,
       cost.output,
       cost.cached,
       cost.writes,
       typeof id === "string" ? id.slice(0, 256) : null,
-      lunaCost(cost, payload.model),
+      lunaCost(cost, payload.model) +
+        (cost.searchCalls ?? 0) * webSearchPriceNanos,
+      cost.searchCalls ?? null,
       lease,
     );
   }
@@ -409,7 +478,15 @@ export async function proxyLuna(
       p.payload,
       failure.upstream_error_param,
     );
-    await settle({ total: 0, input: 0, output: 0, cached: 0, writes: 0 });
+    if (!p.webSearch || upstream.status < 500)
+      await settle({
+        total: 0,
+        input: 0,
+        output: 0,
+        cached: 0,
+        writes: 0,
+        ...(p.webSearch && { searchCalls: 0 }),
+      });
     failure.compatibility = p.compatibility;
     throw failure;
   }
@@ -420,7 +497,7 @@ export async function proxyLuna(
     } catch {
       throw new Denied(502, "OpenAI 返回无效响应；预留额度待核对");
     }
-    await settle(usageTokens(value.usage), value.id);
+    await settle(responseCost(value), value.id);
     return Response.json(value, {
       headers: {
         "Cache-Control": "no-store",
@@ -457,7 +534,7 @@ export async function proxyLuna(
       throw new Error("Provider stream failed");
     const value = responses ? event.response : event;
     if (value?.id) id = value.id;
-    const parsed = usageTokens(value?.usage);
+    const parsed = responseCost(value);
     if (parsed && (!responses || event.type === "response.completed"))
       cost = parsed;
     if (
@@ -473,7 +550,7 @@ export async function proxyLuna(
         const r = await reader.read();
         if (r.done) {
           if (pending.trim()) accept(pending);
-          if (!terminal || !cost)
+          if (!terminal || (!cost && !p.webSearch))
             throw new Error("Provider stream ended before completion");
           done = true;
           await settle(cost, id);

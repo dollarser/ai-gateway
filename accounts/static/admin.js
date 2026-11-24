@@ -381,6 +381,7 @@
     const allowed = u.allowed_model_ids ?? null;
     list.querySelectorAll("label").forEach((label) => label.remove());
     list.hidden = true;
+    form.elements.web_search_daily_calls.value = u.web_search_daily_calls ?? 30;
     for (const k of quotaFields) form.elements[k].value = u[k];
     for (const box of form.querySelectorAll("[name=services]"))
       box.checked = u.services.includes(box.value);

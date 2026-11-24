@@ -175,6 +175,44 @@ async function provider(request) {
     completion_tokens: 20,
     prompt_tokens_details: { cached_tokens: 40 },
   };
+  if (p.tools?.some((tool) => tool.type === "web_search")) {
+    assert.equal(p.model, "gpt-6-luna");
+    assert.equal(p.max_tool_calls, 1);
+    assert.equal(new URL(request.url).pathname, "/v1/responses");
+    const searched = {
+      id: "resp-web-search",
+      status: "completed",
+      output: [
+        { type: "web_search_call", id: "ws_fixture", status: "completed" },
+        {
+          type: "message",
+          content: [
+            {
+              type: "output_text",
+              text: "Fixture",
+              annotations: [
+                { type: "url_citation", url: "https://example.net" },
+              ],
+            },
+          ],
+        },
+      ],
+      usage: { input_tokens: 100, output_tokens: 20 },
+      ...(openaiMode !== "no-search-meter" && {
+        tool_usage: { web_search: { num_requests: 1 } },
+      }),
+    };
+    return p.stream
+      ? new Response(
+          "data: " +
+            JSON.stringify({ type: "response.completed", response: searched }) +
+            "\n\n",
+          {
+            headers: { "Content-Type": "text/event-stream" },
+          },
+        )
+      : Response.json(searched);
+  }
   if (p.stream) {
     const responseMode = new URL(request.url).pathname === "/v1/responses";
     const event = responseMode
@@ -1694,6 +1732,92 @@ test("Each new cloud language model is closed by default and can be independentl
     } finally {
       await update(id, false);
     }
+  }
+});
+
+test("Luna Responses web search preserves citations, meters billed calls and atomically enforces the user quota", async () => {
+  const { uid, key } = await lunaUser("luna-web-search");
+  const store = new Store(db);
+  const edit = (limit) =>
+    call(
+      "/admin/users/" + uid,
+      { web_search_daily_calls: limit },
+      { method: "PATCH", access: admin },
+    );
+  assert.equal(
+    (
+      await store.first(
+        "SELECT web_search_daily_calls FROM users WHERE id=?",
+        uid,
+      )
+    ).web_search_daily_calls,
+    30,
+  );
+  assert.equal((await edit(1)).status, 200);
+  const search = {
+    model: "gpt-6-luna",
+    input: "search",
+    tools: [{ type: "web_search" }],
+    include: ["web_search_call.action.sources"],
+    max_output_tokens: 128,
+  };
+  assert.equal(
+    (await apiCall("/v1/responses", key, { ...search, max_tool_calls: 2 }))
+      .status,
+    422,
+  );
+  const calls = await Promise.all([
+    apiCall("/v1/responses", key, search),
+    apiCall("/v1/responses", key, search),
+  ]);
+  const ok = calls.find((result) => result.status === 200);
+  assert.equal(
+    ok.body.output[1].content[0].annotations[0].type,
+    "url_citation",
+  );
+  const blocked = calls.find((result) => result.status === 429);
+  assert.equal(blocked.body.error_code, "web_search_daily_limit");
+  const ledger = await store.first(
+    "SELECT * FROM luna_usage WHERE user_id=?",
+    uid,
+  );
+  assert.equal(ledger.web_search_calls, 1);
+  assert.equal(ledger.charged_cost_nanos, 10020000);
+  assert.equal(ledger.reserved_cost_nanos, 26064000);
+  assert.equal(ledger.settled, 1);
+
+  await edit(2);
+  const stream = await mf.dispatchFetch("https://api.hilex.me/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer " + key,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ ...search, stream: true }),
+  });
+  assert.equal(stream.status, 200);
+  assert.match(await stream.text(), /url_citation/);
+  const totals = await store.first(
+    "SELECT sum(web_search_calls) calls,sum(settled) settled FROM luna_usage WHERE user_id=?",
+    uid,
+  );
+  assert.deepEqual(totals, { calls: 2, settled: 2 });
+  await edit(3);
+  openaiMode = "no-search-meter";
+  try {
+    assert.equal((await apiCall("/v1/responses", key, search)).status, 200);
+    const pending = await store.first(
+      "SELECT * FROM luna_usage WHERE user_id=? AND settled=0",
+      uid,
+    );
+    assert.equal(pending.web_search_calls, 1);
+    assert.equal(pending.charged_cost_nanos, pending.reserved_cost_nanos);
+    assert.equal(
+      (await apiCall("/v1/responses", key, search)).body.error_code,
+      "web_search_daily_limit",
+    );
+  } finally {
+    openaiMode = "json";
   }
 });
 

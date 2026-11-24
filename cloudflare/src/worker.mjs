@@ -844,6 +844,7 @@ async function route(request, env, ctx) {
         validate(await body(request), [
           "enabled",
           "allowed_model_ids",
+          "web_search_daily_calls",
           "luna_monthly_tokens",
           ...AUDIO_FIELDS,
           "services",
@@ -854,6 +855,13 @@ async function route(request, env, ctx) {
       );
       audioQuotas(b);
       if ("allowed_model_ids" in b) validateModelAllowlist(b.allowed_model_ids);
+      if (
+        "web_search_daily_calls" in b &&
+        (!Number.isSafeInteger(b.web_search_daily_calls) ||
+          b.web_search_daily_calls < 0 ||
+          b.web_search_daily_calls > 10000)
+      )
+        fail(422, "网页搜索日额度必须为 0–10000 的整数");
       if (b.services !== undefined) services(b.services);
       if (b.enabled !== undefined && typeof b.enabled !== "boolean")
         fail(422, "enabled 必须为布尔值");

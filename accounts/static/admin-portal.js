@@ -309,6 +309,7 @@ $("edit-form").addEventListener(
       rpm: Number(f.elements.rpm.value),
       daily_requests: Number(f.elements.daily_requests.value),
       concurrency: Number(f.elements.concurrency.value),
+      web_search_daily_calls: Number(f.elements.web_search_daily_calls.value),
       ...(changed && {
         allowed_model_ids: boxes
           .filter((box) => box.checked)
