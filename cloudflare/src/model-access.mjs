@@ -80,18 +80,31 @@ const aliases = new Map(
   definitions.flatMap((m) => (m.aliases ?? []).map((id) => [id, m.id])),
 );
 
-export async function enabledModels(store) {
+async function modelSwitches(store) {
   const rows = await store.all(
-    "SELECT name,value FROM settings WHERE name >= ? AND name < ?",
+    "SELECT name,value FROM settings WHERE (name >= ? AND name < ?) OR name='global_limits'",
     prefix,
     "public_model;",
   );
   const enabled = new Set([LUNA_MODEL]);
+  let cloudPaused = false;
   for (const { name, value } of rows) {
+    if (name === "global_limits") {
+      cloudPaused = JSON.parse(value).cloud_enabled === false;
+      continue;
+    }
     const id = name.slice(prefix.length);
     if (value === "true") enabled.add(id);
     else enabled.delete(id);
   }
+  return { enabled, cloudPaused };
+}
+
+export async function discoverableModels(store) {
+  const { enabled, cloudPaused } = await modelSwitches(store);
+  if (cloudPaused)
+    for (const id of enabled)
+      if (registry.get(id)?.provider === "openai") enabled.delete(id);
   return enabled;
 }
 
@@ -162,12 +175,13 @@ export async function adminModelRoute(request, store, user, readBody) {
   const { pathname } = new URL(request.url);
   if (pathname !== "/admin/models") return null;
   if (request.method === "GET") {
-    const enabled = await enabledModels(store);
+    const { enabled, cloudPaused } = await modelSwitches(store);
     return Response.json(
       {
         models: definitions.map((model) => ({
           ...model,
           enabled: enabled.has(model.id),
+          ...(model.provider === "openai" && { cloud_paused: cloudPaused }),
         })),
       },
       { headers: { "Cache-Control": "no-store" } },

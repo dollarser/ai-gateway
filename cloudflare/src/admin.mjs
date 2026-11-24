@@ -4,7 +4,7 @@ import { operationsRoute } from "./operations.mjs";
 import { Denied, publicUser, day } from "./store.mjs";
 import { now } from "./crypto.mjs";
 import { budgetValue } from "./luna.mjs";
-import { AUDIO_FIELDS, audioQuotas, audioUsage } from "./audio.mjs";
+import { AUDIO_FIELDS, audioQuotas, audioUsageValue } from "./audio.mjs";
 import { diagnosticsRoute } from "./diagnostics.mjs";
 export const QUOTA_FIELDS = [
   "rpm",
@@ -284,25 +284,44 @@ export async function adminRoute(request, store, u, readBody, env = {}) {
   if (match && method === "GET") {
     const uid = Number(match[1]),
       date = selectedDay(url),
-      target = await store.first("SELECT * FROM users WHERE id=?", uid);
+      today = day();
+    const view = url.searchParams.get("view");
+    if (view && !["summary", "activity"].includes(view))
+      throw new Denied(422, "无效的账号详情视图");
+    const statements = [store.stmt("SELECT * FROM users WHERE id=?", uid)];
+    if (view !== "activity")
+      statements.push(
+        store.stmt(
+          "SELECT kind,sum(charged_units) used,sum(CASE WHEN settled=0 THEN charged_units ELSE 0 END) reserved,count(*) requests FROM audio_usage WHERE user_id=? AND day=? GROUP BY kind",
+          uid,
+          today,
+        ),
+      );
+    if (view !== "summary")
+      statements.push(
+        store.stmt(
+          "SELECT r.started,r.service,r.path,r.status,r.prompt_tokens,r.completion_tokens,r.client_ip,r.client_version,r.device_id,r.user_agent,r.request_id,r.id,l.charged_tokens luna_tokens,a.kind audio_kind,a.charged_units audio_units FROM requests r LEFT JOIN luna_usage l ON l.lease=r.id LEFT JOIN audio_usage a ON a.lease=r.id WHERE r.user_id=? AND r.day=? ORDER BY r.started DESC LIMIT 100",
+          uid,
+          date,
+        ),
+        store.stmt(
+          "SELECT client_ip,count(*) requests,max(started) last_seen FROM requests WHERE user_id=? AND client_ip IS NOT NULL GROUP BY client_ip ORDER BY last_seen DESC LIMIT 20",
+          uid,
+        ),
+      );
+    const [owner, ...rows] = await store.db.batch(statements);
+    const target = owner.results[0];
     if (!target) throw new Denied(404, "账号不存在");
-    const requests = await store.all(
-      "SELECT r.*,l.charged_tokens luna_tokens,a.kind audio_kind,a.charged_units audio_units,a.settled audio_settled FROM requests r LEFT JOIN luna_usage l ON l.lease=r.id LEFT JOIN audio_usage a ON a.lease=r.id WHERE r.user_id=? AND r.day=? ORDER BY r.started DESC LIMIT 100",
-      uid,
-      date,
-    );
-    const ips = await store.all(
-      "SELECT client_ip,count(*) requests,max(started) last_seen FROM requests WHERE user_id=? AND client_ip IS NOT NULL GROUP BY client_ip ORDER BY last_seen DESC LIMIT 20",
-      uid,
-    );
-    return result({
-      user: publicUser(target),
-      day: date,
-      requests,
-      ips,
-      audio: await audioUsage(store, uid),
-      keys: await store.keys(uid),
-    });
+    const payload = { day: date };
+    if (view !== "activity") {
+      payload.user = publicUser(target);
+      payload.audio = audioUsageValue(target, rows.shift().results, today);
+    }
+    if (view !== "summary") {
+      payload.requests = rows[0].results;
+      payload.ips = rows[1].results;
+    }
+    return result(payload);
   }
   return null;
 }

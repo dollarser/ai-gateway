@@ -1,5 +1,5 @@
 import {
-  enabledModels,
+  discoverableModels,
   filterUserModels,
   LOCAL_ASR,
   LOCAL_TTS,
@@ -442,7 +442,7 @@ export async function edgeAPI(request, env, ctx) {
       if (path === "/v1/models") {
         const u = await store.catalogUser(raw);
         const enabled = filterUserModels(
-          await enabledModels(store),
+          await discoverableModels(store),
           u.allowed_model_ids,
         );
         const data = [

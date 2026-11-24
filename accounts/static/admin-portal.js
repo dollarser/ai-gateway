@@ -85,6 +85,7 @@ async function syncAdminRoute() {
   if (userId) {
     $("user-settings").open = true;
     $("user-keys").open = false;
+    $("user-activity").open = false;
     await window.adminUI.details(Number(userId));
   } else if (name === "admin") await window.adminUI.load({ reuse: true });
   else if (name === "models") await window.modelManager.load();

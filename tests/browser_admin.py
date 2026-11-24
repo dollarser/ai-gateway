@@ -284,7 +284,13 @@ def handle(route):
         )
     if path == "/admin/global-limits":
         limits.update(data)
-        return respond({})
+        return respond(
+            {
+                "limits": limits,
+                "month": "2026-11",
+                "luna": {"used_usd": 1.2, "reserved_usd": 0.1, "remaining_usd": 198.8},
+            }
+        )
     if path == "/admin/registration-policy":
         policy.update(data)
         return respond(policy)
@@ -587,6 +593,7 @@ with sync_playwright() as p:
     page.wait_for_timeout(100)
     assert all(u["enabled"] == 1 for u in users)
     page.goto("https://accounts.test/admin/users/2")
+    page.locator("#user-activity > summary").click()
     page.locator("#details-requests").get_by_text("203.0.113.9", exact=True).wait_for()
     assert "<script>alert(1)</script>" in page.locator("#details-requests").inner_text()
     page.locator("#user-back").click()
@@ -663,11 +670,15 @@ with sync_playwright() as p:
     page.locator("#global-budget-summary").get_by_text(
         "云文本估算用量", exact=False
     ).wait_for()
+    page.locator("#registration-policy-form [name=global_minute]").fill("12")
     page.locator("#global-limits-form [name=luna_monthly_usd]").fill("200")
     page.locator("#global-limits-form button").click()
     page.wait_for_timeout(100)
     assert limits["luna_monthly_usd"] == 200 and limits["asr_daily_minutes"] is None
-    page.locator("#registration-policy-form [name=global_minute]").fill("12")
+    assert (
+        page.locator("#registration-policy-form [name=global_minute]").input_value()
+        == "12"
+    )
     page.locator("#registration-policy-form button").click()
     page.wait_for_timeout(100)
     assert policy["global_minute"] == 12

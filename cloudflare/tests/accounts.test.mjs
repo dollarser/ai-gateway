@@ -2041,6 +2041,26 @@ test("Global budget controls are admin-only, atomic across accounts, and zero pr
   assert.equal(saved.status, 200);
   assert.equal(saved.body.limits.luna_monthly_usd, 200);
   assert.equal((await call("/admin/operations")).status, 401);
+  const cloudPause = await call(
+    "/admin/global-limits",
+    { ...saved.body.limits, cloud_enabled: false },
+    { method: "PATCH", access: admin },
+  );
+  assert.equal(cloudPause.status, 200);
+  try {
+    const { key } = await lunaUser("cloud-pause-discovery");
+    const discovery = await apiCall("/v1/models?output_modalities=all", key);
+    assert.equal(discovery.status, 200);
+    assert.deepEqual(discovery.body.data, []);
+    const models = await call("/admin/models", undefined, { access: admin });
+    const luna = models.body.models.find((m) => m.id === "gpt-6-luna");
+    assert.ok(luna.enabled && luna.cloud_paused);
+  } finally {
+    await call("/admin/global-limits", saved.body.limits, {
+      method: "PATCH",
+      access: admin,
+    });
+  }
   const limits = { ...saved.body.limits, luna_monthly_usd: 0 };
   try {
     assert.equal(
@@ -4904,6 +4924,46 @@ test("Usage snapshot matches separate authenticated endpoints and rejects anonym
   assert.deepEqual(
     result.body.audio,
     (await call("/account/audio-usage", undefined, { access })).body,
+  );
+  const started = Date.now() / 1000 - 120;
+  await store.db.batch(
+    Array.from({ length: 22 }, (_, index) =>
+      store.stmt(
+        "INSERT INTO requests(id,user_id,service,path,started,day,ended,status,client_ip) VALUES(?,?,?,?,?,?,?,?,?)",
+        "snapshot-" + String(index).padStart(2, "0"),
+        user.id,
+        "qwen",
+        "/v1/chat/completions",
+        started,
+        "2026-11-24",
+        started + 1,
+        200,
+        "203.0.113.5",
+      ),
+    ),
+  );
+  const first = (await call("/account/usage-snapshot", undefined, { access }))
+    .body;
+  assert.equal(first.usage.requests.length, 20);
+  assert.ok(first.history_next);
+  assert.ok(
+    first.usage.requests.every(
+      (row) => !("client_ip" in row) && !("id" in row),
+    ),
+  );
+  const next = await call(
+    "/account/usage-history?" +
+      new URLSearchParams({ before: first.history_next }),
+    undefined,
+    { access },
+  );
+  assert.equal(next.status, 200);
+  assert.equal(next.body.requests.length, 2);
+  assert.equal(next.body.next, null);
+  assert.equal(
+    (await call("/account/usage-history?before=bad", undefined, { access }))
+      .status,
+    422,
   );
 });
 

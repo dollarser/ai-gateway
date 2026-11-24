@@ -24,7 +24,11 @@
             enabled: next,
           });
           model.enabled = updated.enabled;
-          status.textContent = model.enabled ? "已开放" : "已关闭";
+          status.textContent = model.enabled
+            ? model.cloud_paused
+              ? "全站云模型已暂停"
+              : "已开放"
+            : "已关闭";
           status.classList.toggle("status-ok", model.enabled);
           status.classList.toggle("status-disabled", !model.enabled);
           switchButton.textContent = model.enabled ? "停用" : "开启";
@@ -61,7 +65,11 @@
       const status = document.createElement("span");
       status.className =
         "status-badge " + (enabled ? "status-ok" : "status-disabled");
-      status.textContent = enabled ? "已开放" : "已关闭";
+      status.textContent = enabled
+        ? model.cloud_paused
+          ? "全站云模型已暂停"
+          : "已开放"
+        : "已关闭";
       cells[4].append(status);
     }
   }

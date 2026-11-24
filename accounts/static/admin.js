@@ -374,7 +374,7 @@
         ),
       );
   }
-  function setupSettings(u, request) {
+  function setupSettings(u, request, prefetched) {
     const form = $("edit-form"),
       list = $("user-model-list");
     form.elements.id.value = u.id;
@@ -394,12 +394,14 @@
       loading = true;
       panelStatus("user-model-status", "正在读取模型…");
       try {
-        const result = await api(
-          "/admin/models",
-          "GET",
-          undefined,
-          request.signal,
-        );
+        const first = prefetched;
+        prefetched = null;
+        const result = first
+          ? await first.then(({ data, error }) => {
+              if (error) throw error;
+              return data;
+            })
+          : await api("/admin/models", "GET", undefined, request.signal);
         if (request.signal.aborted) return;
         for (const model of result.models) {
           const option = document.createElement("label");
@@ -409,7 +411,15 @@
           box.value = model.id;
           box.checked = allowed?.includes(model.id) ?? model.enabled;
           box.defaultChecked = box.checked;
-          option.append(box, model.name + (model.enabled ? "" : " · 全站关闭"));
+          option.append(
+            box,
+            model.name +
+              (!model.enabled
+                ? " · 全站关闭"
+                : model.cloud_paused
+                  ? " · 云模型已暂停"
+                  : ""),
+          );
           list.append(option);
         }
         ready = true;
@@ -461,13 +471,21 @@
     $("details-content").hidden = true;
     $("details-title").textContent = "账号 #" + id;
     panelStatus("details-status", "正在读取账号详情…");
+    const modelList = api(
+      "/admin/models",
+      "GET",
+      undefined,
+      request.signal,
+    ).then(
+      (data) => ({ data }),
+      (error) => ({ error }),
+    );
+    const day = state.filters?.day ?? today();
+    const detailsPath = "/admin/users/" + id + "/details?";
     let data;
     try {
       data = await api(
-        "/admin/users/" +
-          id +
-          "/details?" +
-          new URLSearchParams({ day: state.filters?.day ?? today() }),
+        detailsPath + new URLSearchParams({ day, view: "summary" }),
         "GET",
         undefined,
         request.signal,
@@ -498,7 +516,7 @@
       .filter(Boolean)
       .join(" · ");
     panelStatus("details-status", "");
-    setupSettings(u, request);
+    setupSettings(u, request, modelList);
     setupKeys(u);
     userActions(u);
     $("details-content").hidden = false;
@@ -512,12 +530,44 @@
       " 分钟 · 合成剩余 " +
       num(data.audio.tts.remaining) +
       " 字符";
+    const activity = $("user-activity");
+    const activityContent = $("user-activity-content");
+    activityContent.hidden = true;
+    let pending = false;
+    async function loadActivity() {
+      if (pending || !activityContent.hidden || request.signal.aborted) return;
+      pending = true;
+      panelStatus("user-activity-status", "正在读取活动记录…");
+      try {
+        const records = await api(
+          detailsPath + new URLSearchParams({ day, view: "activity" }),
+          "GET",
+          undefined,
+          request.signal,
+        );
+        if (request.signal.aborted) return;
+        renderActivity(u, records);
+        activityContent.hidden = false;
+        panelStatus("user-activity-status", "");
+      } catch (error) {
+        if (!request.signal.aborted)
+          panelStatus("user-activity-status", error.message, loadActivity);
+      } finally {
+        pending = false;
+      }
+    }
+    activity.ontoggle = () => {
+      if (activity.open) void loadActivity();
+    };
+    if (activity.open) void loadActivity();
+  }
+  function renderActivity(u, data) {
     $("details-ips").replaceChildren();
     const login = document.createElement("p");
     login.textContent =
       "最近登录：" +
-      (data.user.last_login_ip ?? "未知") +
-      (data.user.last_login_at ? " · " + date(data.user.last_login_at) : "");
+      (u.last_login_ip ?? "未知") +
+      (u.last_login_at ? " · " + date(u.last_login_at) : "");
     $("details-ips").append(login);
     for (const r of data.ips) {
       const line = document.createElement("p");
@@ -862,7 +912,9 @@
     panelStatus(status, "正在读取…");
     let data;
     try {
-      data = await api("/admin/operations");
+      data = await api(
+        "/admin/operations?view=" + (alerts ? "alerts" : "configuration"),
+      );
     } catch (error) {
       panelStatus(status, error.message, () => loadOperations({ alerts }));
       return;
@@ -876,8 +928,21 @@
   }
   function renderGlobalConfiguration(data) {
     $("global-config-fields").hidden = false;
-    const f = $("global-limits-form"),
-      r = $("registration-policy-form");
+    const r = $("registration-policy-form");
+    r.elements.enabled.checked = data.registration.enabled;
+    for (const k of ["ip_hourly", "global_hourly", "global_minute"])
+      r.elements[k].value = data.registration[k];
+    renderBudget(data);
+    if ($("email-delivery-status"))
+      $("email-delivery-status").textContent = data.email_delivery
+        ?.transactional
+        ? "验证码发信：事务邮件通道已配置（" +
+          data.email_delivery.provider +
+          "）"
+        : "验证码发信：仍为旧通道或未配置，待切换事务邮件服务";
+  }
+  function renderBudget(data) {
+    const f = $("global-limits-form");
     f.elements.cloud_enabled.checked = data.limits.cloud_enabled;
     for (const k of [
       "luna_monthly_usd",
@@ -885,9 +950,6 @@
       "tts_daily_characters",
     ])
       f.elements[k].value = data.limits[k] ?? "";
-    r.elements.enabled.checked = data.registration.enabled;
-    for (const k of ["ip_hourly", "global_hourly", "global_minute"])
-      r.elements[k].value = data.registration[k];
     $("global-budget-summary").textContent =
       data.month +
       "（北京时间）网关云文本估算用量 $" +
@@ -896,13 +958,6 @@
       data.luna.reserved_usd.toFixed(4) +
       "，剩余 $" +
       data.luna.remaining_usd.toFixed(4);
-    if ($("email-delivery-status"))
-      $("email-delivery-status").textContent = data.email_delivery
-        ?.transactional
-        ? "验证码发信：事务邮件通道已配置（" +
-          data.email_delivery.provider +
-          "）"
-        : "验证码发信：仍为旧通道或未配置，待切换事务邮件服务";
   }
   function renderRuntimeAlerts(data) {
     const notifications = data.notifications ?? {
@@ -989,7 +1044,7 @@
     "submit",
     run(async (e) => {
       const f = e.target;
-      await api("/admin/global-limits", "PATCH", {
+      const budget = await api("/admin/global-limits", "PATCH", {
         cloud_enabled: f.elements.cloud_enabled.checked,
         luna_monthly_usd: Number(f.elements.luna_monthly_usd.value),
         asr_daily_minutes:
@@ -1001,8 +1056,8 @@
             ? null
             : Number(f.elements.tts_daily_characters.value),
       });
+      renderBudget(budget);
       message("全站预算已保存；不会清零已有用量");
-      await loadOperations();
     }),
   );
   $("registration-policy-form").addEventListener(
@@ -1019,7 +1074,6 @@
         ),
       });
       message("注册保护已保存");
-      await loadOperations();
     }),
   );
   const inboxState = { page: 1, items: [] };

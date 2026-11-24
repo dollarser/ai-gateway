@@ -209,29 +209,39 @@ export async function operationsRoute(
         openaiRoute(env, token(), token()),
       ),
     );
-  if (p === "/admin/operations" && m === "GET")
-    return reply({
-      ...(await globalUsage(store)),
-      notifications: await notificationStatus(store, env),
-      email_delivery: {
-        configured: !!mailConfiguration(env),
-        provider: mailConfiguration(env)?.provider ?? null,
-        transactional: ["alicloud-directmail", "generic-smtp"].includes(
-          mailConfiguration(env)?.provider,
+  if (p === "/admin/operations" && m === "GET") {
+    const view = new URL(request.url).searchParams.get("view");
+    if (view && !["configuration", "alerts"].includes(view))
+      throw new Denied(422, "无效的运维视图");
+    const data = {};
+    if (view !== "alerts") {
+      const [usage, registration] = await Promise.all([
+        globalUsage(store),
+        store.first(
+          "SELECT value FROM settings WHERE name='registration_policy'",
         ),
-      },
-      registration: JSON.parse(
-        (
-          await store.first(
-            "SELECT value FROM settings WHERE name='registration_policy'",
-          )
-        ).value,
-      ),
-      alerts: await store.all(
-        "SELECT * FROM operational_alerts ORDER BY last_seen DESC",
-      ),
-      retention: { ip_days: 30, unbilled_request_days: 90, batch_size: 500 },
-    });
+      ]);
+      const mail = mailConfiguration(env);
+      Object.assign(data, usage, {
+        email_delivery: {
+          configured: !!mail,
+          provider: mail?.provider ?? null,
+          transactional: ["alicloud-directmail", "generic-smtp"].includes(
+            mail?.provider,
+          ),
+        },
+        registration: JSON.parse(registration.value),
+        retention: { ip_days: 30, unbilled_request_days: 90, batch_size: 500 },
+      });
+    }
+    if (view !== "configuration") {
+      [data.notifications, data.alerts] = await Promise.all([
+        notificationStatus(store, env),
+        store.all("SELECT * FROM operational_alerts ORDER BY last_seen DESC"),
+      ]);
+    }
+    return reply(data);
+  }
   if (p === "/admin/global-limits" && m === "PATCH") {
     const b = validateLimits(await readBody(request));
     await store.db.batch([

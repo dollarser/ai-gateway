@@ -1,11 +1,11 @@
 import { CLOUD_TEXT_MODELS } from "./cloud-text-models.mjs";
 import {
-  enabledModels,
+  discoverableModels,
   filterUserModels,
   requirePublicModel,
   validateModelAllowlist,
 } from "./model-access.mjs";
-import { usageSnapshot } from "./usage-snapshot.mjs";
+import { usageHistory, usageSnapshot } from "./usage-snapshot.mjs";
 import { changePasswordWithCredentials } from "./credential-password.mjs";
 import { captchaInfo, verifyCaptcha } from "./captcha.mjs";
 import { requestPasswordReset, resetPassword } from "./password-reset.mjs";
@@ -265,7 +265,7 @@ async function internal(request, env, store, path, ctx) {
       ? await lunaCatalog(store, env, b.lease)
       : { data: [] };
     const enabled = filterUserModels(
-      await enabledModels(store),
+      await discoverableModels(store),
       r.allowed_model_ids,
     );
     return json({
@@ -284,7 +284,7 @@ async function internal(request, env, store, path, ctx) {
       lease,
     );
     const enabled = filterUserModels(
-      await enabledModels(store),
+      await discoverableModels(store),
       owner.allowed_model_ids,
     );
     return json({
@@ -700,6 +700,10 @@ async function route(request, env, ctx) {
   }
   if (p === "/account/usage-snapshot" && method === "GET")
     return json(await usageSnapshot(store, u));
+  if (p === "/account/usage-history" && method === "GET")
+    return json(
+      await usageHistory(store, u.id, url.searchParams.get("before")),
+    );
   if (p === "/account/usage" && method === "GET")
     return json(await store.usage(u.id));
   if (p === "/admin/usage" && method === "GET") {

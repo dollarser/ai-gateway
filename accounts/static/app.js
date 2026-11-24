@@ -57,8 +57,19 @@ window.addEventListener(
       await tab("notices");
   }),
 );
+let historyNext = null;
+let usageSequence = 0;
+const usageServiceNames = {
+  qwen: "智能对话",
+  asr: "语音识别",
+  tts: "语音合成",
+};
 async function loadUsage() {
+  const version = ++usageSequence;
+  $("usage-more").hidden = true;
   const snapshot = await api("/account/usage-snapshot");
+  if (version !== usageSequence) return;
+  historyNext = snapshot.history_next ?? null;
   const data = snapshot.usage;
   const isAdmin = user.role === "admin";
   const used = data.totals.reduce((n, t) => n + t.requests, 0);
@@ -138,7 +149,7 @@ async function loadUsage() {
   }
   const cards = document.createElement("div");
   cards.className = "usage-cards";
-  const names = { qwen: "智能对话", asr: "语音识别", tts: "语音合成" };
+  const names = usageServiceNames;
   for (const service of user.services) {
     const card = document.createElement("div");
     const total = data.totals.find((x) => x.service === service);
@@ -160,7 +171,19 @@ async function loadUsage() {
   }
   $("usage-head").replaceChildren(header);
   $("usage-list").replaceChildren();
-  for (const r of data.requests) {
+  appendUsageRequests(data.requests, isAdmin);
+  $("usage-more").hidden = !historyNext;
+  if (!data.requests.length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = isAdmin ? 5 : 3;
+    td.textContent = "暂无使用记录";
+    tr.append(td);
+    $("usage-list").append(tr);
+  }
+}
+function appendUsageRequests(requests, isAdmin) {
+  for (const r of requests) {
     const values = isAdmin
       ? [
           date(r.started),
@@ -171,7 +194,7 @@ async function loadUsage() {
         ]
       : [
           date(r.started),
-          names[r.service] ?? r.service,
+          usageServiceNames[r.service] ?? r.service,
           r.status === null
             ? "处理中"
             : (r.status >= 200 && r.status < 400) || r.status === 101
@@ -186,15 +209,28 @@ async function loadUsage() {
     }
     $("usage-list").append(tr);
   }
-  if (!data.requests.length) {
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    td.colSpan = isAdmin ? 5 : 3;
-    td.textContent = "暂无使用记录";
-    tr.append(td);
-    $("usage-list").append(tr);
-  }
 }
+$("usage-more").addEventListener(
+  "click",
+  run(async () => {
+    const before = historyNext;
+    if (!before) return;
+    const version = usageSequence;
+    const button = $("usage-more");
+    button.disabled = true;
+    try {
+      const page = await api(
+        "/account/usage-history?" + new URLSearchParams({ before }),
+      );
+      if (version !== usageSequence || before !== historyNext) return;
+      appendUsageRequests(page.requests, user.role === "admin");
+      historyNext = page.next;
+      $("usage-more").hidden = !historyNext;
+    } finally {
+      button.disabled = false;
+    }
+  }),
+);
 
 $("login-form").addEventListener(
   "submit",
