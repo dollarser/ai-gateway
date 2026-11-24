@@ -92,11 +92,13 @@ export async function proxyEmbedding(
   store,
   payload,
   transport = fetch,
+  authorizedLease = null,
 ) {
   if (!env.OPENAI_API_KEY) throw new Denied(503, "尚未配置 OpenAI 服务密钥");
   const lease = request.headers.get("X-Gateway-Lease"),
-    r = await activeLease(store, lease);
-  if (r.path !== "/v1/embeddings") throw new Denied(403, "请求凭证路径不匹配");
+    r = authorizedLease ?? (await activeLease(store, lease));
+  if (!authorizedLease && r.path !== "/v1/embeddings")
+    throw new Denied(403, "请求凭证路径不匹配");
   const p = prepareEmbedding(payload),
     month = day().slice(0, 7),
     cost = p.bound * p.model.price;

@@ -626,7 +626,12 @@ export async function edgeAPI(request, env, ctx) {
       trace.model = form.get("model");
       const localASR = badAudio(trace.model, ASR_MODEL, local);
       if (localASR && !trace.model) trace.model = LOCAL_ASR;
-      await requirePublicModel(store, trace.model, path, lease);
+      const authorizedLease = await requirePublicModel(
+        store,
+        trace.model,
+        path,
+        lease,
+      );
       if (localASR)
         return track(
           await forward(request, env, lease, id, bytes),
@@ -693,6 +698,7 @@ export async function edgeAPI(request, env, ctx) {
         form,
         measuredMs,
         providerTransport(store, lease, trace, ctx, fetch, env),
+        authorizedLease,
       );
       response.headers.set("X-Audio-Processing", measurement);
     } else {
@@ -708,7 +714,12 @@ export async function edgeAPI(request, env, ctx) {
       if (path === "/v1/audio/speech") {
         const localTTS = badAudio(payload.model, TTS_MODEL, local);
         if (localTTS && !trace.model) trace.model = LOCAL_TTS;
-        await requirePublicModel(store, trace.model, path, lease);
+        const authorizedLease = await requirePublicModel(
+          store,
+          trace.model,
+          path,
+          lease,
+        );
         if (localTTS)
           return track(
             await forward(request, env, lease, id, bytes),
@@ -738,12 +749,18 @@ export async function edgeAPI(request, env, ctx) {
           store,
           providerTransport(store, lease, trace, ctx, fetch, env),
           ctx,
+          authorizedLease,
         );
       } else if (
         path === "/v1/embeddings" &&
         Object.hasOwn(EMBEDDING_MODELS, payload.model)
       ) {
-        await requirePublicModel(store, payload.model, path, lease);
+        const authorizedLease = await requirePublicModel(
+          store,
+          payload.model,
+          path,
+          lease,
+        );
         trace.provider = "openai";
         trace.protocol = "http";
         const result = await proxyEmbedding(
@@ -752,6 +769,7 @@ export async function edgeAPI(request, env, ctx) {
           store,
           payload,
           providerTransport(store, lease, trace, ctx, fetch, env),
+          authorizedLease,
         );
         trace.estimated_input_tokens = result.inputTokens;
         response = result.response;
@@ -770,7 +788,12 @@ export async function edgeAPI(request, env, ctx) {
         trace.protocol = payload.stream ? "sse" : "http";
         if (!CLOUD_TEXT_PATHS.includes(path))
           throw new Denied(422, "云文本模型使用 Chat Completions 或 Responses");
-        await requirePublicModel(store, payload.model, path, lease);
+        const authorizedLease = await requirePublicModel(
+          store,
+          payload.model,
+          path,
+          lease,
+        );
         response = await proxyLuna(
           internalRequest(request, lease, JSON.stringify(payload)),
           env,
@@ -779,6 +802,7 @@ export async function edgeAPI(request, env, ctx) {
           payload,
           path === "/v1/responses",
           providerTransport(store, lease, trace, ctx, fetch, env),
+          authorizedLease,
         );
       } else {
         if (path === "/v1/responses")

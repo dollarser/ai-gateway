@@ -381,12 +381,14 @@ export async function proxyLuna(
   payload,
   responses,
   transport = fetch,
+  authorizedLease = null,
 ) {
   if (!env.OPENAI_API_KEY) throw new Denied(503, "尚未配置 OpenAI 服务密钥");
   const lease = request.headers.get("X-Gateway-Lease");
-  const r = await activeLease(store, lease);
+  const r = authorizedLease ?? (await activeLease(store, lease));
   const expectedPath = responses ? "/v1/responses" : "/v1/chat/completions";
-  if (r.path !== expectedPath) throw new Denied(403, "请求凭证路径不匹配");
+  if (!authorizedLease && r.path !== expectedPath)
+    throw new Denied(403, "请求凭证路径不匹配");
   const p = preparePayload(payload, responses);
   const today = day();
   const reserveCost =

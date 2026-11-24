@@ -143,8 +143,16 @@ export async function requirePublicModel(store, requested, path, lease) {
     error.code = "unsupported_model";
     throw error;
   }
+  if (typeof lease !== "string" || !lease || lease.length > 128)
+    throw new Denied(422, "无效请求凭证");
+  const cloudText = model.provider === "openai" && model.service === "qwen";
+  const cloudAudio = model.provider === "openai" && !cloudText;
   const flag = await store.first(
-    "SELECT EXISTS(SELECT 1 FROM json_each(u.allowed_model_ids) WHERE value=?) allowed FROM requests r JOIN users u ON u.id=r.user_id WHERE r.id=? AND r.path=? AND r.ended IS NULL AND u.enabled=1 AND u.must_change=0",
+    `SELECT r.user_id, EXISTS(SELECT 1 FROM json_each(u.allowed_model_ids) WHERE value=?) allowed
+      ${cloudAudio ? ", EXISTS(SELECT 1 FROM audio_usage a WHERE a.lease=r.id) replayed" : ""}
+    FROM requests r JOIN users u ON u.id=r.user_id
+    WHERE r.id=? AND r.path=? AND r.ended IS NULL AND u.enabled=1 AND u.must_change=0
+      ${cloudText ? "AND r.service='qwen' AND r.started>unixepoch()-900 AND EXISTS(SELECT 1 FROM json_each(u.services) WHERE value='qwen')" : ""}`,
     id,
     lease,
     path,
@@ -155,6 +163,7 @@ export async function requirePublicModel(store, requested, path, lease) {
     error.code = "model_not_allowed";
     throw error;
   }
+  return flag;
 }
 
 export async function adminModelRoute(request, store, user, readBody) {

@@ -180,13 +180,15 @@ export function wavDuration(bytes) {
   if (ms > 300000) throw new Denied(413, "单次识别最多 5 分钟");
   return ms;
 }
-async function reserve(store, lease, kind, units) {
+async function reserve(store, lease, kind, units, authorizedLease) {
   if (typeof lease !== "string" || !lease || lease.length > 128)
     throw new Denied(422, "无效请求凭证");
-  const r = await store.first(
-    "SELECT user_id,EXISTS(SELECT 1 FROM audio_usage a WHERE a.lease=requests.id) replayed FROM requests WHERE id=?",
-    lease,
-  );
+  const r =
+    authorizedLease ??
+    (await store.first(
+      "SELECT user_id,EXISTS(SELECT 1 FROM audio_usage a WHERE a.lease=requests.id) replayed FROM requests WHERE id=?",
+      lease,
+    ));
   if (!r) throw new Denied(403, "请求凭证已失效");
   if (r.replayed) throw new Denied(409, "该语音请求已提交，不能重复调用");
   try {
@@ -262,6 +264,7 @@ export async function proxyTranscription(
   preparedForm = null,
   measuredMs = null,
   transport = fetch,
+  authorizedLease = null,
 ) {
   if (!env.OPENAI_API_KEY) throw new Denied(503, "尚未配置 OpenAI 密钥");
   let form = preparedForm;
@@ -339,6 +342,7 @@ export async function proxyTranscription(
     request.headers.get("X-Gateway-Lease"),
     "asr",
     ms,
+    authorizedLease,
   );
   const abort = new AbortController();
   let upstream;
@@ -643,6 +647,7 @@ export async function proxySpeech(
   store,
   transport = fetch,
   ctx = null,
+  authorizedLease = null,
 ) {
   if (!env.OPENAI_API_KEY) throw new Denied(503, "尚未配置 OpenAI 密钥");
   let b;
@@ -658,6 +663,7 @@ export async function proxySpeech(
       request.headers.get("X-Gateway-Lease"),
       "tts",
       p.characters,
+      authorizedLease,
     );
   if (b.stream) {
     if (!ctx) throw new Denied(503, "流式合成执行环境不可用");

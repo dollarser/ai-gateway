@@ -1951,6 +1951,7 @@ test("Sampled inference logs phase timings and relay estimates without exposing 
         headers: {
           Authorization: "Bearer " + key,
           "Content-Type": "application/json",
+          "CF-Connecting-IP": "203.0.113.10",
         },
         body: JSON.stringify({
           model: "gpt-6-luna",
@@ -1986,6 +1987,7 @@ test("Sampled inference logs phase timings and relay estimates without exposing 
       assert.ok(Number.isFinite(sample.details[phase]), phase);
     }
     assert.equal(sample.details.upstream_headers_ms, 3);
+    assert.equal(sample.details.db_ops, 7);
   } finally {
     globalThis.fetch = original;
     console.info = info;

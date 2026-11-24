@@ -178,13 +178,14 @@ async function internal(request, env, store, path, ctx) {
   ) {
     const responses = path.endsWith("/responses");
     const payload = await body(request, 4 * 1024 * 1024);
-    if (CLOUD_TEXT_MODELS.has(payload?.model))
-      await requirePublicModel(
-        store,
-        payload.model,
-        responses ? "/v1/responses" : "/v1/chat/completions",
-        request.headers.get("X-Gateway-Lease"),
-      );
+    const authorizedLease = CLOUD_TEXT_MODELS.has(payload?.model)
+      ? await requirePublicModel(
+          store,
+          payload.model,
+          responses ? "/v1/responses" : "/v1/chat/completions",
+          request.headers.get("X-Gateway-Lease"),
+        )
+      : null;
     return proxyLuna(
       request,
       env,
@@ -198,10 +199,11 @@ async function internal(request, env, store, path, ctx) {
         request.headers.get("X-Request-ID") ??
           request.headers.get("X-Gateway-Lease"),
       ),
+      authorizedLease,
     );
   }
   if (path === "/internal/openai/transcriptions") {
-    await requirePublicModel(
+    const authorizedLease = await requirePublicModel(
       store,
       ASR_MODEL,
       "/v1/audio/transcriptions",
@@ -219,10 +221,11 @@ async function internal(request, env, store, path, ctx) {
         request.headers.get("X-Gateway-Lease"),
         request.headers.get("X-Gateway-Lease"),
       ),
+      authorizedLease,
     );
   }
   if (path === "/internal/openai/speech") {
-    await requirePublicModel(
+    const authorizedLease = await requirePublicModel(
       store,
       TTS_MODEL,
       "/v1/audio/speech",
@@ -238,6 +241,7 @@ async function internal(request, env, store, path, ctx) {
         request.headers.get("X-Gateway-Lease"),
       ),
       ctx,
+      authorizedLease,
     );
   }
   const b = await body(request);
