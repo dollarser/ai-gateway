@@ -6,10 +6,10 @@
 
 | 请求 | 返回内容 |
 |---|---|
-| `GET /v1/models` | 默认仅文本输出模型：Qwen，以及账号已启用的 GPT-6 Luna |
+| `GET /v1/models` | 默认仅文本输出模型：账号已获授权且当前可用的文本模型（自建 Qwen 和已登记 GPT‑6 系列） |
 | `GET /v1/models?output_modalities=text` | 同上 |
 | `GET /v1/models?output_modalities=embeddings` | 嵌入模型 |
-| `GET /v1/models?output_modalities=all` | 全部已登记的模型，含已启用的云端语音模型 |
+| `GET /v1/models?output_modalities=all` | 全部对当前账号及凭据可见的模型，含语音和嵌入 |
 | `GET /v1/models?output_modalities=transcription` | GPT-Transcribe |
 | `GET /v1/models?output_modalities=audio` | GPT-Realtime-2.1 mini 语音合成适配 |
 | `GET /v1/models?output_modalities=text,embeddings` | 支持任一所列输出模态的模型 |
@@ -49,7 +49,7 @@
 }
 ```
 
-- 自建模型的 `id`、`created`、`owned_by` 等取自后端实际 `/v1/models` 返回，不猜测缺失字段。Luna 的条目来自 Worker 的受控模型配置，不公开 OpenAI 账号下的其他模型。
+- 自建模型的 `id`、`created`、`owned_by` 等取自后端实际 `/v1/models` 返回，不猜测缺失字段。GPT‑6 系列的条目来自 Worker 的受控模型配置，不公开 OpenAI 账号下的其他模型。
 - `architecture.input_modalities` / `output_modalities` 来自当前部署注册信息；`modality` 由两个数组生成。
 - 同一 ID 如果由多个实际任务部署提供，合并输入和输出模态，目录中只出现一次。
 - 保留 Qwen 已配置的思考强度元数据；嵌入条目不添加思考能力。
@@ -76,7 +76,7 @@ curl 'http://127.0.0.1:18901/v1/models?output_modalities=embeddings'
 
 `gateway/deployments.py` 是模型部署注册表，推理路由与目录读取同一份配置。每个部署声明上游地址、实际开放的推理路径及输入/输出模态；模型 ID 从对应上游发现，不在网关硬编码追加 Embedding。
 
-目录查询并发读取已登记后端的 `/v1/models`，然后合并、过滤。单后端目录读取总超时为 1 秒（连接超时 0.5 秒），控制在 Worker 的 1.5 秒源站目录查询预算内，不改变推理超时；各后端独立发现，单个后端停止、超时或返回无效数据时只省略该后端条目，其他后端仍返回 200，并携带 `X-Model-Catalog-Partial: local_unavailable`。因此关闭 Qwen 不影响本地 Embedding 的发现与调用，反之亦然。本机网关在所有本地后端均失败且没有可返回的云模型时返回 502；公网 Worker 则继续返回该账号可见的云模型，并标记本地目录不完整。公网 Worker 保留健康的本地模型及该提示头，目录缓存最多 30 秒；已缓存的旧模型仍可能短暂可见，直接请求已停止模型仍返回 502，不会自动切换模型。Worker 已配置 OpenAI 密钥且该账号 Luna 月额度大于 0 时，目录另外合并 `gpt-6-luna`；自建后端不可用时返回 Luna 条目，保持云模型可用。Luna 同样遵循输出模态过滤，余额是否足够在实际请求时检查。云语音条目按账号和 Key 的 asr/tts 权限及其对应日额度过滤。识别模型使用 transcription 输出模态，避免混入默认聊天列表；合成使用 audio/speech，二者的 endpoints 指向实际开放的 HTTP 路径。Worker 配置查询失败则返回 503，不假设模型已启用。公网错误不包含内部地址。
+目录查询并发读取已登记后端的 `/v1/models`，然后合并、过滤。单后端目录读取总超时为 1 秒（连接超时 0.5 秒），控制在 Worker 的 1.5 秒源站目录查询预算内，不改变推理超时；各后端独立发现，单个后端停止、超时或返回无效数据时只省略该后端条目，其他后端仍返回 200，并携带 `X-Model-Catalog-Partial: local_unavailable`。因此关闭 Qwen 不影响本地 Embedding 的发现与调用，反之亦然。本机网关在所有本地后端均失败且没有可返回的云模型时返回 502；公网 Worker 则继续返回该账号可见的云模型，并标记本地目录不完整。公网 Worker 保留健康的本地模型及该提示头，目录缓存最多 30 秒；已缓存的旧模型仍可能短暂可见，直接请求已停止模型仍返回 502，不会自动切换模型。Worker 已配置 OpenAI 密钥、云模型未暂停且账号云文本月额度大于 0 时，目录合并该账号允许的 GPT‑6 系列云模型。账本余额是否足够在实际请求时检查。Luna 的 `responses_tools` 包含 `web_search`；工具使用还受账号搜索额度约束。新账号默认列表只用在创建时，现有账号授权实时生效。云语音条目按账号和 Key 的 asr/tts 权限及其对应日额度过滤。识别模型使用 transcription 输出模态，避免混入默认聊天列表；合成使用 audio/speech，二者的 endpoints 指向实际开放的 HTTP 路径。Worker 配置查询失败则返回 503，不假设模型已启用。公网错误不包含内部地址。
 
 新增模型用途时，先部署真实后端，再在注册表配置路径和模态。Luna 云模型的固定代理和独立额度见 [Luna 额度](luna-allowance.md)，本机免认证目录不追加 Luna。当前目录范围为 LLM、Embedding 及已接入的 OpenAI 语音模型；ASR、TTS、仅本机 VibeVoice 的路径、可见性和上传限制不变。新增登记的推理路径还需接入对应的计量与代理策略，不能只靠增加一个模态值宣称支持完整新服务。
 

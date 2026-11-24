@@ -1,6 +1,6 @@
 # 客户端接入与交接
 
-OpenAI 出站支持部署时切换 Worker 直连或本机转发，当前默认本机转发。客户端域名、鉴权、请求参数、流式响应和额度协议均不变；不需要客户端自行选择出口。
+OpenAI 出站支持部署时切换 Worker 直连或本机转发，当前默认本机转发。安卓无需自行选择 OpenAI 出口。
 
 本文件是当前生产客户端的统一接入清单。账号、通知、模型和语音的详细字段由下文链接补充；历史迁移文档不作为新客户端默认协议。客户端应忽略响应中的未知字段，对新增错误码提供通用兜底；请求只提交开放字段，服务端会拒绝未开放参数。
 
@@ -38,7 +38,7 @@ OpenAI 出站支持部署时切换 Worker 直连或本机转发，当前默认�
 ### 新注册
 
 1. `GET /auth/registration-info`，检查 `registration_enabled`、`email_verification` 和默认额度；`email_verification_available` 仅表示配置完整，不保证实际邮件送达。
-2. 用户主动点击后调用 `POST /auth/registration-code`，提交 `{ "email":"user@example.net" }`。
+2. 使用 `registration_code` 用途完成人机验证，再由用户点击发送，调用 `POST /auth/registration-code` 提交 `{ "email":"user@example.net", "captcha_token":"本次 proof" }`。
 3. `POST /auth/register`，提交邮箱、密码和六位字符串验证码：
 
 ```json
@@ -51,7 +51,7 @@ OpenAI 出站支持部署时切换 Worker 直连或本机转发，当前默认�
 
 登录返回的 `user.email_binding_required=true` 或 `/account/me` 中同名标记为 true 时展示可稍后处理的提醒。只预填 `user.email`；显示名不能推导邮箱。无邮箱账号先由管理员按 ID 设置登录邮箱。
 
-- 用户主动发送：`POST /account/email/code`，提交 `{ "email":"user@example.net" }`。
+- 用户先用 `email_binding_code` 用途完成人机验证，再手动发送：`POST /account/email/code`，提交 `{ "email":"user@example.net","captcha_token":"本次 proof" }`。
 - 完成绑定：`POST /account/email/bind`，提交 `{ "email":"user@example.net","code":"012345" }`。
 - 成功后用返回的 user 更新状态并隐藏提醒。**验证绑定后的 email 就是登录邮箱**；更新客户端保存的邮箱。账号 ID、密码、权限与既有令牌不变。
 
@@ -67,9 +67,11 @@ OpenAI 出站支持部署时切换 Worker 直连或本机转发，当前默认�
 | `gpt-transcribe` | 音频识别 | `POST /v1/audio/transcriptions` |
 | `gpt-realtime-2.1-mini` | 文字合成语音 | `POST /v1/audio/speech` |
 
-实际列表以账号/Key服务权限及部署配置为准。仅有 ASR/TTS 权限的 Key 也可以发现自己的模型，不需要额外 qwen 权限。自建模型仅在部署明确开放时出现。
+以响应中的模型 ID 和能力为准。支持的语言模型包括 GPT‑6 Luna、Sol、Astra，GPT‑6.1 Sol、Terra，GPT‑6.2 Sol、Astra，以及已运行且获授权的自建对话模型。客户端不要为新型号维护固定允许列表，也不要以显示名代替模型 ID。仅具备 ASR/TTS 权限的 Key 可以发现其自身可用的模型。
 
-当前生产云模型目录是只读鉴权：**不计日请求数、不占并发名额、不产生逐次推理明细**。不要把模型发现次数显示成计费调用。目录仍读取最新权限；缓存列表不保证下一次推理会被授权。按账号及凭据隔离缓存，建议最多24小时，手动刷新、切换账号/Key或权限变化时失效。将来开启本地模型目录时，查询可能走带内部凭证的旧路径，不承诺同样的零写入行为。详见 [模型发现](model-discovery.md)。
+用户页保存的授权立即作用于公网目录和实际调用，同时约束登录令牌和该账号名下的所有 API Key。新账号默认模型只在创建时分配；修改默认列表不改变已有账号。模型还受服务权限、云模型暂停状态和本机部署可达性约束。用户当前目录为空时照常显示空状态，不回退到硬编码的模型。
+
+安卓建议在登录成功、切换账号/Key、进入模型选择器或从后台回来时按需更新。可合并并发目录读取、提示用户手动刷新，并在 `403 model_not_allowed` 时使目录缓存失效及重新查询。用新列表替换该凭据的旧列表，更新已选模型的可用状态；不要自动换模型并重放原请求。目录请求不占推理并发、不扣日请求数。自建后端的短时目录缓存独立于账号授权；若看见 `X-Model-Catalog-Partial: local_unavailable`，仍可使用本次返回的模型。[模型发现](model-discovery.md)
 
 ## 5. Luna 文本与工具调用
 
@@ -82,6 +84,28 @@ OpenAI 出站支持部署时切换 Worker 直连或本机转发，当前默认�
 Chat 带工具时客户端使用 `reasoning_effort:"none"`，网关也会做兼容处理；需要推理加工具时使用 Responses。两种接口的消息、工具及推理字段不同，不直接复用同一请求对象。客户端必须提交完整上下文，不能假设服务端保存对话或支持隐藏状态引用。
 
 保存 `X-Request-ID` 和可选 `X-Inference-Compatibility`。不要因 medium/none 的工具兼容问题反复提交同一调用。完整支持范围和工具回传格式见 [Luna 协议](luna-allowance.md)。
+
+### 安卓接入 Luna 网页搜索
+
+仅当模型目录的 Luna 条目包含 `responses_tools: ["web_search"]`（或数组包含该值）时显示内置联网搜索入口。该能力属于 `POST https://api.hilex.me/v1/responses`。账号登录调用使用 `Authorization: Bearer <access_token>` 与 `X-Client-ID`，网关 API Key 调用仅使用 Bearer Key。保留原有自定义 function 工具，用 `type` 区分服务端搜索和客户端函数。
+
+```json
+{
+  "model": "gpt-6-luna",
+  "input": "查找 OpenAI 官方 Luna 模型页并给出来源",
+  "tools": [{"type":"web_search","search_context_size":"low"}],
+  "include": ["web_search_call.action.sources"],
+  "stream": true
+}
+```
+
+- `search_context_size` 支持 `low`、`medium`、`high`，可省略（默认 `low`）。每次响应最多一个内置工具调用；`max_tool_calls` 可省略，显式发送时只能为 1。`include` 可省略，若发送只能是上例的来源字段。
+- 默认工具选择由模型决定，允许未实际执行搜索。用户明确要求必须搜索时可传 `"tool_choice":{"type":"web_search"}`。关闭搜索时从请求移除搜索工具及其专用字段。
+- JSON 响应识别 `output[].type=web_search_call`，正文的 `output[].content[].annotations[]` 中解析 `url_citation` 并展示可点击、可复制的来源。请求 `include` 后可额外读取搜索项的 `action.sources`。原生打开来源只允许预期的 HTTP(S) 网页链接。
+- SSE 复用 Responses 的文本和完成事件处理，保留最终 `response.completed.response` 中的来源与计量。搜索事件可用来更新「正在搜索」状态；收到搜索中间事件或 URL 不能当作响应已完成。内置搜索在服务端执行，安卓不要为 `web_search_call` 再执行本地搜索或回传 function 结果。
+- 实际计费次数可读取最终响应的 `tool_usage.web_search.num_requests`，字段可能为空或缺失。余额以账号快照为准，不根据工具事件个数、引用数或本地计数推导。缺少最终计量、取消或断流可能保留预留，不能自动重放。
+
+默认每账号每天 30 次，登录与名下 API Key 共用；管理员可调整，0 表示关闭。每日北京时间 00:00 重置。搜索仍受云文本月额度和全站预算限制。安卓用 `web_search_daily_limit` 与 `resets_at` 显示上限提示；账号搜索上限为 0 时提示联系管理员开启。[搜索参数和计费](luna-allowance.md#luna-内置网页搜索)
 
 ## 6. 云语音协议
 
@@ -133,13 +157,25 @@ Chat 带工具时客户端使用 `reasoning_effort:"none"`，网关也会做兼�
 | `GET /account/audio-usage` | ASR为毫秒，除以60000显示分钟；TTS为字符 |
 | `GET /account/usage` | 当日totals及最近最多100条仍保留的请求明细，不是完整历史分页 |
 
+安卓用量页优先请求 `GET https://accounts.hilex.me/account/usage-snapshot`，账号 Bearer 鉴权，无需 `X-Client-ID`，API Key 无权读取。返回 `usage`、`luna`、`audio`、`web_search`、`history_next`：
+
+| 字段 | 客户端展示 |
+|---|---|
+| `web_search.day`、`timezone` | 额度统计日，时区为 `Asia/Shanghai` |
+| `web_search.limit`、`used`、`reserved`、`remaining` | 每日上限、已结算、待核对预留、可用次数；剩余已扣预留，不再次扣除 |
+| `web_search.resets_at` | ISO 8601 时间，解析为 Instant 后按需显示北京时间或本地时间 |
+| `usage.requests` | 首屏最多 20 条，每条仅含 `started`、`ended`、`service`、`status`、`response_bytes` |
+| `history_next` | 下一页不透明字符串游标；`null` 时结束 |
+
+续页请求 `GET /account/usage-history?before=<history_next>`，沿用账号鉴权，通过 Retrofit `@Query("before")` 正常 URL 编码，不拆解游标，也不二次编码。响应为 `{requests,next}`，把记录追加到同一账号的列表，下一次使用 `next`。手动刷新、退出或切换账号后丢弃旧游标与旧请求结果；续页不重新查询额度。
+
 默认个人额度为Luna每月1000万tokens、ASR每天30分钟、TTS每天50万字符。管理员可调整，以服务端字段为准，不在客户端写死。全站Luna另有每月200美元估算预算；全站预算耗尽不代表个人额度被清零。
 
 服务端按 `Asia/Shanghai` 自然日/月重置，客户端本地时区不改变额度周期；优先使用服务端 `resets_at` 显示重置时间。通知的 starts_at / expires_at / published_at / read_at 及 email_verified_at 是Unix秒，可包含小数；expires_in、refresh_expires_in、retry_after 是相对秒，resets_at 是ISO8601时间字符串。不要与音频毫秒或JavaScript毫秒时间戳混淆。
 
 用量页进入时或用户手动刷新时获取；请求完成优先使用响应usage展示，不在每次推理前后固定查询所有账号接口。本地余额只是展示，不参与服务端放行、并发或扣费判断。
 
-**明细不是完整历史**：旧模型目录记录在当日额度窗口结束后可归档，普通无财务关联的请求结束90天后可归档，财务关联请求保留。归档保留每日汇总，管理员历史日统计已合并汇总；客户端不应从有限requests数组反推累计调用数，也不能把明细为空解释为从未使用。当前没有新增供普通账号调用的“全量历史汇总接口”。IP/UA/设备标识30天后可能为空，不能因此显示为数据损坏。
+**明细不是完整历史**：旧模型目录记录在当日额度窗口结束后可归档，普通无财务关联的请求结束90天后可归档，财务关联请求保留。归档保留每日汇总，管理员历史日统计已合并汇总；客户端不应从有限requests数组反推累计调用数，也不能把明细为空解释为从未使用。分页只覆盖仍保留的明细。个人快照和续页不返回 IP、UA 或设备标识。
 
 ## 9. 用户通告与每天一次自动检查
 
@@ -166,6 +202,8 @@ Chat 带工具时客户端使用 `reasoning_effort:"none"`，网关也会做兼�
 | 错误类型/代码 | 客户端动作 |
 |---|---|
 | 本人账号401 | 合并令牌刷新；失败转登录，不递归刷新 |
+| `403 model_not_allowed` | 模型权限已变更，刷新模型列表并提示重新选择；不清令牌、不重发原请求 |
+| `429 web_search_daily_limit` | 显示搜索额度限制及正文 `resets_at`；不触发令牌刷新，也不自动重试 |
 | 403、password_change_required | 展示封禁、权限或先改密提示，不自动重试 |
 | email_verification_required / email_verification_invalid | 输入六位码或重新获取，保留用户输入的邮箱 |
 | email_rate_limited | 至少遵守Retry-After，不自动循环发信 |
@@ -204,12 +242,16 @@ Chat 带工具时客户端使用 `reasoning_effort:"none"`，网关也会做兼�
 ## 12. 客户端验收清单
 
 - 账号令牌和Key两种方式均能发现获授权模型；无效/撤销凭据不绕过鉴权。
-- 注册验证码保留前导零；旧账号有可稍后处理的绑定提醒，绑定后原登录名不变。
+- 注册验证码保留前导零；注册、找回、邮箱绑定和更换邮箱都先完成人机验证，再手动发码。旧账号允许稍后绑定，绑定后的邮箱用于登录。
 - 多个请求同时401只刷新一次，并原子替换令牌对；提供方密钥异常不触发用户重新登录。
 - 语音模型按HTTP调用；PCM可跨奇数长度块拼接，取消生成/播放能取消读取。
 - SSE断流、缺少完成事件或PCM传输失败不显示为完整成功，不自动重复计费或工具调用。
 - 通知刷新页面/重新登录/恢复前台不会绕过每天自动检查间隔，手动刷新可用；已读更新角标不重复查询。
 - 切换账号/Key隔离模型及通知缓存，退出清理敏感数据，客户端日志无凭据或原始内容。
+- 同一安卓版本在两个账号切换后能展示不同的模型授权；后台单独授权 Sol 后刷新即出现，撤销后目录移除且直传 ID 返回 `model_not_allowed`。
+- Luna 搜索使用 Responses，JSON 和 SSE 都保留引用；搜索失败/取消不将发起次数当作已结算次数，不自动重试找回结果。
+- 搜索额度显示已用、预留、剩余和重置时刻；覆盖停用、用尽 `429`、令牌有效且不应刷新三个条件。
+- 用量首屏和续页能顺序追加，`next=null` 停止；切换账号时迟到的分页响应不会混入新账号。
 - 模型发现不计为推理用量；余额不重复扣reserved；历史明细为空或诊断字段为空有正确提示。
 
 排查新出现的模型参数错误时，服务端Worker日志可按X-Request-ID查看脱敏的上游错误分类及指定工具的Schema结构摘要；客户端无需为此上传整段聊天、音频或凭据。历史请求不能补录未保存的Schema。服务端日志不改变错误响应契约，客户端仍按上述错误码及流式完成规则处理；内部账号错误也可能返回request_id供关联排查。
@@ -369,10 +411,6 @@ Response 非成功时读取 errorBody 并按服务端 error_code 分支，不能
 本地模型已开启目录发现，首次查询即可返回；目录不占推理并发。默认 /v1/models 只列文本输出，嵌入模型需要 ?output_modalities=embeddings 或 all。新增的付费云嵌入仅为 text-embedding-3-small；POST /v1/embeddings、input 字段、默认1536维/可选dimensions，账号token+ClientID或API Key鉴权不变，沿用qwen权限。Luna与small共享云文本月token额度及全站预算，small按自己的价格结算。完整限制和实例见[嵌入与模型发现](openai-embeddings.md)。
 
 记得旧密码时，匿名 `POST https://accounts.hilex.me/auth/password`，提交 email/current_password/new_password 即可修改，无需邮箱验证码、账号token或ClientID。新密码至少6字符，账号 ID 和显示名不变；成功后清除该账号旧access/refresh并返回登录，不自动登录；API Key保留。该接口的401表示邮箱/旧密码校验失败，不能触发刷新令牌。详细流程见[旧密码改密](password-recovery.md#记得旧密码使用邮箱和旧密码改密)。
-
-## 合并用量快照
-
-`GET https://accounts.hilex.me/account/usage-snapshot` 使用账号认证（Bearer access_token，不需要X-Client-ID；站内Cookie同样支持），返回`{usage,luna,audio}`，分别保持原`/account/usage`、`/account/luna-usage`、`/account/audio-usage`的响应结构。API Key不能访问账号快照。新版网页只请求该接口，安卓可在同时显示三类用量时切换到此接口，避免三次认证和HTTP往返；只需一类数据时仍可使用原分项接口。不增加轮询频率，继续按需刷新，不公共缓存账号响应。真实调用的权限/并发和预算不由客户端快照决定。
 
 ## 网页个人账号与管理控制台
 
