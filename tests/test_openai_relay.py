@@ -137,6 +137,7 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(response.content, b"data: hello\n\n")
         self.assertEqual(response.headers["x-request-id"], "upstream-1")
         self.assertNotIn("set-cookie", response.headers)
+        self.assertGreaterEqual(int(response.headers["x-edge-upstream-ms"]), 0)
 
     def test_rejection_preserves_provider_code_and_network_uncertainty_is_marked(self):
         response = self.call(

@@ -29,20 +29,54 @@ export function publicUser(r) {
   };
 }
 export class Store {
-  constructor(db) {
+  constructor(db, timing = null) {
     this.db = db;
+    this.timing = timing;
   }
   stmt(sql, ...args) {
     return this.db.prepare(sql).bind(...args);
   }
+  async measured(promise, started, phase) {
+    try {
+      const result = await promise;
+      if (result?.meta) {
+        const t = this.timing;
+        t.db_rows_read = (t.db_rows_read ?? 0) + (result.meta.rows_read ?? 0);
+        t.db_rows_written =
+          (t.db_rows_written ?? 0) + (result.meta.rows_written ?? 0);
+        t.db_meta_ops = (t.db_meta_ops ?? 0) + 1;
+      }
+      return result;
+    } finally {
+      const t = this.timing;
+      const elapsed = Math.round(performance.now() - started);
+      t.db_ops = (t.db_ops ?? 0) + 1;
+      t.db_ms = (t.db_ms ?? 0) + elapsed;
+      if (phase) t[phase] = (t[phase] ?? 0) + elapsed;
+    }
+  }
   first(sql, ...args) {
-    return this.stmt(sql, ...args).first();
+    if (!this.timing) return this.stmt(sql, ...args).first();
+    const started = performance.now();
+    return this.measured(this.stmt(sql, ...args).first(), started);
   }
   async all(sql, ...args) {
-    return (await this.stmt(sql, ...args).all()).results;
+    if (!this.timing) return (await this.stmt(sql, ...args).all()).results;
+    const started = performance.now();
+    return (await this.measured(this.stmt(sql, ...args).all(), started))
+      .results;
   }
   run(sql, ...args) {
-    return this.stmt(sql, ...args).run();
+    if (!this.timing) return this.stmt(sql, ...args).run();
+    const phase = /^INSERT INTO (luna_usage|audio_usage)\b/.test(sql)
+      ? "reserve_ms"
+      : /^UPDATE (luna_usage|audio_usage|requests) SET (charged_|model=)/.test(
+            sql,
+          )
+        ? "settle_ms"
+        : null;
+    const started = performance.now();
+    return this.measured(this.stmt(sql, ...args).run(), started, phase);
   }
   async audit(actor, action, target) {
     await this.run(

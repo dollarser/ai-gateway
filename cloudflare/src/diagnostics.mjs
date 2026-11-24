@@ -30,7 +30,7 @@ export async function diagnosticsRoute(request, store, user, readBody) {
     )
       throw new Denied(422, "核对筛选字段无效");
     const rows = await store.all(
-      `SELECT q.*,u.display_name,r.request_id,r.status,r.ended,r.ended+60 adjustable_after,r.model FROM (SELECT 'luna' kind,'tokens' unit,lease,user_id,month period,reserved_tokens reserved_units,charged_tokens charged_units,settled,response_id,reserved_cost_nanos,charged_cost_nanos FROM luna_usage UNION ALL SELECT 'audio' kind,CASE kind WHEN 'asr' THEN 'milliseconds' ELSE 'characters' END unit,lease,user_id,day period,reserved_units,charged_units,settled,response_id,NULL,NULL FROM audio_usage) q JOIN users u ON u.id=q.user_id JOIN requests r ON r.id=q.lease WHERE (?='all' OR q.settled=?) AND (? IS NULL OR q.user_id=?) ORDER BY r.started DESC LIMIT 100`,
+      `SELECT q.*,u.display_name,r.request_id,r.status,r.ended,r.ended+60 adjustable_after,r.model FROM (SELECT 'luna' kind,'tokens' unit,lease,user_id,month period,reserved_tokens reserved_units,charged_tokens charged_units,settled,response_id,reserved_cost_nanos,charged_cost_nanos,web_search_day,web_search_calls FROM luna_usage UNION ALL SELECT 'audio' kind,CASE kind WHEN 'asr' THEN 'milliseconds' ELSE 'characters' END unit,lease,user_id,day period,reserved_units,charged_units,settled,response_id,NULL,NULL,NULL,NULL FROM audio_usage) q JOIN users u ON u.id=q.user_id JOIN requests r ON r.id=q.lease WHERE (?='all' OR q.settled=?) AND (? IS NULL OR q.user_id=?) ORDER BY r.started DESC LIMIT 100`,
       state,
       state === "settled" ? 1 : 0,
       uid,
@@ -46,9 +46,16 @@ export async function diagnosticsRoute(request, store, user, readBody) {
       typeof b !== "object" ||
       Array.isArray(b) ||
       Object.keys(b).length < fields.length ||
-      Object.keys(b).length > fields.length + 2 ||
+      Object.keys(b).length > fields.length + 4 ||
       Object.keys(b).some(
-        (k) => ![...fields, "cost_nanos", "expected_cost_nanos"].includes(k),
+        (k) =>
+          ![
+            ...fields,
+            "cost_nanos",
+            "expected_cost_nanos",
+            "web_search_calls",
+            "expected_web_search_calls",
+          ].includes(k),
       )
     )
       throw new Denied(422, "核对字段无效");
@@ -60,6 +67,17 @@ export async function diagnosticsRoute(request, store, user, readBody) {
         b.kind !== "luna")
     )
       throw new Denied(422, "成本核对字段无效");
+    const adjustsSearch =
+      "web_search_calls" in b || "expected_web_search_calls" in b;
+    if (
+      adjustsSearch &&
+      (b.kind !== "luna" ||
+        b.cost_nanos === undefined ||
+        ![b.web_search_calls, b.expected_web_search_calls].every(
+          (n) => Number.isSafeInteger(n) && n >= 0,
+        ))
+    )
+      throw new Denied(422, "请同时提供搜索次数和核对后金额");
     queryId(b.id);
     queryId(b.lease);
     if (
@@ -84,6 +102,10 @@ export async function diagnosticsRoute(request, store, user, readBody) {
         old.previous_units !== b.expected_units ||
         old.reason !== b.reason ||
         old.actor !== user.id ||
+        (old.previous_web_search_calls !== null) !== adjustsSearch ||
+        (adjustsSearch &&
+          (old.previous_web_search_calls !== b.expected_web_search_calls ||
+            old.new_web_search_calls !== b.web_search_calls)) ||
         (b.cost_nanos !== undefined &&
           (old.new_cost_nanos !== b.cost_nanos ||
             old.previous_cost_nanos !== b.expected_cost_nanos))
@@ -99,11 +121,20 @@ export async function diagnosticsRoute(request, store, user, readBody) {
       b.lease,
     );
     if (!row) throw new Denied(404, "额度账本不存在");
+    const hasSearch = row.web_search_day != null;
+    if (hasSearch !== adjustsSearch)
+      throw new Denied(
+        422,
+        hasSearch ? "搜索请求必须同时核对搜索次数" : "此请求没有网页搜索",
+      );
     if (
       !row.ended ||
       row.ended > now() - 60 ||
       row[charge] !== b.expected_units ||
       b.units > Math.max(row[reserve], row[charge]) ||
+      (adjustsSearch &&
+        (row.web_search_calls !== b.expected_web_search_calls ||
+          b.web_search_calls > Math.max(1, row.web_search_calls))) ||
       (b.cost_nanos !== undefined &&
         (b.expected_cost_nanos !== row.charged_cost_nanos ||
           b.cost_nanos >
@@ -119,16 +150,20 @@ export async function diagnosticsRoute(request, store, user, readBody) {
         : null;
     const result = await store.db.batch([
       store.stmt(
-        `UPDATE ${table} SET ${charge}=?,settled=1${b.kind === "luna" ? ",charged_cost_nanos=" + newCost : ""} WHERE lease=? AND ${charge}=? ${b.kind === "luna" ? "AND charged_cost_nanos=" + row.charged_cost_nanos : ""} AND EXISTS(SELECT 1 FROM requests WHERE id=? AND ended<=?) AND NOT EXISTS(SELECT 1 FROM quota_adjustments WHERE id=?)`,
+        `UPDATE ${table} SET ${charge}=?,settled=1${b.kind === "luna" ? ",charged_cost_nanos=?" : ""}${adjustsSearch ? ",web_search_calls=?" : ""} WHERE lease=? AND ${charge}=? ${b.kind === "luna" ? "AND charged_cost_nanos=?" : ""} ${adjustsSearch ? "AND web_search_calls=?" : ""} AND EXISTS(SELECT 1 FROM requests WHERE id=? AND ended<=?) AND NOT EXISTS(SELECT 1 FROM quota_adjustments WHERE id=?)`,
         b.units,
+        ...(b.kind === "luna" ? [newCost] : []),
+        ...(adjustsSearch ? [b.web_search_calls] : []),
         b.lease,
         b.expected_units,
+        ...(b.kind === "luna" ? [row.charged_cost_nanos] : []),
+        ...(adjustsSearch ? [b.expected_web_search_calls] : []),
         b.lease,
         now() - 60,
         b.id,
       ),
       store.stmt(
-        "INSERT INTO quota_adjustments(id,kind,lease,actor,user_id,previous_units,new_units,reason,created,previous_cost_nanos,new_cost_nanos) SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE changes()=1",
+        "INSERT INTO quota_adjustments(id,kind,lease,actor,user_id,previous_units,new_units,reason,created,previous_cost_nanos,new_cost_nanos,previous_web_search_calls,new_web_search_calls) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,? WHERE changes()=1",
         b.id,
         b.kind,
         b.lease,
@@ -140,6 +175,8 @@ export async function diagnosticsRoute(request, store, user, readBody) {
         now(),
         b.kind === "luna" ? row.charged_cost_nanos : null,
         newCost,
+        adjustsSearch ? row.web_search_calls : null,
+        adjustsSearch ? b.web_search_calls : null,
       ),
       store.stmt(
         "INSERT INTO audit(actor,action,target,ts) SELECT ?,?,?,? WHERE changes()=1",
@@ -153,6 +190,10 @@ export async function diagnosticsRoute(request, store, user, readBody) {
           units: b.units,
           reason: b.reason,
           cost_nanos: newCost,
+          ...(adjustsSearch && {
+            previous_web_search_calls: row.web_search_calls,
+            web_search_calls: b.web_search_calls,
+          }),
         }),
         now(),
       ),

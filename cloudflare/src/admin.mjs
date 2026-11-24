@@ -1,4 +1,8 @@
-import { adminModelRoute } from "./model-access.mjs";
+import {
+  webSearchTotalsStatement,
+  webSearchUsage,
+} from "./web-search-usage.mjs";
+import { adminModelRoute, validateModelAllowlist } from "./model-access.mjs";
 import { networkAdminRoute } from "./network-admin.mjs";
 import { operationsRoute } from "./operations.mjs";
 import { Denied, publicUser, day } from "./store.mjs";
@@ -136,6 +140,41 @@ export async function adminRoute(request, store, u, readBody, env = {}) {
       new Set(b.ids).size !== b.ids.length
     )
       throw new Denied(422, "应选择 1–100 个不同账号");
+    if (
+      b.patch &&
+      typeof b.patch === "object" &&
+      ("add_model_ids" in b.patch || "remove_model_ids" in b.patch)
+    ) {
+      object(b.patch, ["add_model_ids", "remove_model_ids"]);
+      const add = "add_model_ids" in b.patch;
+      const models = b.patch[add ? "add_model_ids" : "remove_model_ids"];
+      validateModelAllowlist(models);
+      if (Object.keys(b.patch).length !== 1 || !models.length)
+        throw new Denied(422, "请选择要添加或移除的模型");
+      const ids = JSON.stringify(b.ids);
+      const expression = add
+        ? "SELECT value FROM json_each(users.allowed_model_ids) UNION SELECT value FROM json_each(?)"
+        : "SELECT value FROM json_each(users.allowed_model_ids) WHERE value NOT IN (SELECT value FROM json_each(?))";
+      const [changed] = await store.db.batch([
+        store.stmt(
+          `UPDATE users SET allowed_model_ids=(SELECT json_group_array(value) FROM (${expression})) WHERE id IN (SELECT value FROM json_each(?)) AND (SELECT count(*) FROM users WHERE id IN (SELECT value FROM json_each(?)))=?`,
+          JSON.stringify(models),
+          ids,
+          ids,
+          b.ids.length,
+        ),
+        store.stmt(
+          "INSERT INTO audit(actor,action,target,ts) SELECT ?,?,?,? WHERE changes()>0",
+          u.id,
+          "bulk_update_user_models",
+          JSON.stringify({ ids: b.ids, patch: b.patch }),
+          now(),
+        ),
+      ]);
+      if (changed.meta.changes !== b.ids.length)
+        throw new Denied(404, "部分账号已不存在，请刷新后重选");
+      return result({ ok: true, updated: b.ids.length });
+    }
     object(b.patch, [...QUOTA_FIELDS, "enabled"]);
     if (!Object.keys(b.patch).length) throw new Denied(422, "没有更新字段");
     const quota = Object.fromEntries(
@@ -296,6 +335,7 @@ export async function adminRoute(request, store, u, readBody, env = {}) {
           uid,
           today,
         ),
+        webSearchTotalsStatement(store, uid, today),
       );
     if (view !== "summary")
       statements.push(
@@ -316,6 +356,11 @@ export async function adminRoute(request, store, u, readBody, env = {}) {
     if (view !== "activity") {
       payload.user = publicUser(target);
       payload.audio = audioUsageValue(target, rows.shift().results, today);
+      payload.web_search = webSearchUsage(
+        target,
+        today,
+        rows.shift().results[0],
+      );
     }
     if (view !== "summary") {
       payload.requests = rows[0].results;

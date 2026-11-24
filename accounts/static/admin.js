@@ -35,7 +35,12 @@
     $("selected-count").textContent = n
       ? "已选择 " + n + " 个账号"
       : "未选择账号";
-    for (const id of ["bulk-defaults", "bulk-enable", "bulk-disable"])
+    for (const id of [
+      "bulk-defaults",
+      "bulk-enable",
+      "bulk-disable",
+      "bulk-models",
+    ])
       $(id).disabled = !n || state.loading || state.stale;
     const boxes = [...$("users-list").querySelectorAll("input[type=checkbox]")];
     $("select-page").disabled = !boxes.length || state.loading || state.stale;
@@ -524,6 +529,8 @@
       " 分钟 · 合成剩余 " +
       num(data.audio.tts.remaining) +
       " 字符";
+    $("details-web-search").textContent = webSearchSummary(data.web_search);
+    $("details-web-search").hidden = !data.web_search;
     const activity = $("user-activity");
     const activityContent = $("user-activity-content");
     activityContent.hidden = true;
@@ -672,6 +679,59 @@
       state.page++;
       closeDetails();
       await load({ forceSummary: false });
+    }),
+  );
+  const bulkModelDialog = $("bulk-model-dialog");
+  $("bulk-models").addEventListener(
+    "click",
+    run(async () => {
+      const button = $("bulk-models");
+      button.disabled = true;
+      try {
+        const data = await api("/admin/models");
+        if (!state.selected.size || adminLocation() !== "admin") return;
+        $("bulk-model-target").textContent =
+          "已选 " + state.selected.size + " 个账号，详细名单将在提交前显示。";
+        $("bulk-model-form").reset();
+        const fieldset = $("bulk-model-options");
+        fieldset.querySelectorAll("label").forEach((label) => label.remove());
+        for (const model of data.models) {
+          const label = document.createElement("label");
+          const box = document.createElement("input");
+          box.type = "checkbox";
+          box.name = "models";
+          box.value = model.id;
+          label.append(box, model.name);
+          fieldset.append(label);
+        }
+        $("bulk-model-submit").disabled = true;
+        bulkModelDialog.showModal();
+      } finally {
+        selection();
+      }
+    }),
+  );
+  $("bulk-model-options").addEventListener("change", () => {
+    $("bulk-model-submit").disabled =
+      !$("bulk-model-options").querySelector(":checked");
+  });
+  $("bulk-model-cancel").addEventListener("click", () =>
+    bulkModelDialog.close(),
+  );
+  $("bulk-model-form").addEventListener(
+    "submit",
+    run(async (event) => {
+      const form = event.target;
+      const ids = [...form.querySelectorAll("[name=models]:checked")].map(
+        (box) => box.value,
+      );
+      if (!ids.length) return;
+      const mode = form.elements.mode.value;
+      bulkModelDialog.close();
+      await bulk(
+        { [mode]: ids },
+        (mode === "add_model_ids" ? "添加模型 " : "移除模型 ") + ids.join("、"),
+      );
     }),
   );
   $("bulk-defaults").addEventListener(
@@ -832,7 +892,16 @@
       );
       cell(tr, r.period);
       cell(tr, r.settled ? "已结算" : "预留 / 待核对");
-      cell(tr, num(r.reserved_units) + " / " + num(r.charged_units));
+      const amount = cell(
+        tr,
+        num(r.reserved_units) + " / " + num(r.charged_units),
+      );
+      if (r.web_search_day) {
+        const line = document.createElement("small");
+        line.textContent =
+          r.web_search_day + " · 搜索 " + num(r.web_search_calls) + " 次";
+        amount.append(line);
+      }
       cell(
         tr,
         (r.request_id || r.lease) + " / " + (r.response_id || "提供方 ID 未知"),
@@ -862,6 +931,23 @@
           )
         )
           return;
+        let search = {};
+        if (r.web_search_day) {
+          const calls = prompt(
+            "填入提供方确认的实际网页搜索次数",
+            String(r.web_search_calls),
+          );
+          if (calls === null) return;
+          if (
+            !/^\d+$/.test(calls.trim()) ||
+            !Number.isSafeInteger(Number(calls))
+          )
+            throw new Error("搜索次数必须为非负整数");
+          search = {
+            web_search_calls: Number(calls),
+            expected_web_search_calls: r.web_search_calls,
+          };
+        }
         let costs = {};
         if (r.kind === "luna") {
           const dollars = prompt(
@@ -879,6 +965,7 @@
         }
         await api("/admin/quota-adjustments", "POST", {
           ...costs,
+          ...search,
           id: crypto.randomUUID(),
           kind: r.kind,
           lease: r.lease,

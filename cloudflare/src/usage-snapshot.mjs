@@ -1,3 +1,7 @@
+import {
+  webSearchTotalsStatement,
+  webSearchUsage,
+} from "./web-search-usage.mjs";
 import { Denied, day } from "./store.mjs";
 import { cloudUsageValue } from "./luna.mjs";
 import { audioUsageValue } from "./audio.mjs";
@@ -65,6 +69,7 @@ export async function usageSnapshot(store, user) {
       uid,
       today,
     ),
+    webSearchTotalsStatement(store, uid, today),
   ]);
   const cloud = rows[2].results[0] ?? {
     n: 0,
@@ -77,6 +82,7 @@ export async function usageSnapshot(store, user) {
   return {
     usage: { today, totals: rows[0].results, requests: history.requests },
     history_next: history.next,
+    web_search: webSearchUsage(user, today, rows[4].results[0]),
     luna: cloudUsageValue(user, cloud, month),
     audio: audioUsageValue(user, rows[3].results, today),
   };

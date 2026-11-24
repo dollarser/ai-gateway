@@ -1,3 +1,4 @@
+import { webSearchResetsAt } from "./web-search-usage.mjs";
 import { visionInput } from "./vision.mjs";
 import { openaiHeaders } from "./openai-headers.mjs";
 import { toolDiagnostic } from "./worker-logs.mjs";
@@ -413,6 +414,7 @@ export async function proxyLuna(
     if (String(e).includes("web_search_daily_limit")) {
       const error = new Denied(429, "该账号今日网页搜索额度已用完或已停用");
       error.code = "web_search_daily_limit";
+      error.resets_at = webSearchResetsAt(today);
       error.retryable = false;
       throw error;
     }

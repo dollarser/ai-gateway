@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 import httpx
 import websockets
 from fastapi import APIRouter, Request, WebSocket
@@ -63,6 +64,7 @@ async def send_upstream(request, operation, content, *, params=None):
             8 if params is not None else 850, connect=5 if params is not None else 10
         ),
     )
+    started = time.perf_counter()
     try:
         upstream = await client.send(
             upstream_request, stream=True, follow_redirects=False
@@ -79,6 +81,8 @@ async def send_upstream(request, operation, content, *, params=None):
         for k, v in upstream.headers.items()
         if k in {"content-type", "x-request-id", "retry-after"}
     }
+
+    headers["X-Edge-Upstream-Ms"] = str(round((time.perf_counter() - started) * 1000))
 
     for original, forwarded in (
         ("x-request-id", "X-OpenAI-Request-ID"),

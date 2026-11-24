@@ -39,6 +39,16 @@
 
 `PATCH /admin/users/{id}` 的 `allowed_model_ids` 接受模型 ID 数组，空数组禁止所有模型，省略保留当前权限。
 
+### 批量模型授权
+
+在用户列表勾选账号，打开「批量模型授权」，选择添加或移除以及模型，确认名单后提交。操作原子执行，保留每个账号未选中的模型。API 使用 `POST /admin/users/bulk`，`patch` 仅提供 `add_model_ids` 或 `remove_model_ids` 中的一项。
+
+### 搜索用量与核对
+
+个人用量和管理员账号详情返回 `web_search` 对象，包含 `day`、`timezone`、`limit`、`used`、`reserved`、`remaining`、`resets_at`。网页搜索日额拒绝返回 `429 web_search_daily_limit` 和 ISO 8601 格式的 `resets_at`。已用是已结算次数，剩余额度同时扣除预留次数。
+
+核对涉及搜索的请求时，必须同时提交 `web_search_calls`、`expected_web_search_calls`、实际和原金额及 token 用量。搜索次数、token、金额与审计记录在同一事务内更新。确认未调用时将实际搜索次数填 0，可释放当日预留。
+
 ## IP 与客户端信息的来源
 
 账号登录 IP 来自 Cloudflare Worker 收到的 `CF-Connecting-IP`。API 请求 IP 只信任回环隧道入口的 Cloudflare 连接头；其他连接使用实际对端地址，不信任任意客户端的 X-Forwarded-For。网关只绑定回环地址，不应把源站端口直接暴露到公网。代理或 VPN 会影响 IP 的地理或设备含义，不能把 IP 当成用户真实身份。

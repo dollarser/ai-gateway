@@ -979,6 +979,7 @@ export default {
             detail: e.message,
             error_code: e.code ?? "request_rejected",
             retryable: e.retryable === true,
+            ...(e.resets_at && { resets_at: e.resets_at }),
             ...(providerRequestId ? { request_id: providerRequestId } : {}),
           },
           e.status,

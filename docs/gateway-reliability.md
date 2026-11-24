@@ -81,3 +81,17 @@ Luna 与语音的全站计量分别保存在独立 luna_spend / audio_spend；�
 核查时有两条已完成 Luna 用量结算但 requests.ended 仍为空的对话，账号并发上限为 2，两条均处于 920 秒有效窗口内。可复现的收尾缺陷是：响应包装层等待下一次客户端 pull 才观察到 EOF，客户端背压导致已完成结果继续占名额；取消时等待上游 cancel 也可能拖延释放。不能仅凭这些记录断言某一次客户端 429 的原因，仍需该响应 request_id。
 
 修复后完整 JSON usage 或 SSE 完成标记与 usage 足以结束请求，不再依赖额外 EOF pull；取消时同步发起名额释放和上游取消。未知费用预留不释放。并发错误维持 429/account_concurrency_limited，新增明确说明与 X-Error-Code，Retry-After 从通用 60 秒改为 1 秒建议。没有调整账号的并发配额或为语音绕过配额。
+
+
+## 推理分段采样
+
+Worker 默认抽样 5% 的公网 HTTP 推理请求，写入 `inference_timing` 结构化日志，可通过 `INFERENCE_TIMING_SAMPLE_RATE`（0–1）调整。按对话、网页搜索、嵌入、ASR、TTS 区分；记录鉴权与租约、费用预留、中继或上游响应头、首字节、结算及总时间。HTTP 本机中继用内部响应头记录上游到响应头时间，Worker 从总连接时间中估算回源开销；内部响应头不会通过公开推理接口返回。Realtime TTS 无独立的上游 HTTP 中继耗时，使用现有路径的合并时间。D1 时间覆盖调用采样包装器的操作，读写行数只汇总返回元数据的调用，`db_meta_ops` 用来判断覆盖范围。
+
+可在本地按请求类型与提供方汇总 P50/P95 和有效样本数：
+
+```sh
+cd cloudflare
+npx wrangler tail --format json | jq --unbuffered -c '.logs[]?.message[]? | fromjson? | select(.event == "inference_timing")' | python3 ../scripts/ops/summarize_inference_timing.py
+```
+
+汇总脚本读取 JSONL 后输出结果，完成采集时应先停止上游采集或将样本写入文件后汇总。分段时间可能重叠，不能直接相加。

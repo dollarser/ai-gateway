@@ -585,6 +585,16 @@ with sync_playwright() as p:
     )
     page.locator("#user-back").click()
     page.locator("#select-page").check()
+    page.locator("#bulk-models").click()
+    page.locator('#bulk-model-options input[value="gpt-6-luna"]').check()
+    page.locator("#bulk-model-submit").click()
+    page.get_by_text("批量设置已完成。", exact=True).wait_for()
+    assert any(
+        path == "/admin/users/bulk"
+        and body["patch"].get("add_model_ids") == ["gpt-6-luna"]
+        for path, body in mutations
+    )
+    page.locator("#select-page").check()
     page.locator("#bulk-disable").click()
     page.wait_for_timeout(100)
     assert all(u["enabled"] == 0 for u in users)

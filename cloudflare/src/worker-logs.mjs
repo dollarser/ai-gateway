@@ -195,7 +195,9 @@ export function writeWorkerLog(event, fields = {}, level = "error") {
     record.tool_truncated = true;
     text = JSON.stringify(record);
   }
-  console[level === "warn" ? "warn" : "error"](text);
+  console[level === "info" ? "info" : level === "warn" ? "warn" : "error"](
+    text,
+  );
   return record;
 }
 export function failureCategory(error) {

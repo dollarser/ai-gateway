@@ -1,3 +1,4 @@
+import { timePhase } from "./inference-timing.mjs";
 import { openaiRoute } from "./openai-route.mjs";
 import { writeWorkerLog } from "./worker-logs.mjs";
 import { collectObservation } from "./network-observations.mjs";
@@ -25,7 +26,19 @@ export function providerTransport(
   const routed = openaiRoute(env, lease, trace.request_id, transport);
   return async (url, options) => {
     trace.upstream_attempted = 1;
-    const r = await routed(url, options);
+    const r = await timePhase(trace.timing, "provider_headers_ms", () =>
+      routed(url, options),
+    );
+    if (trace.timing && env.OPENAI_TRANSPORT === "local") {
+      const upstream = r.headers?.get("x-edge-upstream-ms");
+      if (upstream && /^\d{1,9}$/.test(upstream)) {
+        trace.timing.upstream_headers_ms = Number(upstream);
+        trace.timing.relay_overhead_ms = Math.max(
+          0,
+          trace.timing.provider_headers_ms - Number(upstream),
+        );
+      }
+    }
     trace.upstream_request_id = safe(
       r.headers?.get(
         env.OPENAI_TRANSPORT === "local"

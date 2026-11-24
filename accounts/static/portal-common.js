@@ -85,3 +85,20 @@ function date(value) {
     timeZone: "Asia/Shanghai",
   });
 }
+
+function webSearchSummary(quota) {
+  if (!quota) return "";
+  return (
+    "Luna 网页搜索 · 已用 " +
+    quota.used +
+    " 次 · 预留 " +
+    quota.reserved +
+    " 次 · 剩余 " +
+    quota.remaining +
+    " / " +
+    quota.limit +
+    " 次 · " +
+    date(Date.parse(quota.resets_at) / 1000) +
+    "（北京时间）重置"
+  );
+}

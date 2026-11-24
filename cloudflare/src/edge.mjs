@@ -1,3 +1,4 @@
+import { logInferenceTiming, timePhase } from "./inference-timing.mjs";
 import {
   discoverableModels,
   LOCAL_ASR,
@@ -226,6 +227,7 @@ async function track(response, store, lease, trace, ctx, start) {
   if (!response.body) {
     logInferenceFailure(trace, null, response.status);
     await store.finish({ lease, status: response.status, size: 0, trace });
+    logInferenceTiming(trace, response.status, start);
     return new Response(null, { status: response.status, headers });
   }
   let size = 0,
@@ -291,6 +293,7 @@ async function track(response, store, lease, trace, ctx, start) {
           : Math.ceil(outputCharacters / 2),
       trace,
     });
+    logInferenceTiming(trace, status, start);
   };
   const stream = new ReadableStream({
     async pull(controller) {
@@ -383,17 +386,34 @@ function filterCatalog(data, url) {
   return data;
 }
 export async function edgeAPI(request, env, ctx) {
-  const store = new Store(env.DB),
-    url = new URL(request.url),
+  const url = new URL(request.url),
     path = url.pathname,
     id = token(),
     start = performance.now();
+  const sampleRate = Number(env.INFERENCE_TIMING_SAMPLE_RATE ?? 0.05);
+  const timing =
+    request.method === "POST" &&
+    path.startsWith("/v1/") &&
+    Number.isFinite(sampleRate) &&
+    sampleRate >= 0 &&
+    sampleRate <= 1 &&
+    Math.random() < sampleRate
+      ? {}
+      : null;
+  const store = new Store(env.DB, timing);
+  const forward = (...args) =>
+    timePhase(
+      timing,
+      args[5] === "/__codec/decode" ? "codec_headers_ms" : "origin_headers_ms",
+      () => origin(...args),
+    );
   let lease = null;
   const trace = {
     ...ingressDiagnostics(request),
     release_sha: env.RELEASE_SHA ?? null,
     request_id: id,
     path,
+    timing,
     provider: "edge",
     protocol: "http",
     failure_stage: "authentication",
@@ -433,6 +453,13 @@ export async function edgeAPI(request, env, ctx) {
       request.method !== (ws || path === "/v1/models" ? "GET" : "POST")
     )
       throw new Denied(404, "未开放该接口");
+    const authStart = performance.now();
+    trace.operation =
+      service === "qwen"
+        ? path === "/v1/embeddings"
+          ? "embedding"
+          : "chat"
+        : service;
     const ip = request.headers.get("CF-Connecting-IP");
     if (ip) await store.authCheck(ip);
     let raw;
@@ -470,7 +497,7 @@ export async function edgeAPI(request, env, ctx) {
               allModels.search = "?output_modalities=all";
               // Source trusts the authenticated Worker grant. Catalog reads don't
               // acquire inference slots, consume request quotas or persist leases.
-              const r = await origin(
+              const r = await forward(
                 new Request(allModels, request),
                 env,
                 id,
@@ -529,6 +556,8 @@ export async function edgeAPI(request, env, ctx) {
         ),
         device_id: (request.headers.get("X-Device-ID") ?? "").slice(0, 128),
       });
+      if (timing)
+        timing.auth_and_lease_ms = Math.round(performance.now() - authStart);
     } catch (e) {
       if (ip && e.status === 401)
         await store.run(
@@ -548,7 +577,7 @@ export async function edgeAPI(request, env, ctx) {
       await requirePublicModel(store, trace.model, path, lease);
       trace.provider = "local";
       trace.protocol = "websocket";
-      const r = await origin(request, env, lease, id, null);
+      const r = await forward(request, env, lease, id, null);
       if (r.status === 101) return r;
       return track(r, store, lease, trace, ctx, start);
     }
@@ -571,7 +600,7 @@ export async function edgeAPI(request, env, ctx) {
           trace.model = LOCAL_ASR;
           await requirePublicModel(store, trace.model, path, lease);
           return track(
-            await origin(request, env, lease, id, bytes),
+            await forward(request, env, lease, id, bytes),
             store,
             lease,
             { ...trace, provider: "local" },
@@ -600,7 +629,7 @@ export async function edgeAPI(request, env, ctx) {
       await requirePublicModel(store, trace.model, path, lease);
       if (localASR)
         return track(
-          await origin(request, env, lease, id, bytes),
+          await forward(request, env, lease, id, bytes),
           store,
           lease,
           { ...trace, provider: "local" },
@@ -638,7 +667,7 @@ export async function edgeAPI(request, env, ctx) {
         } else {
           measurement = "origin-decode";
           trace.failure_stage = "codec_decode";
-          const decoded = await origin(
+          const decoded = await forward(
             request,
             env,
             lease,
@@ -682,7 +711,7 @@ export async function edgeAPI(request, env, ctx) {
         await requirePublicModel(store, trace.model, path, lease);
         if (localTTS)
           return track(
-            await origin(request, env, lease, id, bytes),
+            await forward(request, env, lease, id, bytes),
             store,
             lease,
             { ...trace, provider: "local" },
@@ -732,6 +761,11 @@ export async function edgeAPI(request, env, ctx) {
       ) {
         throw new Denied(422, "未开放的 OpenAI 嵌入模型");
       } else if (CLOUD_TEXT_MODELS.has(payload.model)) {
+        if (
+          Array.isArray(payload.tools) &&
+          payload.tools.some((tool) => tool?.type === "web_search")
+        )
+          trace.operation = "web_search";
         trace.provider = "openai";
         trace.protocol = payload.stream ? "sse" : "http";
         if (!CLOUD_TEXT_PATHS.includes(path))
@@ -753,7 +787,7 @@ export async function edgeAPI(request, env, ctx) {
         trace.provider = "local";
         if (["/v1/chat/completions", "/v1/completions"].includes(path))
           trace.estimated_input_tokens = Math.ceil(bytes.length / 2);
-        response = await origin(request, env, lease, id, bytes);
+        response = await forward(request, env, lease, id, bytes);
       }
     }
     return track(response, store, lease, trace, ctx, start);
@@ -800,6 +834,7 @@ export async function edgeAPI(request, env, ctx) {
     trace.duration_ms = Math.round(performance.now() - start);
     logInferenceFailure(trace, e, status);
     if (lease) await store.finish({ lease, status, size: 0, trace });
+    if (lease) logInferenceTiming(trace, status, start);
     return json(
       {
         detail: quota
@@ -814,6 +849,7 @@ export async function edgeAPI(request, env, ctx) {
         request_id: id,
         error_code: trace.error_code,
         retryable: e.retryable === true,
+        ...(e.resets_at && { resets_at: e.resets_at }),
         ...(trace.upstream_error_code
           ? { upstream_error_code: trace.upstream_error_code }
           : {}),

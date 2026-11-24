@@ -147,6 +147,11 @@ async function loadUsage() {
     );
     $("usage-totals").append(line);
   }
+  if (snapshot.web_search) {
+    const searches = document.createElement("p");
+    searches.textContent = webSearchSummary(snapshot.web_search);
+    $("usage-totals").append(searches);
+  }
   const cards = document.createElement("div");
   cards.className = "usage-cards";
   const names = usageServiceNames;

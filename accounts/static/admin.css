@@ -267,3 +267,19 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr));
 }
+
+#bulk-model-dialog {
+  width: min(620px, calc(100% - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  border: 1px solid var(--console-border);
+  border-radius: 14px;
+  padding: 20px;
+}
+#bulk-model-dialog::backdrop {
+  background: #172d3466;
+}
+#bulk-model-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
+}

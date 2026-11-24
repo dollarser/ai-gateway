@@ -1688,6 +1688,43 @@ test("User allowlists bound to the account filter model discovery and account-to
   }
 });
 
+test("Bulk model grants preserve other choices and reject incomplete account sets atomically", async () => {
+  const a = await lunaUser("bulk-model-a");
+  const b = await lunaUser("bulk-model-b");
+  const store = new Store(db);
+  const sol = "gpt-6.2-sol",
+    luna = "gpt-6-luna";
+  await store.run(
+    "UPDATE users SET allowed_model_ids=? WHERE id=?",
+    JSON.stringify([luna]),
+    a.uid,
+  );
+  await store.run(
+    "UPDATE users SET allowed_model_ids=? WHERE id=?",
+    JSON.stringify([]),
+    b.uid,
+  );
+  const bulk = (ids, patch) =>
+    call("/admin/users/bulk", { ids, patch }, { access: admin });
+  const ids = [a.uid, b.uid];
+  assert.equal(
+    (await bulk([...ids, 999999], { add_model_ids: [sol] })).status,
+    404,
+  );
+  const grants = async (uid) =>
+    JSON.parse(
+      (await store.first("SELECT allowed_model_ids FROM users WHERE id=?", uid))
+        .allowed_model_ids,
+    );
+  assert.deepEqual(await grants(a.uid), [luna]);
+  assert.equal((await bulk(ids, { add_model_ids: [sol] })).status, 200);
+  assert.deepEqual(new Set(await grants(a.uid)), new Set([luna, sol]));
+  assert.deepEqual(await grants(b.uid), [sol]);
+  assert.equal((await bulk(ids, { remove_model_ids: [sol] })).status, 200);
+  assert.deepEqual(await grants(a.uid), [luna]);
+  assert.deepEqual(await grants(b.uid), []);
+});
+
 test("Each new cloud language model is closed by default and can be independently routed and metered", async () => {
   const { uid, key } = await lunaUser("multi-cloud-text");
   const prices = {
@@ -1785,6 +1822,7 @@ test("Luna Responses web search preserves citations, meters billed calls and ato
   );
   const blocked = calls.find((result) => result.status === 429);
   assert.equal(blocked.body.error_code, "web_search_daily_limit");
+  assert.ok(blocked.body.resets_at.endsWith("T16:00:00.000Z"));
   const ledger = await store.first(
     "SELECT * FROM luna_usage WHERE user_id=?",
     uid,
@@ -1824,8 +1862,133 @@ test("Luna Responses web search preserves citations, meters billed calls and ato
       (await apiCall("/v1/responses", key, search)).body.error_code,
       "web_search_daily_limit",
     );
+    const details = await call(
+      "/admin/users/" + uid + "/details?view=summary",
+      undefined,
+      { access: admin },
+    );
+    assert.deepEqual(
+      [
+        details.body.web_search.used,
+        details.body.web_search.reserved,
+        details.body.web_search.remaining,
+      ],
+      [2, 1, 0],
+    );
+    await store.run(
+      "UPDATE requests SET ended=? WHERE id=?",
+      Date.now() / 1000 - 61,
+      pending.lease,
+    );
+    const adjustment = {
+      id: "web-search-adjustment",
+      kind: "luna",
+      lease: pending.lease,
+      units: 0,
+      expected_units: pending.charged_tokens,
+      reason: "Confirmed no search or tokens billed",
+      cost_nanos: 0,
+      expected_cost_nanos: pending.charged_cost_nanos,
+      web_search_calls: 0,
+      expected_web_search_calls: 1,
+    };
+    assert.equal(
+      (
+        await call(
+          "/admin/quota-adjustments",
+          { ...adjustment, expected_web_search_calls: 0 },
+          { access: admin },
+        )
+      ).status,
+      409,
+    );
+    assert.equal(
+      (await call("/admin/quota-adjustments", adjustment, { access: admin }))
+        .status,
+      200,
+    );
+    assert.equal(
+      (await call("/admin/quota-adjustments", adjustment, { access: admin }))
+        .body.replayed,
+      true,
+    );
+    const after = await call(
+      "/admin/users/" + uid + "/details?view=summary",
+      undefined,
+      { access: admin },
+    );
+    assert.deepEqual(
+      [
+        after.body.web_search.used,
+        after.body.web_search.reserved,
+        after.body.web_search.remaining,
+      ],
+      [2, 0, 1],
+    );
   } finally {
     openaiMode = "json";
+  }
+});
+
+test("Sampled inference logs phase timings and relay estimates without exposing private headers", async () => {
+  const { key } = await lunaUser("sampled-timing");
+  const original = globalThis.fetch,
+    info = console.info;
+  const records = [];
+  console.info = (line) => records.push(JSON.parse(line));
+  globalThis.fetch = async () =>
+    Response.json(
+      {
+        id: "sample-response",
+        usage: { prompt_tokens: 5, completion_tokens: 1 },
+      },
+      { headers: { "X-Edge-Upstream-Ms": "3" } },
+    );
+  try {
+    const result = await edgeAPI(
+      new Request("https://api.hilex.me/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + key,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-6-luna",
+          messages: [{ role: "user", content: "test" }],
+        }),
+      }),
+      {
+        DB: db,
+        INTERNAL_SECRET: secret,
+        OPENAI_API_KEY: "provider-test",
+        OPENAI_TRANSPORT: "local",
+        INFERENCE_TIMING_SAMPLE_RATE: "1",
+      },
+      { waitUntil() {} },
+    );
+    assert.equal(result.status, 200);
+    assert.equal(result.headers.get("X-Edge-Upstream-Ms"), null);
+    await result.json();
+    const sample = records.find(
+      (record) => record.event === "inference_timing",
+    );
+    assert.equal(sample.operation, "chat");
+    for (const phase of [
+      "auth_and_lease_ms",
+      "reserve_ms",
+      "provider_headers_ms",
+      "relay_overhead_ms",
+      "first_byte_ms",
+      "settle_ms",
+      "db_ops",
+      "db_meta_ops",
+    ]) {
+      assert.ok(Number.isFinite(sample.details[phase]), phase);
+    }
+    assert.equal(sample.details.upstream_headers_ms, 3);
+  } finally {
+    globalThis.fetch = original;
+    console.info = info;
   }
 });
 
