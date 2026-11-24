@@ -43,7 +43,16 @@ function adminListReader(statusId, listId, retry) {
   };
 }
 
-const adminSections = ["admin", "models", "keys", "costs", "alerts", "notices"];
+const adminSections = [
+  "admin",
+  "create",
+  "models",
+  "settings",
+  "costs",
+  "operations",
+  "alerts",
+  "notices",
+];
 function adminLocation() {
   const account = location.pathname.match(/^\/admin\/users\/([1-9]\d*)$/);
   if (account) return "user/" + account[1];
@@ -61,26 +70,25 @@ async function syncAdminRoute() {
   if (!userId) window.adminUI.closeDetails();
   for (const item of [...adminSections, "user"])
     $(item + "-panel").hidden = item !== name;
-  if (name !== "keys") {
-    $("key-value").textContent = "";
-    $("key-secret").hidden = true;
+  $("key-value").textContent = "";
+  $("key-secret").hidden = true;
+  $("user-password").textContent = "";
+  $("user-secret").hidden = true;
+  for (const item of document.querySelectorAll("[data-tab]")) {
+    if (item.dataset.tab === (userId || name === "create" ? "admin" : name))
+      item.setAttribute("aria-current", "page");
+    else item.removeAttribute("aria-current");
   }
-  if (name !== "admin") {
-    $("user-password").textContent = "";
-    $("user-secret").hidden = true;
-  }
-  for (const button of document.querySelectorAll("[data-tab]")) {
-    if (button.dataset.tab === (userId ? "admin" : name))
-      button.setAttribute("aria-current", "page");
-    else button.removeAttribute("aria-current");
-  }
+  const heading = $(name + "-panel").querySelector("h2");
+  heading.tabIndex = -1;
+  heading.focus();
   if (userId) {
     $("user-settings").open = false;
-    $("details-title").focus();
+    $("user-keys").open = false;
     await window.adminUI.details(Number(userId));
   } else if (name === "admin") await window.adminUI.load({ reuse: true });
   else if (name === "models") await window.modelManager.load();
-  else if (name === "keys") await loadKeys();
+  else if (name === "create") await window.adminUI.loadCreation();
   else if (name === "costs") void window.adminCosts.load();
   else if (name === "alerts") await window.adminUI.loadInbox();
   else if (name === "notices") await window.noticeManager.load();
@@ -95,9 +103,6 @@ async function navigateAdmin(route) {
     history.pushState(null, "", path);
   }
   await syncAdminRoute();
-}
-async function loadUsers() {
-  await window.adminUI.load();
 }
 async function refresh() {
   const data = await api("/account/me");
@@ -121,11 +126,26 @@ async function refresh() {
   $("workspace").hidden = false;
   await syncAdminRoute();
 }
-document.querySelectorAll("[data-tab]").forEach((button) =>
-  button.addEventListener(
-    "click",
-    run(() => navigateAdmin(button.dataset.tab)),
-  ),
+document.querySelectorAll("[data-tab]").forEach((link) =>
+  link.addEventListener("click", (event) => {
+    if (
+      event.button ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.shiftKey ||
+      event.altKey
+    )
+      return;
+    void run(() => navigateAdmin(link.dataset.tab))(event);
+  }),
+);
+$("open-create-user").addEventListener(
+  "click",
+  run(() => navigateAdmin("create")),
+);
+$("create-back").addEventListener(
+  "click",
+  run(() => navigateAdmin("admin")),
 );
 $("user-back").addEventListener("click", (event) => {
   if (
@@ -222,7 +242,8 @@ $("key-form").addEventListener(
         services: selected(f),
       },
     );
-    if (target !== keyTarget) return;
+    if (target !== keyTarget || $("user-panel").hidden || !$("user-keys").open)
+      return;
     $("key-value").textContent = data.key;
     $("key-secret").hidden = false;
     await loadKeys();
@@ -257,6 +278,8 @@ $("user-form").addEventListener(
       concurrency: Number(f.elements.concurrency.value),
       ...lunaFields(f),
     });
+    window.adminUI.invalidateList();
+    if (adminLocation() !== "create") return;
     $("user-password").textContent =
       data.user.display_name +
       " (#" +
@@ -266,7 +289,9 @@ $("user-form").addEventListener(
       "\n临时密码：" +
       data.temporary_password;
     $("user-secret").hidden = false;
-    await loadUsers();
+    f.elements.display_name.value = "";
+    f.elements.email.value = "";
+    $("user-secret").scrollIntoView({ block: "nearest" });
     message(data.message);
   }),
 );

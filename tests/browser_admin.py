@@ -406,6 +406,8 @@ def handle(route):
         if data:
             defaults.update(data)
         return respond(defaults)
+    if path == "/admin/keys/2":
+        return respond([])
     if path == "/admin/overview":
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(req.url).query)
         overview_queries.append(query)
@@ -526,6 +528,12 @@ with sync_playwright() as p:
     assert page.locator("#password-form,#usage-panel").count() == 0
     assert page.locator("#admin-summary>div").count() == 6
     assert ("GET", "/admin/quota-defaults") not in api_calls
+    assert (
+        page.locator(
+            "#admin-panel #quota-defaults,#admin-panel #request-search,#admin-panel #network-panel,#admin-panel #quota-review"
+        ).count()
+        == 0
+    )
     page.locator('[data-tab="models"]').click()
     page.get_by_role("button", name="开启 GPT-6 Luna").click()
     page.locator("#model-list").get_by_text("已开放", exact=True).wait_for()
@@ -550,6 +558,10 @@ with sync_playwright() as p:
     page.wait_for_function("!document.getElementById('admin-results').inert")
     page.locator("#users-list tr").nth(1).get_by_role("link").click()
     page.wait_for_url("**/admin/users/2")
+    assert not page.locator("#admin-panel").is_visible()
+    page.locator("#user-keys > summary").click()
+    page.locator("#keys-list").get_by_text("暂无 API Key").wait_for()
+    page.locator("#user-keys > summary").click()
     page.locator("#user-settings > summary").click()
     page.locator("#edit-form [name=model_policy]").select_option("allowlist")
     page.locator('#user-model-list input[value="gpt-6-luna"]').check()
@@ -577,6 +589,7 @@ with sync_playwright() as p:
     page.locator("#details-requests").get_by_text("203.0.113.9", exact=True).wait_for()
     assert "<script>alert(1)</script>" in page.locator("#details-requests").inner_text()
     page.locator("#user-back").click()
+    page.locator('[data-tab="settings"]').click()
     page.locator("#quota-defaults>summary").click()
     page.locator("#quota-defaults-form [name=openai_tts_daily_characters]").fill(
         "400000"
@@ -584,16 +597,18 @@ with sync_playwright() as p:
     page.locator("#quota-defaults-form button").click()
     page.wait_for_timeout(100)
     assert defaults["openai_tts_daily_characters"] == 400000
+    page.locator("#admin-tab").click()
     page.locator("#select-page").check()
     page.locator("#bulk-defaults").click()
     page.wait_for_timeout(100)
     assert all(u["openai_tts_daily_characters"] == 400000 for u in users)
-    page.locator("#create-user>summary").click()
+    page.locator("#open-create-user").click()
     page.locator("#user-form [name=display_name]").fill("browser-test")
     page.locator("#user-form [name=email]").fill("browser-test@example.net")
     page.locator("#user-form button").click()
     page.locator("#user-secret").wait_for(state="visible")
     assert "temporary-test" in page.locator("#user-secret").inner_text()
+    page.locator('[data-tab="operations"]').click()
     page.locator("#request-search>summary").click()
     page.locator("#request-search-form [name=request_id]").fill("test-request")
     page.locator("#request-search-form button").click()
@@ -642,7 +657,8 @@ with sync_playwright() as p:
             path=str(ROOT / f".runtime/tests/browser/admin-costs-{width}.png")
         )
     page.set_viewport_size({"width": 1280, "height": 900})
-    page.locator("#operations-panel>summary").click()
+    page.locator('[data-tab="settings"]').click()
+    page.locator("#cloud-configuration>summary").click()
     page.locator("#global-budget-summary").get_by_text(
         "云文本估算用量", exact=False
     ).wait_for()
@@ -654,6 +670,8 @@ with sync_playwright() as p:
     page.locator("#registration-policy-form button").click()
     page.wait_for_timeout(100)
     assert policy["global_minute"] == 12
+    page.locator("#alerts-tab").click()
+    page.locator("#show-operational-alerts").click()
     page.locator("#operational-alerts button").click()
     page.wait_for_timeout(100)
     assert alert_state[0] == "acknowledged"
@@ -664,7 +682,6 @@ with sync_playwright() as p:
     page.locator("#test-notification").click()
     page.wait_for_timeout(100)
     assert notification_deliveries and notification_deliveries[0]["status"] == "sent"
-    page.locator("#alerts-tab").click()
     page.locator("#inbox-list article").wait_for()
     assert (
         page.url.endswith("#alerts")

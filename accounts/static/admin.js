@@ -95,14 +95,11 @@
       );
     }
   }
-  for (const [panel, form] of [
-    ["quota-defaults", "quota-defaults-form"],
-    ["create-user", "user-form"],
-  ]) {
-    $(panel).addEventListener("toggle", () => {
-      if ($(panel).open) void loadDefaultsForm(panel, form);
-    });
-  }
+  const loadCreation = () => loadDefaultsForm("create-user", "user-form");
+  $("quota-defaults").addEventListener("toggle", () => {
+    if ($("quota-defaults").open)
+      void loadDefaultsForm("quota-defaults", "quota-defaults-form");
+  });
   function appendMeter(td, used, limit, suffix = "") {
     const main = document.createElement("strong");
     main.textContent = num(used) + " / " + num(limit) + suffix;
@@ -329,7 +326,13 @@
         },
         !!u.enabled,
       ),
-      action("密钥", () => keys(u)),
+      action("核对该账号额度", async () => {
+        await navigateAdmin("operations");
+        $("quota-review-filter").elements.user_id.value = u.id;
+        $("quota-review").open = true;
+        $("quota-review").scrollIntoView({ block: "start" });
+        await review();
+      }),
     );
     if (!u.email)
       controls.append(
@@ -433,15 +436,24 @@
     policy.onchange = update;
     update();
   }
-  async function keys(u) {
+  function setupKeys(u) {
     keyTarget = u.id;
-    $("key-owner").textContent =
-      "API Key：" + u.display_name + " (#" + u.id + ")";
+    const panel = $("user-keys");
+    $("keys-list").replaceChildren();
+    $("key-value").textContent = "";
+    $("key-secret").hidden = true;
     for (const box of $("key-services").querySelectorAll("input")) {
       box.disabled = !u.services.includes(box.value);
       box.checked = !box.disabled;
     }
-    await navigateAdmin("keys");
+    panel.ontoggle = run(async () => {
+      if (panel.open && !$("user-panel").hidden) await loadKeys();
+      else {
+        $("key-value").textContent = "";
+        $("key-secret").hidden = true;
+      }
+    });
+    if (panel.open) void loadKeys();
   }
   function invalidateList() {
     state.summary = null;
@@ -497,6 +509,7 @@
       .join(" · ");
     panelStatus("details-status", "");
     setupSettings(u, request);
+    setupKeys(u);
     userActions(u);
     $("details-content").hidden = false;
     $("details-quotas").textContent =
@@ -854,9 +867,26 @@
     }
   }
   $("quota-review-filter").addEventListener("submit", run(review));
-  async function loadOperations() {
-    const data = await api("/admin/operations"),
-      f = $("global-limits-form"),
+  async function loadOperations({ alerts = false } = {}) {
+    const status = alerts ? "runtime-alerts-status" : "global-config-status";
+    panelStatus(status, "正在读取…");
+    let data;
+    try {
+      data = await api("/admin/operations");
+    } catch (error) {
+      panelStatus(status, error.message, () => loadOperations({ alerts }));
+      return;
+    }
+    panelStatus(status, "");
+    if (!alerts) {
+      renderGlobalConfiguration(data);
+      return;
+    }
+    renderRuntimeAlerts(data);
+  }
+  function renderGlobalConfiguration(data) {
+    $("global-config-fields").hidden = false;
+    const f = $("global-limits-form"),
       r = $("registration-policy-form");
     f.elements.cloud_enabled.checked = data.limits.cloud_enabled;
     for (const k of [
@@ -883,6 +913,8 @@
           data.email_delivery.provider +
           "）"
         : "验证码发信：仍为旧通道或未配置，待切换事务邮件服务";
+  }
+  function renderRuntimeAlerts(data) {
     const notifications = data.notifications ?? {
       configured: false,
       deliveries: [],
@@ -926,7 +958,7 @@
         button.textContent = "已知悉";
         button.onclick = run(async () => {
           await api("/admin/alerts/acknowledge", "POST", { kind: alert.kind });
-          await loadOperations();
+          await loadOperations({ alerts: true });
         });
         row.append(button);
       }
@@ -942,19 +974,25 @@
     "click",
     run(async () => {
       await api("/admin/notifications/test", "POST", {});
-      await loadOperations();
-      message("测试通知已处理，可到站内告警中心查看");
+      await Promise.all([loadOperations({ alerts: true }), loadInbox()]);
+      message("测试通知已处理");
     }),
   );
-  $("load-operations").addEventListener("click", run(loadOperations));
-  let operationsLoaded = false;
-  $("operations-panel").addEventListener(
+  $("load-operations").addEventListener(
+    "click",
+    run(() => loadOperations({ alerts: true })),
+  );
+  $("cloud-configuration").addEventListener(
     "toggle",
     run(async () => {
-      if ($("operations-panel").open && !operationsLoaded) {
+      if ($("cloud-configuration").open && $("global-config-fields").hidden)
         await loadOperations();
-        operationsLoaded = true;
-      }
+    }),
+  );
+  $("runtime-alerts").addEventListener(
+    "toggle",
+    run(async () => {
+      if ($("runtime-alerts").open) await loadOperations({ alerts: true });
     }),
   );
   $("global-limits-form").addEventListener(
@@ -1099,10 +1137,17 @@
   $("show-operational-alerts").addEventListener(
     "click",
     run(async () => {
-      await navigateAdmin("costs");
-      $("operations-panel").open = true;
-      $("operations-panel").scrollIntoView({ behavior: "smooth" });
+      $("runtime-alerts").open = true;
+      $("runtime-alerts").scrollIntoView({ behavior: "smooth" });
     }),
   );
-  window.adminUI = { load, loadInbox, details, closeDetails, reloadUser };
+  window.adminUI = {
+    load,
+    loadInbox,
+    details,
+    closeDetails,
+    reloadUser,
+    loadCreation,
+    invalidateList,
+  };
 })();

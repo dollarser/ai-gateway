@@ -21,34 +21,87 @@
 .admin-console > main {
   max-width: 1368px;
 }
-.admin-navigation {
-  align-items: center;
-  gap: 5px;
-  padding: 6px;
+#workspace {
+  display: grid;
+  grid-template-columns: 174px minmax(0, 1fr);
+  align-items: start;
+  gap: 18px;
   margin: 16px 0;
+}
+#admin-content {
+  min-width: 0;
+}
+.admin-navigation {
+  display: grid;
+  gap: 14px;
+  padding: 12px;
   border: 1px solid var(--console-border);
   border-radius: 12px;
   background: white;
 }
-.admin-navigation button {
-  background: transparent;
+.admin-nav-group p {
+  margin: 0 8px 4px;
   color: var(--console-muted);
-  padding: 9px 12px;
+  font-size: 12px;
   font-weight: 650;
 }
-.admin-navigation button[aria-current="page"] {
+.admin-nav-group ul {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  display: grid;
+  gap: 3px;
+}
+.admin-navigation a,
+.admin-navigation #logout {
+  display: block;
+  padding: 8px;
+  color: var(--console-muted);
+  border-radius: 7px;
+  font-weight: 650;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.admin-navigation a:hover {
+  background: #f0f5f4;
+}
+.admin-navigation a[aria-current="page"] {
   color: var(--console-accent);
   background: #e1f1ea;
 }
 .admin-navigation #logout {
-  margin-left: auto;
+  justify-self: start;
+  background: transparent;
+}
+.admin-heading-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+@media (max-width: 850px) {
+  #workspace {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  .admin-navigation {
+    gap: 8px;
+  }
+  .admin-nav-group ul {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .admin-navigation a,
+  .admin-navigation #logout {
+    font-size: 13px;
+    padding: 6px 8px;
+  }
 }
 .admin-console :is(a, button, select, summary):focus-visible {
   outline: 2px solid #218475;
   outline-offset: 3px;
 }
-.admin-console #workspace > section {
-  margin-top: 12px;
+.admin-console #admin-content > section {
+  margin-top: 0;
   border-color: var(--console-border);
   border-radius: 16px;
 }
