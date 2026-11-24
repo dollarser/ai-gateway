@@ -38,11 +38,12 @@ async function refresh() {
     await tab("password");
     return;
   }
+  const next = new URLSearchParams(location.search).get("next");
   if (
     user.role === "admin" &&
-    new URLSearchParams(location.search).get("next") === "admin"
+    (next === "admin" || /^\/admin\/users\/[1-9]\d*$/.test(next ?? ""))
   ) {
-    location.replace("/admin");
+    location.replace(next === "admin" ? "/admin" : next);
     return;
   }
   window.noticeUI.start();

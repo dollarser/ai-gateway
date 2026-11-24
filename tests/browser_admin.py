@@ -5,6 +5,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import json
+import re
 import urllib.parse
 from playwright.sync_api import sync_playwright
 from scripts.ops.build_assets import build
@@ -85,7 +86,10 @@ ledger = {
 def handle(route):
     req = route.request
     path = urllib.parse.urlsplit(req.url).path
-    if path in {"/", "/admin", "/admin/"} or path.startswith("/static/"):
+    html = path in {"/", "/admin", "/admin/"} or (
+        req.method == "GET" and re.fullmatch(r"/admin/users/[1-9]\d*", path)
+    )
+    if html or path.startswith("/static/"):
         asset_calls.append(path)
         file = PUBLIC_ASSETS / (
             "index.html"
@@ -97,7 +101,7 @@ def handle(route):
         return route.fulfill(
             path=str(file),
             content_type="text/html"
-            if path in {"/", "/admin", "/admin/"}
+            if html
             else "text/css"
             if path.endswith(".css")
             else "text/javascript",
@@ -544,18 +548,23 @@ with sync_playwright() as p:
     search.fill("")
     page.locator("#admin-filter-form button").click()
     page.wait_for_function("!document.getElementById('admin-results').inert")
-    page.locator("#users-list tr").nth(1).get_by_role(
-        "button", name="设置", exact=True
-    ).click()
+    page.locator("#users-list tr").nth(1).get_by_role("link").click()
+    page.wait_for_url("**/admin/users/2")
+    page.locator("#user-settings > summary").click()
+    page.locator("#edit-form [name=model_policy]").select_option("allowlist")
+    page.locator('#user-model-list input[value="gpt-6-luna"]').check()
     page.locator("#edit-form [name=openai_tts_daily_characters]").fill("250000")
     page.locator(
         "#edit-form button[type=submit],#edit-form button:not([type])"
     ).first.click()
     page.wait_for_timeout(100)
     assert any(
-        path == "/admin/users/2" and b["openai_tts_daily_characters"] == 250000
+        path == "/admin/users/2"
+        and b["openai_tts_daily_characters"] == 250000
+        and b["allowed_model_ids"] == ["gpt-6-luna"]
         for path, b in mutations
     )
+    page.locator("#user-back").click()
     page.locator("#select-page").check()
     page.locator("#bulk-disable").click()
     page.wait_for_timeout(100)
@@ -564,11 +573,10 @@ with sync_playwright() as p:
     page.locator("#bulk-enable").click()
     page.wait_for_timeout(100)
     assert all(u["enabled"] == 1 for u in users)
-    page.locator("#users-list tr").nth(1).get_by_role(
-        "button", name="详情", exact=True
-    ).click()
+    page.goto("https://accounts.test/admin/users/2")
     page.locator("#details-requests").get_by_text("203.0.113.9", exact=True).wait_for()
     assert "<script>alert(1)</script>" in page.locator("#details-requests").inner_text()
+    page.locator("#user-back").click()
     page.locator("#quota-defaults>summary").click()
     page.locator("#quota-defaults-form [name=openai_tts_daily_characters]").fill(
         "400000"

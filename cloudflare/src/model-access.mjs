@@ -114,7 +114,23 @@ export function localVoiceCatalog(permissions, enabled) {
     }));
 }
 
-export async function requirePublicModel(store, requested, path) {
+export function validateModelAllowlist(value) {
+  if (value === null) return;
+  if (
+    !Array.isArray(value) ||
+    value.length > registry.size ||
+    new Set(value).size !== value.length ||
+    value.some((id) => !registry.has(id))
+  )
+    throw new Denied(422, "模型白名单必须为有效的模型 ID 列表或 null");
+}
+
+export function filterUserModels(enabled, encoded) {
+  if (encoded == null) return enabled;
+  return new Set(JSON.parse(encoded).filter((id) => enabled.has(id)));
+}
+
+export async function requirePublicModel(store, requested, path, lease) {
   const id = aliases.get(requested) ?? requested;
   const model = registry.get(id);
   if (!model || !model.endpoints.includes(path)) {
@@ -123,12 +139,21 @@ export async function requirePublicModel(store, requested, path) {
     throw error;
   }
   const flag = await store.first(
-    "SELECT value FROM settings WHERE name=?",
+    "SELECT s.value, (u.allowed_model_ids IS NULL OR EXISTS(SELECT 1 FROM json_each(u.allowed_model_ids) WHERE value=?)) allowed FROM requests r JOIN users u ON u.id=r.user_id LEFT JOIN settings s ON s.name=? WHERE r.id=? AND r.path=? AND r.ended IS NULL AND u.enabled=1 AND u.must_change=0",
+    id,
     prefix + id,
+    lease,
+    path,
   );
-  if (flag ? flag.value !== "true" : id !== LUNA_MODEL) {
+  if (!flag) throw new Denied(403, "推理请求凭证已失效");
+  if (flag.value === null ? id !== LUNA_MODEL : flag.value !== "true") {
     const error = new Denied(403, "此模型尚未开放或已停用");
     error.code = "model_disabled";
+    throw error;
+  }
+  if (!flag.allowed) {
+    const error = new Denied(403, "该账号没有此模型的使用权限");
+    error.code = "model_not_allowed";
     throw error;
   }
 }

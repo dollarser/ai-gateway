@@ -188,3 +188,29 @@
 #admin-results[inert] {
   opacity: 0.64;
 }
+
+.user-name-link {
+  color: var(--console-accent);
+  font-weight: 700;
+  text-underline-offset: 3px;
+}
+#user-panel .section-heading {
+  margin-top: 12px;
+}
+.user-account-meta {
+  color: var(--console-muted);
+  overflow-wrap: anywhere;
+}
+.user-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0;
+}
+.user-model-policy {
+  grid-column: 1 / -1;
+}
+#user-model-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr));
+}

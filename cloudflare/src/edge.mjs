@@ -1,5 +1,6 @@
 import {
   enabledModels,
+  filterUserModels,
   LOCAL_ASR,
   LOCAL_TTS,
   localVoiceCatalog,
@@ -440,7 +441,10 @@ export async function edgeAPI(request, env, ctx) {
       raw = credentials(request, env);
       if (path === "/v1/models") {
         const u = await store.catalogUser(raw);
-        const enabled = await enabledModels(store);
+        const enabled = filterUserModels(
+          await enabledModels(store),
+          u.allowed_model_ids,
+        );
         const data = [
           ...(u.permitted.includes("qwen")
             ? lunaCatalogForUser(u, env).data
@@ -545,7 +549,7 @@ export async function edgeAPI(request, env, ctx) {
       trace.model =
         url.searchParams.get("model") ||
         (service === "asr" ? LOCAL_ASR : LOCAL_TTS);
-      await requirePublicModel(store, trace.model, path);
+      await requirePublicModel(store, trace.model, path, lease);
       trace.provider = "local";
       trace.protocol = "websocket";
       const r = await origin(request, env, lease, id, null);
@@ -569,7 +573,7 @@ export async function edgeAPI(request, env, ctx) {
       ) {
         if (local) {
           trace.model = LOCAL_ASR;
-          await requirePublicModel(store, trace.model, path);
+          await requirePublicModel(store, trace.model, path, lease);
           return track(
             await origin(request, env, lease, id, bytes),
             store,
@@ -597,7 +601,7 @@ export async function edgeAPI(request, env, ctx) {
       trace.model = form.get("model");
       const localASR = badAudio(trace.model, ASR_MODEL, local);
       if (localASR && !trace.model) trace.model = LOCAL_ASR;
-      await requirePublicModel(store, trace.model, path);
+      await requirePublicModel(store, trace.model, path, lease);
       if (localASR)
         return track(
           await origin(request, env, lease, id, bytes),
@@ -679,7 +683,7 @@ export async function edgeAPI(request, env, ctx) {
       if (path === "/v1/audio/speech") {
         const localTTS = badAudio(payload.model, TTS_MODEL, local);
         if (localTTS && !trace.model) trace.model = LOCAL_TTS;
-        await requirePublicModel(store, trace.model, path);
+        await requirePublicModel(store, trace.model, path, lease);
         if (localTTS)
           return track(
             await origin(request, env, lease, id, bytes),
@@ -714,7 +718,7 @@ export async function edgeAPI(request, env, ctx) {
         path === "/v1/embeddings" &&
         Object.hasOwn(EMBEDDING_MODELS, payload.model)
       ) {
-        await requirePublicModel(store, payload.model, path);
+        await requirePublicModel(store, payload.model, path, lease);
         trace.provider = "openai";
         trace.protocol = "http";
         const result = await proxyEmbedding(
@@ -736,7 +740,7 @@ export async function edgeAPI(request, env, ctx) {
         trace.protocol = payload.stream ? "sse" : "http";
         if (!CLOUD_TEXT_PATHS.includes(path))
           throw new Denied(422, "云文本模型使用 Chat Completions 或 Responses");
-        await requirePublicModel(store, payload.model, path);
+        await requirePublicModel(store, payload.model, path, lease);
         response = await proxyLuna(
           internalRequest(request, lease, JSON.stringify(payload)),
           env,
@@ -749,7 +753,7 @@ export async function edgeAPI(request, env, ctx) {
       } else {
         if (path === "/v1/responses")
           throw new Denied(422, "Responses 当前仅支持已接入的 GPT-6 系列模型");
-        await requirePublicModel(store, payload.model, path);
+        await requirePublicModel(store, payload.model, path, lease);
         trace.provider = "local";
         if (["/v1/chat/completions", "/v1/completions"].includes(path))
           trace.estimated_input_tokens = Math.ceil(bytes.length / 2);

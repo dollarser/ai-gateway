@@ -44,9 +44,23 @@ function adminListReader(statusId, listId, retry) {
 }
 
 const adminSections = ["admin", "models", "keys", "costs", "alerts", "notices"];
-async function tab(name) {
-  if (!adminSections.includes(name)) name = "admin";
-  for (const item of adminSections) $(item + "-panel").hidden = item !== name;
+function adminLocation() {
+  const account = location.pathname.match(/^\/admin\/users\/([1-9]\d*)$/);
+  if (account) return "user/" + account[1];
+  const section = location.hash.slice(1);
+  return adminSections.includes(section) ? section : "admin";
+}
+let activeAdminRoute;
+async function syncAdminRoute() {
+  if ($("workspace").hidden) return;
+  const route = adminLocation();
+  if (route === activeAdminRoute) return;
+  activeAdminRoute = route;
+  const [, userId] = route.split("/");
+  const name = userId ? "user" : route;
+  if (!userId) window.adminUI.closeDetails();
+  for (const item of [...adminSections, "user"])
+    $(item + "-panel").hidden = item !== name;
   if (name !== "keys") {
     $("key-value").textContent = "";
     $("key-secret").hidden = true;
@@ -56,17 +70,31 @@ async function tab(name) {
     $("user-secret").hidden = true;
   }
   for (const button of document.querySelectorAll("[data-tab]")) {
-    if (button.dataset.tab === name)
+    if (button.dataset.tab === (userId ? "admin" : name))
       button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
   }
-  if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
-  if (name === "admin") await window.adminUI.load({ reuse: true });
-  if (name === "models") await window.modelManager.load();
-  if (name === "keys") await loadKeys();
-  if (name === "costs") void window.adminCosts.load();
-  if (name === "alerts") await window.adminUI.loadInbox();
-  if (name === "notices") await window.noticeManager.load();
+  if (userId) {
+    $("user-settings").open = false;
+    $("details-title").focus();
+    await window.adminUI.details(Number(userId));
+  } else if (name === "admin") await window.adminUI.load({ reuse: true });
+  else if (name === "models") await window.modelManager.load();
+  else if (name === "keys") await loadKeys();
+  else if (name === "costs") void window.adminCosts.load();
+  else if (name === "alerts") await window.adminUI.loadInbox();
+  else if (name === "notices") await window.noticeManager.load();
+}
+async function navigateAdmin(route) {
+  if (adminLocation() !== route) {
+    const path = route.startsWith("user/")
+      ? "/admin/users/" + route.slice(5)
+      : route === "admin"
+        ? "/admin"
+        : "/admin#" + route;
+    history.pushState(null, "", path);
+  }
+  await syncAdminRoute();
 }
 async function loadUsers() {
   await window.adminUI.load();
@@ -91,16 +119,26 @@ async function refresh() {
     box.checked = !box.disabled;
   }
   $("workspace").hidden = false;
-  await tab(location.hash.slice(1));
+  await syncAdminRoute();
 }
-document.querySelectorAll("[data-tab]").forEach((b) =>
-  b.addEventListener(
+document.querySelectorAll("[data-tab]").forEach((button) =>
+  button.addEventListener(
     "click",
-    run(() => {
-      if (location.hash !== "#" + b.dataset.tab) location.hash = b.dataset.tab;
-    }),
+    run(() => navigateAdmin(button.dataset.tab)),
   ),
 );
+$("user-back").addEventListener("click", (event) => {
+  if (
+    event.button ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.shiftKey ||
+    event.altKey
+  )
+    return;
+  event.preventDefault();
+  void navigateAdmin("admin");
+});
 $("logout").addEventListener(
   "click",
   run(async () => {
@@ -108,10 +146,8 @@ $("logout").addEventListener(
     location.replace("/");
   }),
 );
-window.addEventListener(
-  "hashchange",
-  run(() => tab(location.hash.slice(1))),
-);
+window.addEventListener("hashchange", run(syncAdminRoute));
+window.addEventListener("popstate", run(syncAdminRoute));
 document.addEventListener(
   "DOMContentLoaded",
   () =>
@@ -238,16 +274,25 @@ $("edit-form").addEventListener(
   "submit",
   run(async (e) => {
     const f = e.target;
-    await api("/admin/users/" + Number(f.elements.id.value), "PATCH", {
+    const id = Number(f.elements.id.value);
+    if (
+      f.elements.model_policy.value === "allowlist" &&
+      f.dataset.modelsReady !== "true"
+    )
+      return;
+    const selectedModels = [
+      ...f.querySelectorAll("[name=allowed_models]:checked"),
+    ].map((box) => box.value);
+    await api("/admin/users/" + id, "PATCH", {
       services: selected(f),
       rpm: Number(f.elements.rpm.value),
       daily_requests: Number(f.elements.daily_requests.value),
       concurrency: Number(f.elements.concurrency.value),
+      allowed_model_ids:
+        f.elements.model_policy.value === "inherit" ? null : selectedModels,
       ...lunaFields(f),
     });
-    f.hidden = true;
-    $("edit-container").hidden = true;
-    await loadUsers();
-    message("账号权限和限额已更新");
+    await window.adminUI.reloadUser(id);
+    message("账号权限、额度和模型范围已保存");
   }),
 );

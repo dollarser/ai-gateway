@@ -1,5 +1,10 @@
 import { CLOUD_TEXT_MODELS } from "./cloud-text-models.mjs";
-import { enabledModels, requirePublicModel } from "./model-access.mjs";
+import {
+  enabledModels,
+  filterUserModels,
+  requirePublicModel,
+  validateModelAllowlist,
+} from "./model-access.mjs";
 import { usageSnapshot } from "./usage-snapshot.mjs";
 import { changePasswordWithCredentials } from "./credential-password.mjs";
 import { captchaInfo, verifyCaptcha } from "./captcha.mjs";
@@ -36,6 +41,8 @@ import { digest, equal, now, token, passwordHash } from "./crypto.mjs";
 import { budgetValue, lunaUsage, lunaCatalog, proxyLuna } from "./luna.mjs";
 import {
   AUDIO_FIELDS,
+  ASR_MODEL,
+  TTS_MODEL,
   audioQuotas,
   audioUsage,
   audioModels,
@@ -177,6 +184,7 @@ async function internal(request, env, store, path, ctx) {
         store,
         payload.model,
         responses ? "/v1/responses" : "/v1/chat/completions",
+        request.headers.get("X-Gateway-Lease"),
       );
     return proxyLuna(
       request,
@@ -193,7 +201,13 @@ async function internal(request, env, store, path, ctx) {
       ),
     );
   }
-  if (path === "/internal/openai/transcriptions")
+  if (path === "/internal/openai/transcriptions") {
+    await requirePublicModel(
+      store,
+      ASR_MODEL,
+      "/v1/audio/transcriptions",
+      request.headers.get("X-Gateway-Lease"),
+    );
     return proxyTranscription(
       request,
       env,
@@ -207,7 +221,14 @@ async function internal(request, env, store, path, ctx) {
         request.headers.get("X-Gateway-Lease"),
       ),
     );
-  if (path === "/internal/openai/speech")
+  }
+  if (path === "/internal/openai/speech") {
+    await requirePublicModel(
+      store,
+      TTS_MODEL,
+      "/v1/audio/speech",
+      request.headers.get("X-Gateway-Lease"),
+    );
     return proxySpeech(
       request,
       env,
@@ -219,12 +240,13 @@ async function internal(request, env, store, path, ctx) {
       ),
       ctx,
     );
+  }
   const b = await body(request);
   if (path === "/internal/openai-models") {
     validate(b, ["lease"]);
     text(b.lease, 1, 128);
     const r = await store.first(
-      "SELECT r.*,u.services,u.enabled,u.must_change,k.services key_services,k.revoked,k.expires FROM requests r JOIN users u ON u.id=r.user_id LEFT JOIN keys k ON k.id=r.key_id WHERE r.id=? AND r.ended IS NULL AND r.path='/v1/models' AND r.started>unixepoch()-900",
+      "SELECT r.*,u.services,u.enabled,u.must_change,u.allowed_model_ids,k.services key_services,k.revoked,k.expires FROM requests r JOIN users u ON u.id=r.user_id LEFT JOIN keys k ON k.id=r.key_id WHERE r.id=? AND r.ended IS NULL AND r.path='/v1/models' AND r.started>unixepoch()-900",
       b.lease,
     );
     if (
@@ -242,7 +264,10 @@ async function internal(request, env, store, path, ctx) {
     const luna = permissions.includes("qwen")
       ? await lunaCatalog(store, env, b.lease)
       : { data: [] };
-    const enabled = await enabledModels(store);
+    const enabled = filterUserModels(
+      await enabledModels(store),
+      r.allowed_model_ids,
+    );
     return json({
       data: [...luna.data, ...(await audioModels(store, env, b.lease))].filter(
         (model) => enabled.has(model.id),
@@ -252,8 +277,16 @@ async function internal(request, env, store, path, ctx) {
   }
   if (path === "/internal/luna-models") {
     validate(b, ["lease"]);
-    const catalog = await lunaCatalog(store, env, text(b.lease, 1, 128));
-    const enabled = await enabledModels(store);
+    const lease = text(b.lease, 1, 128);
+    const catalog = await lunaCatalog(store, env, lease);
+    const owner = await store.first(
+      "SELECT u.allowed_model_ids FROM requests r JOIN users u ON u.id=r.user_id WHERE r.id=?",
+      lease,
+    );
+    const enabled = filterUserModels(
+      await enabledModels(store),
+      owner.allowed_model_ids,
+    );
     return json({
       data: catalog.data.filter((model) => enabled.has(model.id)),
     });
@@ -346,7 +379,9 @@ async function route(request, env, ctx) {
     fail(403, "origin denied");
   // HTML is protected here as well as every management API. Assets must not
   // serve /admin independently, including its directory/index aliases.
-  const adminPage = ["/admin", "/admin/", "/admin/index.html"].includes(p);
+  const adminPage =
+    ["/admin", "/admin/", "/admin/index.html"].includes(p) ||
+    /^\/admin\/users\/[1-9]\d*$/.test(p);
   if (adminPage && ["GET", "HEAD"].includes(method)) {
     try {
       await userSession(request, store, true);
@@ -355,7 +390,9 @@ async function route(request, env, ctx) {
       return new Response(null, {
         status: 302,
         headers: {
-          Location: "/?next=admin",
+          Location: p.startsWith("/admin/users/")
+            ? "/?next=" + encodeURIComponent(p)
+            : "/?next=admin",
           "Cache-Control": "no-store",
         },
       });
@@ -802,6 +839,7 @@ async function route(request, env, ctx) {
       const b = quotas(
         validate(await body(request), [
           "enabled",
+          "allowed_model_ids",
           "luna_monthly_tokens",
           ...AUDIO_FIELDS,
           "services",
@@ -811,6 +849,7 @@ async function route(request, env, ctx) {
         ]),
       );
       audioQuotas(b);
+      if ("allowed_model_ids" in b) validateModelAllowlist(b.allowed_model_ids);
       if (b.services !== undefined) services(b.services);
       if (b.enabled !== undefined && typeof b.enabled !== "boolean")
         fail(422, "enabled 必须为布尔值");
@@ -822,9 +861,13 @@ async function route(request, env, ctx) {
       const values = keys.map((k) =>
         k === "services"
           ? JSON.stringify(b[k])
-          : k === "enabled"
-            ? Number(b[k])
-            : b[k],
+          : k === "allowed_model_ids"
+            ? b[k] === null
+              ? null
+              : JSON.stringify(b[k])
+            : k === "enabled"
+              ? Number(b[k])
+              : b[k],
       );
       const statements = [
         store.stmt(
@@ -837,6 +880,19 @@ async function route(request, env, ctx) {
         statements.push(
           store.stmt("DELETE FROM sessions WHERE user_id=?", uid),
           store.stmt("UPDATE auth_families SET revoked=1 WHERE user_id=?", uid),
+        );
+      if ("allowed_model_ids" in b)
+        statements.push(
+          store.stmt(
+            "INSERT INTO audit(actor,action,target,ts) VALUES(?,?,?,?)",
+            u.id,
+            "update_user_model_allowlist",
+            JSON.stringify({
+              user_id: uid,
+              allowed_model_ids: b.allowed_model_ids,
+            }),
+            now(),
+          ),
         );
       await store.db.batch(statements);
       await store.audit(

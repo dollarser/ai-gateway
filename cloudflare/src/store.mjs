@@ -25,6 +25,7 @@ export function publicUser(r) {
     email_binding_required: !r.email_verified_at,
     luna_monthly_tokens: r.luna_monthly_tokens ?? 0,
     services: JSON.parse(r.services),
+    allowed_model_ids: JSON.parse(r.allowed_model_ids ?? "null"),
   };
 }
 export class Store {

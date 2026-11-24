@@ -58,7 +58,9 @@
   }
   function closeDetails() {
     state.details?.abort();
-    $("user-details").hidden = true;
+    $("details-content").hidden = true;
+    $("user-secret").hidden = true;
+    $("user-password").textContent = "";
   }
   function refreshControls() {
     const unavailable = state.loading || state.stale;
@@ -235,7 +237,24 @@
       const selectTd = document.createElement("td");
       selectTd.append(check);
       tr.append(selectTd);
-      const name = cell(tr, u.display_name);
+      const name = cell(tr, "");
+      const link = document.createElement("a");
+      link.href = "/admin/users/" + u.id;
+      link.className = "user-name-link";
+      link.textContent = u.display_name;
+      link.addEventListener("click", (event) => {
+        if (
+          event.button ||
+          event.ctrlKey ||
+          event.metaKey ||
+          event.shiftKey ||
+          event.altKey
+        )
+          return;
+        event.preventDefault();
+        void navigateAdmin("user/" + u.id);
+      });
+      name.append(link);
       const identifier = document.createElement("small");
       identifier.textContent =
         "#" + u.id + " · " + (u.email || "未设置登录邮箱");
@@ -277,93 +296,142 @@
           ? date(u.last_login_at)
           : "无活动记录";
       ip.append(last);
-      const controls = document.createElement("td");
-      controls.className = "row-actions";
-      controls.append(
-        action("详情", () => details(u)),
-        action("设置", () => edit(u)),
-        action(
-          u.enabled ? "封禁" : "解封",
-          async () => {
-            if (
-              !confirm(
-                (u.enabled ? "封禁" : "解封") +
-                  "账号 " +
-                  u.display_name +
-                  "？" +
-                  (u.enabled ? "封禁会撤销现有登录，会保留历史用量。" : ""),
-              )
-            )
-              return;
-            await api("/admin/users/" + u.id, "PATCH", { enabled: !u.enabled });
-            await load();
-          },
-          !!u.enabled,
-        ),
-        action("密钥", () => keys(u)),
-      );
-      if (!u.email)
-        controls.append(
-          action("设置登录邮箱", async () => {
-            const email = prompt(
-              "为账号 #" + u.id + " 设置登录邮箱（不会标记已验证）",
-            );
-            if (!email) return;
-            await api("/admin/users/" + u.id + "/login-email", "PUT", {
-              email,
-            });
-            await load();
-            message("登录邮箱已设置，请账号本人验证邮箱");
-          }),
-        );
-      if (u.id !== user.id)
-        controls.append(
-          action(
-            "重置密码",
-            async () => {
-              if (
-                !confirm(
-                  "重置 " +
-                    u.display_name +
-                    " 的密码，并撤销全部会话和 API Key？",
-                )
-              )
-                return;
-              const r = await api(
-                "/admin/users/" + u.id + "/reset-password",
-                "POST",
-              );
-              $("user-password").textContent =
-                u.display_name + "\n临时密码：" + r.temporary_password;
-              $("user-secret").hidden = false;
-              message(r.message);
-            },
-            true,
-          ),
-        );
-      tr.append(controls);
       $("users-list").append(tr);
     }
     if (!data.users.length) {
       const tr = document.createElement("tr");
       const td = cell(tr, "没有匹配的账号");
-      td.colSpan = 8;
+      td.colSpan = 7;
       $("users-list").append(tr);
     }
     $("admin-page-info").textContent =
       "第 " + state.page + " 页 · 共 " + num(data.matching) + " 个匹配账号";
   }
-  function edit(u) {
-    const f = $("edit-form");
-    f.hidden = false;
-    $("edit-container").hidden = false;
-    f.elements.id.value = u.id;
-    $("editing-name").textContent =
-      "设置账号：" + u.display_name + " (#" + u.id + ")";
-    for (const k of quotaFields) f.elements[k].value = u[k];
-    for (const box of f.querySelectorAll("[name=services]"))
+  function userActions(u) {
+    const controls = $("user-actions");
+    controls.replaceChildren();
+    controls.append(
+      action(
+        u.enabled ? "封禁" : "解封",
+        async () => {
+          if (
+            !confirm(
+              (u.enabled ? "封禁" : "解封") +
+                "账号 " +
+                u.display_name +
+                "？" +
+                (u.enabled ? "封禁会撤销现有登录，会保留历史用量。" : ""),
+            )
+          )
+            return;
+          await api("/admin/users/" + u.id, "PATCH", { enabled: !u.enabled });
+          await reloadUser(u.id);
+        },
+        !!u.enabled,
+      ),
+      action("密钥", () => keys(u)),
+    );
+    if (!u.email)
+      controls.append(
+        action("设置登录邮箱", async () => {
+          const email = prompt(
+            "为账号 #" + u.id + " 设置登录邮箱（不会标记已验证）",
+          );
+          if (!email) return;
+          await api("/admin/users/" + u.id + "/login-email", "PUT", {
+            email,
+          });
+          await reloadUser(u.id);
+          message("登录邮箱已设置，请账号本人验证邮箱");
+        }),
+      );
+    if (u.id !== user.id)
+      controls.append(
+        action(
+          "重置密码",
+          async () => {
+            if (
+              !confirm(
+                "重置 " +
+                  u.display_name +
+                  " 的密码，并撤销全部会话和 API Key？",
+              )
+            )
+              return;
+            const r = await api(
+              "/admin/users/" + u.id + "/reset-password",
+              "POST",
+            );
+            $("user-password").textContent =
+              u.display_name + "\n临时密码：" + r.temporary_password;
+            $("user-secret").hidden = false;
+            message(r.message);
+          },
+          true,
+        ),
+      );
+  }
+  function setupSettings(u, request) {
+    const form = $("edit-form"),
+      settings = $("user-settings"),
+      list = $("user-model-list");
+    const policy = form.elements.model_policy;
+    form.elements.id.value = u.id;
+    const allowed = u.allowed_model_ids ?? null;
+    policy.value = allowed === null ? "inherit" : "allowlist";
+    list.querySelectorAll("label").forEach((label) => label.remove());
+    list.hidden = true;
+    for (const k of quotaFields) form.elements[k].value = u[k];
+    for (const box of form.querySelectorAll("[name=services]"))
       box.checked = u.services.includes(box.value);
-    f.scrollIntoView({ behavior: "smooth", block: "center" });
+    const save = $("save-user-settings");
+    let ready = false;
+    form.dataset.modelsReady = "false";
+    let loading = false;
+    function syncPolicy() {
+      list.hidden = policy.value !== "allowlist" || !ready;
+      save.disabled = policy.value === "allowlist" && !ready;
+    }
+    async function loadModels() {
+      if (ready || loading || request.signal.aborted) return;
+      loading = true;
+      panelStatus("user-model-status", "正在读取模型…");
+      try {
+        const result = await api(
+          "/admin/models",
+          "GET",
+          undefined,
+          request.signal,
+        );
+        if (request.signal.aborted) return;
+        for (const model of result.models) {
+          const option = document.createElement("label");
+          const box = document.createElement("input");
+          box.type = "checkbox";
+          box.name = "allowed_models";
+          box.value = model.id;
+          box.checked = allowed?.includes(model.id) ?? false;
+          option.append(box, model.name + (model.enabled ? "" : " · 全站关闭"));
+          list.append(option);
+        }
+        ready = true;
+        form.dataset.modelsReady = "true";
+        panelStatus("user-model-status", "");
+        syncPolicy();
+      } catch (error) {
+        if (!request.signal.aborted)
+          panelStatus("user-model-status", error.message, loadModels);
+      } finally {
+        loading = false;
+      }
+    }
+    function update() {
+      syncPolicy();
+      if (policy.value === "allowlist" && settings.open) void loadModels();
+    }
+    settings.ontoggle = update;
+    policy.onchange = update;
+    update();
   }
   async function keys(u) {
     keyTarget = u.id;
@@ -373,38 +441,63 @@
       box.disabled = !u.services.includes(box.value);
       box.checked = !box.disabled;
     }
-    await tab("keys");
+    await navigateAdmin("keys");
   }
-  async function details(u) {
+  function invalidateList() {
+    state.summary = null;
+  }
+  async function reloadUser(id) {
+    invalidateList();
+    if (adminLocation() === "user/" + id) await details(id);
+  }
+  async function details(id) {
     state.details?.abort();
     const request = new AbortController();
     state.details = request;
-    const panel = $("user-details");
-    panel.hidden = false;
-    panel.open = true;
+    $("user-password").textContent = "";
+    $("user-secret").hidden = true;
     $("details-content").hidden = true;
-    $("details-title").textContent =
-      u.display_name + " (#" + u.id + ") · 账号详情";
+    $("details-title").textContent = "账号 #" + id;
     panelStatus("details-status", "正在读取账号详情…");
-    panel.scrollIntoView({ behavior: "smooth", block: "start" });
     let data;
     try {
       data = await api(
         "/admin/users/" +
-          u.id +
-          "/details?day=" +
-          encodeURIComponent(state.filters.day),
+          id +
+          "/details?" +
+          new URLSearchParams({ day: state.filters?.day ?? today() }),
         "GET",
         undefined,
         request.signal,
       );
     } catch (error) {
       if (!request.signal.aborted)
-        panelStatus("details-status", error.message, () => details(u));
+        panelStatus("details-status", error.message, () => details(id));
       return;
     }
     if (request.signal.aborted) return;
+    const u = data.user;
+    $("details-requests-title").textContent =
+      "最近 100 次请求 · " +
+      (data.day ?? state.filters?.day ?? today()) +
+      "（北京时间）";
+    $("details-title").textContent = u.display_name + " (#" + u.id + ")";
+    $("user-account-meta").textContent = [
+      u.email || "未设置邮箱",
+      u.email_verified_at ? "邮箱已验证" : "邮箱未验证",
+      u.role === "admin" ? "管理员" : "普通用户",
+      u.enabled ? "已启用" : "已封禁",
+      u.must_change ? "待修改初始密码" : "",
+      u.created ? "创建于 " + date(u.created) : "",
+      u.allowed_model_ids == null
+        ? "模型继承全站"
+        : "模型白名单 " + u.allowed_model_ids.length + " 项",
+    ]
+      .filter(Boolean)
+      .join(" · ");
     panelStatus("details-status", "");
+    setupSettings(u, request);
+    userActions(u);
     $("details-content").hidden = false;
     $("details-quotas").textContent =
       "RPM " +
@@ -568,10 +661,6 @@
       message("默认额度已保存，仅对后续新账号生效。");
     }),
   );
-  $("edit-cancel").onclick = () => {
-    $("edit-form").hidden = true;
-    $("edit-container").hidden = true;
-  };
   $("load-audit").addEventListener(
     "click",
     run(async () => {
@@ -1010,10 +1099,10 @@
   $("show-operational-alerts").addEventListener(
     "click",
     run(async () => {
-      await tab("costs");
+      await navigateAdmin("costs");
       $("operations-panel").open = true;
       $("operations-panel").scrollIntoView({ behavior: "smooth" });
     }),
   );
-  window.adminUI = { load, loadInbox };
+  window.adminUI = { load, loadInbox, details, closeDetails, reloadUser };
 })();

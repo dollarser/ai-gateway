@@ -1561,6 +1561,86 @@ test("Admin model switches control discovery and direct calls, including local v
   }
 });
 
+test("User allowlists bound to the account filter model discovery and account-token/API-Key inference", async () => {
+  const a = await lunaUser("model-allowlist-a");
+  const b = await lunaUser("model-allowlist-b");
+  const store = new Store(db);
+  const loginUser = await store.createUser(
+    "model-allowlist-login",
+    "test-password",
+    {
+      services: ["qwen"],
+      must_change: 0,
+    },
+  );
+  const login = await fixtureLogin(
+    store,
+    loginUser.display_name,
+    "test-password",
+    "test",
+  );
+  const set = (uid, ids, access = admin) =>
+    call(
+      "/admin/users/" + uid,
+      { allowed_model_ids: ids },
+      { method: "PATCH", access },
+    );
+  const astra = "gpt-6-astra",
+    luna = "gpt-6-luna";
+  const switchAstra = (enabled) =>
+    call(
+      "/admin/models",
+      { id: astra, enabled },
+      { method: "PATCH", access: admin },
+    );
+  await switchAstra(true);
+  try {
+    assert.equal(
+      (await set(a.uid, [luna], login.body.access_token)).status,
+      403,
+    );
+    assert.equal((await set(a.uid, ["unknown"])).status, 422);
+    assert.equal((await set(a.uid, [luna, luna])).status, 422);
+    assert.equal((await set(a.uid, [luna])).status, 200);
+    assert.equal((await set(b.uid, [luna, astra])).status, 200);
+    assert.equal((await set(loginUser.id, [luna])).status, 200);
+    const client = { "X-Client-ID": "test-client-id" };
+    const models = async (key, headers) =>
+      (await apiCall("/v1/models", key, undefined, headers)).body.data.map(
+        (m) => m.id,
+      );
+    assert.deepEqual(await models(a.key), [luna]);
+    assert.deepEqual(await models(b.key), [luna, astra]);
+    assert.deepEqual(await models(login.body.access_token, client), [luna]);
+    const chat = (key, model, headers) =>
+      apiCall(
+        "/v1/chat/completions",
+        key,
+        { model, messages: [{ role: "user", content: "hi" }] },
+        headers,
+      );
+    const before = providerCalls;
+    assert.equal(
+      (await chat(a.key, astra)).body.error_code,
+      "model_not_allowed",
+    );
+    assert.equal(
+      (await chat(login.body.access_token, astra, client)).body.error_code,
+      "model_not_allowed",
+    );
+    assert.equal(providerCalls, before);
+    assert.equal((await chat(b.key, astra)).status, 200);
+    await switchAstra(false);
+    assert.equal((await chat(b.key, astra)).body.error_code, "model_disabled");
+    await set(a.uid, []);
+    assert.deepEqual(await models(a.key), []);
+    await set(a.uid, null);
+    assert.deepEqual(await models(a.key), [luna]);
+  } finally {
+    await switchAstra(false);
+  }
+});
+
 test("Each new cloud language model is closed by default and can be independently routed and metered", async () => {
   const { uid, key } = await lunaUser("multi-cloud-text");
   const prices = {
@@ -4899,12 +4979,22 @@ test("Management HTML requires an administrator on every alias and cannot be cac
     "page-family",
     Date.now() / 1000 + 3600,
   );
-  for (const path of ["/admin", "/admin/", "/admin/index.html"]) {
+  for (const path of [
+    "/admin",
+    "/admin/",
+    "/admin/index.html",
+    "/admin/users/" + uid,
+  ]) {
     const anonymous = await mf.dispatchFetch("https://accounts.test" + path, {
       redirect: "manual",
     });
     assert.equal(anonymous.status, 302);
-    assert.equal(anonymous.headers.get("Location"), "/?next=admin");
+    assert.equal(
+      anonymous.headers.get("Location"),
+      path.startsWith("/admin/users/")
+        ? "/?next=" + encodeURIComponent(path)
+        : "/?next=admin",
+    );
     assert.equal(anonymous.headers.get("Cache-Control"), "no-store");
     const denied = await mf.dispatchFetch("https://accounts.test" + path, {
       headers: { Authorization: "Bearer " + raw },
