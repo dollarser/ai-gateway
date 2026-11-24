@@ -701,7 +701,7 @@ with sync_playwright() as p:
     assert page.locator("#admin-link").is_hidden()
     assert not any("/admin." in path for path in asset_calls), asset_calls
     page.locator('[data-tab="usage"]').click()
-    page.get_by_text("云文本（Luna / 嵌入）", exact=False).first.wait_for()
+    page.get_by_text("云文本（GPT / 嵌入）", exact=False).first.wait_for()
     assert api_calls.count(("GET", "/account/usage-snapshot")) >= 1
     assert not any("/admin." in path for path in asset_calls), asset_calls
     page.locator('[data-tab="notices"]').click()

@@ -1,6 +1,14 @@
-# GPT-6 Luna 账号月额度
+# GPT-6 系列云文本账号月额度
 
-模型 ID 为 `gpt-6-luna`。现有账号和后续新账号默认每月 **10,000,000 tokens**，同一账号的 access_token 和所有 API Key 共用额度。每次用量为 OpenAI 返回的输入 token（含缓存输入）加输出 token（含推理 token）；不根据美元价格扣减。月周期按 `Asia/Shanghai` 自然月计算，不累计结转。
+GPT-6 系列及 OpenAI 嵌入模型共用同一云文本额度。现有账号和后续新账号默认每月 **10,000,000 tokens**，同一账号的 access_token 和所有 API Key 共用额度。每次用量为 OpenAI 返回的输入 token（含缓存输入）加输出 token（含推理 token）；不根据美元价格扣减。月周期按 `Asia/Shanghai` 自然月计算，不累计结转。
+
+| 系列 | 网关模型 ID |
+| --- | --- |
+| GPT-6 | `gpt-6-luna`、`gpt-6-sol`、`gpt-6-astra` |
+| GPT-6.1 | `gpt-6.1-sol`、`gpt-6.1-terra` |
+| GPT-6.2 | `gpt-6.2-sol`、`gpt-6.2-astra` |
+
+在管理后台「模型管理」逐个开放。Luna 初始开启，其余初始关闭。各模型按 [OpenAI Standard 费率](https://developers.openai.com/api/docs/pricing)分别预留并估算计费。本机中继继续转发对话请求。对不支持关闭推理的模型，带客户端自定义函数的调用使用 Responses。
 
 ## 配置与发布
 
@@ -30,7 +38,7 @@ Luna 继承现有 `qwen` 对话服务权限；没有对话权限、被禁用、�
 
 ## 调用
 
-OpenAI SDK 的 base URL 为 `https://api.hilex.me/v1`，模型选择 `gpt-6-luna`。支持 Chat Completions、Responses，以及两者的 SSE 流式输出。API Key 使用 `Authorization: Bearer <账号 API Key>`；账号 access_token 还需有效 `X-Client-ID`。客户端不能使用 Worker 的 OpenAI 密钥。
+OpenAI SDK 的 base URL 为 `https://api.hilex.me/v1`，模型 ID 从下表选择。支持 Chat Completions、Responses，以及两者的 SSE 流式输出。API Key 使用 `Authorization: Bearer <账号 API Key>`；账号 access_token 还需有效 `X-Client-ID`。客户端不能使用 Worker 的 OpenAI 密钥。
 
 ```json
 {

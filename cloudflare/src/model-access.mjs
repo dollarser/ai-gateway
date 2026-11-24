@@ -1,5 +1,9 @@
 import { ASR_MODEL, TTS_MODEL } from "./audio.mjs";
-import { LUNA_MODEL } from "./luna.mjs";
+import {
+  CLOUD_TEXT_MODELS,
+  CLOUD_TEXT_PATHS,
+  LUNA_MODEL,
+} from "./cloud-text-models.mjs";
 import { EMBEDDING_MODELS } from "./embeddings.mjs";
 import { Denied } from "./store.mjs";
 import { now } from "./crypto.mjs";
@@ -8,13 +12,13 @@ export const LOCAL_ASR = "funasr";
 export const LOCAL_TTS = "cosyvoice";
 const prefix = "public_model:";
 const definitions = [
-  {
-    id: LUNA_MODEL,
-    name: "GPT-6 Luna",
+  ...[...CLOUD_TEXT_MODELS].map(([id, model]) => ({
+    id,
+    name: model.name,
     service: "qwen",
     provider: "openai",
-    endpoints: ["/v1/chat/completions", "/v1/responses"],
-  },
+    endpoints: CLOUD_TEXT_PATHS,
+  })),
   {
     id: "Qwen3.8-27B",
     name: "Qwen3.8-27B",
@@ -78,11 +82,17 @@ const aliases = new Map(
 
 export async function enabledModels(store) {
   const rows = await store.all(
-    "SELECT name FROM settings WHERE name >= ? AND name < ? AND value='true'",
+    "SELECT name,value FROM settings WHERE name >= ? AND name < ?",
     prefix,
     "public_model;",
   );
-  return new Set(rows.map(({ name }) => name.slice(prefix.length)));
+  const enabled = new Set([LUNA_MODEL]);
+  for (const { name, value } of rows) {
+    const id = name.slice(prefix.length);
+    if (value === "true") enabled.add(id);
+    else enabled.delete(id);
+  }
+  return enabled;
 }
 
 export function localVoiceCatalog(permissions, enabled) {
@@ -116,7 +126,7 @@ export async function requirePublicModel(store, requested, path) {
     "SELECT value FROM settings WHERE name=?",
     prefix + id,
   );
-  if (flag?.value !== "true") {
+  if (flag ? flag.value !== "true" : id !== LUNA_MODEL) {
     const error = new Denied(403, "此模型尚未开放或已停用");
     error.code = "model_disabled";
     throw error;

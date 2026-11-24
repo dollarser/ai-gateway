@@ -146,7 +146,7 @@ async function provider(request) {
       usage: { prompt_tokens: 1, total_tokens: 1 },
     });
   }
-  assert.equal(p.model, "gpt-6-luna");
+  assert.ok(/^gpt-6(?:\.[12])?-(?:luna|sol|astra|terra)$/.test(p.model));
   assert.equal(p.service_tier, "default");
   assert.equal(p.store, false);
   assert.equal(p.max_tokens, undefined);
@@ -311,8 +311,13 @@ before(async () => {
   admin = result.body.access_token;
   const initial = await call("/admin/models", undefined, { access: admin });
   assert.equal(initial.status, 200);
-  assert.equal(initial.body.models.length, 8);
-  assert.ok(initial.body.models.every((model) => !model.enabled));
+  assert.equal(initial.body.models.length, 14);
+  assert.deepEqual(
+    initial.body.models
+      .filter((model) => model.enabled)
+      .map((model) => model.id),
+    ["gpt-6-luna"],
+  );
   // Existing inference fixtures opt in explicitly; production starts closed.
   const ids = [
     "gpt-6-luna",
@@ -838,7 +843,7 @@ test("Luna blocks bypass fields, invalid image input and wrong service leases be
   const lease = await lunaLease(key),
     before = providerCalls;
   for (const p of [
-    { model: "gpt-6-astra" },
+    { model: "gpt-unknown" },
     { n: 20 },
     { service_tier: "priority" },
     { max_completion_tokens: 0 },
@@ -1553,6 +1558,57 @@ test("Admin model switches control discovery and direct calls, including local v
   } finally {
     await update("gpt-6-luna", true);
     await update("cosyvoice", true);
+  }
+});
+
+test("Each new cloud language model is closed by default and can be independently routed and metered", async () => {
+  const { uid, key } = await lunaUser("multi-cloud-text");
+  const prices = {
+    "gpt-6-sol": [2000, 10000],
+    "gpt-6-astra": [10000, 50000],
+    "gpt-6.1-sol": [2000, 10000],
+    "gpt-6.1-terra": [1000, 5000],
+    "gpt-6.2-sol": [2000, 10000],
+    "gpt-6.2-astra": [8000, 40000],
+  };
+  const update = (id, enabled) =>
+    call("/admin/models", { id, enabled }, { method: "PATCH", access: admin });
+  for (const [id, [input, output]] of Object.entries(prices)) {
+    const payload = { model: id, messages: [{ role: "user", content: "hi" }] };
+    const endpoint = "/v1/chat/completions";
+    const blocked = await apiCall(endpoint, key, payload);
+    assert.equal(blocked.body.error_code, "model_disabled");
+    try {
+      assert.equal((await update(id, true)).status, 200);
+      const list = await apiCall("/v1/models", key);
+      assert.ok(list.body.data.some((model) => model.id === id));
+      const result = await apiCall(endpoint, key, payload);
+      assert.equal(result.status, 200);
+      assert.equal(lastProviderPayload.model, id);
+      const charge = await db
+        .prepare(
+          "SELECT l.* FROM luna_usage l JOIN requests r ON r.id=l.lease WHERE l.user_id=? AND r.model=? ORDER BY l.rowid DESC LIMIT 1",
+        )
+        .bind(uid, id)
+        .first();
+      assert.ok(charge.settled);
+      assert.equal(charge.model, id);
+      assert.equal(
+        charge.charged_cost_nanos,
+        (charge.prompt_tokens -
+          charge.cached_tokens -
+          charge.cache_write_tokens) *
+          input +
+          charge.cached_tokens *
+            (id.includes("6.1-") || id.includes("6.2-")
+              ? input / 20
+              : input / 10) +
+          charge.cache_write_tokens * input * 1.25 +
+          charge.completion_tokens * output,
+      );
+    } finally {
+      await update(id, false);
+    }
   }
 });
 

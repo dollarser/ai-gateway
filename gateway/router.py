@@ -246,8 +246,11 @@ async def inference(path: str, request: Request):
             if not isinstance(candidate, dict):
                 raise Denied(400, "JSON 请求必须为对象")
             if not edge and (
-                candidate.get("model") == openai_proxy.LUNA_MODEL
-                or path == "/v1/responses"
+                path == "/v1/responses"
+                or (
+                    isinstance(candidate.get("model"), str)
+                    and candidate["model"] in openai_proxy.CLOUD_TEXT_MODELS
+                )
             ):
                 trace.update(
                     model=candidate.get("model"),

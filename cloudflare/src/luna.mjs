@@ -5,7 +5,11 @@ import { lunaCost, budgetError } from "./budgets.mjs";
 import { providerFailure } from "./provider-errors.mjs";
 import { Denied, day } from "./store.mjs";
 
-export const LUNA_MODEL = "gpt-6-luna";
+import {
+  CLOUD_TEXT_MODELS,
+  CLOUD_TEXT_PATHS,
+  LUNA_MODEL,
+} from "./cloud-text-models.mjs";
 const month = () => day().slice(0, 7);
 const integer = (n) => Number.isSafeInteger(n) && n >= 0;
 export function budgetValue(value) {
@@ -26,7 +30,7 @@ export function cloudUsageValue(u, r, period = month()) {
   return {
     model: LUNA_MODEL,
     scope: "cloud_text_tokens",
-    models: [LUNA_MODEL, "text-embedding-3-small"],
+    models: [...CLOUD_TEXT_MODELS.keys(), "text-embedding-3-small"],
     month: period,
     timezone: "Asia/Shanghai",
     resets_at: new Date(
@@ -60,22 +64,23 @@ export function lunaCatalogForUser(r, env) {
   return {
     data:
       env.OPENAI_API_KEY && r.luna_monthly_tokens > 0
-        ? [
-            {
-              id: LUNA_MODEL,
-              object: "model",
-              owned_by: "openai",
-              tool_calling: {
+        ? [...CLOUD_TEXT_MODELS].map(([id, model]) => ({
+            id,
+            object: "model",
+            owned_by: "openai",
+            endpoints: CLOUD_TEXT_PATHS,
+            tool_calling: {
+              ...(model.reasoningNone && {
                 chat_completions_reasoning_effort: "none",
-                reasoning_tools_endpoint: "/v1/responses",
-              },
-              architecture: {
-                input_modalities: ["text", "image"],
-                output_modalities: ["text"],
-                modality: "text+image->text",
-              },
+              }),
+              reasoning_tools_endpoint: "/v1/responses",
             },
-          ]
+            architecture: {
+              input_modalities: ["text", "image"],
+              output_modalities: ["text"],
+              modality: "text+image->text",
+            },
+          }))
         : [],
   };
 }
@@ -127,7 +132,17 @@ export function preparePayload(payload, responses) {
     Object.keys(payload).some((k) => !allowed.includes(k))
   )
     throw new Denied(422, "Luna 包含未开放的字段");
-  if (payload.model !== LUNA_MODEL) throw new Denied(400, "仅开放 gpt-6-luna");
+  const model = CLOUD_TEXT_MODELS.get(payload.model);
+  if (!model) throw new Denied(400, "此 OpenAI 对话模型未接入");
+  if (
+    !model.reasoningNone &&
+    (responses ? payload.reasoning?.effort : payload.reasoning_effort) ===
+      "none"
+  )
+    throw new Denied(
+      422,
+      "此模型需要启用推理，请选择 low 或更高的 reasoning effort",
+    );
   if (payload.stream !== undefined && typeof payload.stream !== "boolean")
     throw new Denied(422, "stream 必须为布尔值");
   if (responses) {
@@ -249,6 +264,8 @@ export function preparePayload(payload, responses) {
       payload.messages.some(
         (m) => m?.tool_calls?.length || m?.role === "tool",
       ));
+  if (chatTools && !model.reasoningNone)
+    throw new Denied(422, "此模型的函数调用请使用 /v1/responses");
   if (chatTools && result.reasoning_effort !== "none") {
     result.reasoning_effort = "none";
     compatibility.push("chat-tools-reasoning-none");
@@ -319,9 +336,13 @@ export async function proxyLuna(
   const expectedPath = responses ? "/v1/responses" : "/v1/chat/completions";
   if (r.path !== expectedPath) throw new Denied(403, "请求凭证路径不匹配");
   const p = preparePayload(payload, responses);
+  const reserveCost = lunaCost(
+    { input: p.inputBound, output: p.max, cached: 0, writes: p.inputBound },
+    payload.model,
+  );
   try {
     await store.run(
-      "INSERT INTO luna_usage(lease,user_id,month,reserved_tokens,charged_tokens,prompt_tokens,completion_tokens,reserved_cost_nanos,charged_cost_nanos) VALUES(?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO luna_usage(lease,user_id,month,reserved_tokens,charged_tokens,prompt_tokens,completion_tokens,reserved_cost_nanos,charged_cost_nanos,model) VALUES(?,?,?,?,?,?,?,?,?,?)",
       lease,
       r.user_id,
       month(),
@@ -329,8 +350,9 @@ export async function proxyLuna(
       p.reservation,
       p.inputBound,
       p.max,
-      p.inputBound * 125 + p.max * 500,
-      p.inputBound * 125 + p.max * 500,
+      reserveCost,
+      reserveCost,
+      payload.model,
     );
   } catch (e) {
     const global = budgetError(e);
@@ -338,7 +360,7 @@ export async function proxyLuna(
     if (String(e).includes("luna_budget_exhausted")) {
       const error = new Denied(
         429,
-        "GPT-6 Luna 本月余额不足以预留该请求，请降低输出上限或联系管理员",
+        "云文本模型本月余额不足以预留该请求，请降低输出上限或联系管理员",
       );
       error.code = "account_luna_budget_exhausted";
       error.retryable = false;
@@ -358,7 +380,7 @@ export async function proxyLuna(
       cost.cached,
       cost.writes,
       typeof id === "string" ? id.slice(0, 256) : null,
-      lunaCost(cost),
+      lunaCost(cost, payload.model),
       lease,
     );
   }

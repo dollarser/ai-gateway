@@ -1,3 +1,5 @@
+import { CLOUD_TEXT_MODELS } from "./cloud-text-models.mjs";
+import { enabledModels, requirePublicModel } from "./model-access.mjs";
 import { usageSnapshot } from "./usage-snapshot.mjs";
 import { changePasswordWithCredentials } from "./credential-password.mjs";
 import { captchaInfo, verifyCaptcha } from "./captcha.mjs";
@@ -167,14 +169,22 @@ async function internal(request, env, store, path, ctx) {
       "/internal/openai/chat-completions",
       "/internal/openai/responses",
     ].includes(path)
-  )
+  ) {
+    const responses = path.endsWith("/responses");
+    const payload = await body(request, 4 * 1024 * 1024);
+    if (CLOUD_TEXT_MODELS.has(payload?.model))
+      await requirePublicModel(
+        store,
+        payload.model,
+        responses ? "/v1/responses" : "/v1/chat/completions",
+      );
     return proxyLuna(
       request,
       env,
       store,
       ctx,
-      await body(request, 4 * 1024 * 1024),
-      path.endsWith("/responses"),
+      payload,
+      responses,
       openaiRoute(
         env,
         request.headers.get("X-Gateway-Lease"),
@@ -182,6 +192,7 @@ async function internal(request, env, store, path, ctx) {
           request.headers.get("X-Gateway-Lease"),
       ),
     );
+  }
   if (path === "/internal/openai/transcriptions")
     return proxyTranscription(
       request,
@@ -231,14 +242,21 @@ async function internal(request, env, store, path, ctx) {
     const luna = permissions.includes("qwen")
       ? await lunaCatalog(store, env, b.lease)
       : { data: [] };
+    const enabled = await enabledModels(store);
     return json({
-      data: [...luna.data, ...(await audioModels(store, env, b.lease))],
+      data: [...luna.data, ...(await audioModels(store, env, b.lease))].filter(
+        (model) => enabled.has(model.id),
+      ),
       services: permissions,
     });
   }
   if (path === "/internal/luna-models") {
     validate(b, ["lease"]);
-    return json(await lunaCatalog(store, env, text(b.lease, 1, 128)));
+    const catalog = await lunaCatalog(store, env, text(b.lease, 1, 128));
+    const enabled = await enabledModels(store);
+    return json({
+      data: catalog.data.filter((model) => enabled.has(model.id)),
+    });
   }
   if (path === "/internal/acquire") {
     validate(b, ["raw", "service", "path", "metadata"]);

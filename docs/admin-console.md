@@ -20,7 +20,7 @@
 
 ## 模型开放
 
-所有公网模型初始关闭。在「模型管理」逐个开启或停用，控制 `api.hilex.me` 的模型发现和新推理请求。关闭后从列表移除，直接调用返回 HTTP 403 和 `model_disabled`；已接收的请求和 WebSocket 会话可继续完成。账号及 API Key 的服务权限、额度和全站云模型预算继续生效。
+GPT-6 Luna 初始开启，其余模型初始关闭。管理员保存的模型开关优先于初始状态。在「模型管理」逐个开启或停用，控制 `api.hilex.me` 的模型发现和新推理请求。关闭后从列表移除，直接调用返回 HTTP 403 和 `model_disabled`；已接收的请求和 WebSocket 会话可继续完成。账号及 API Key 的服务权限、额度和全站云模型预算继续生效。
 
 开启自建模型需要相应后端已启动。开关表示开放策略，也适用于已停机的模型。VibeVoice 为仅本地接口。管理员可通过 `GET /admin/models` 读取全部开关，`PATCH /admin/models` 提交 `{"id":"gpt-6-luna","enabled":true}`，操作写入审计。
 

@@ -86,7 +86,7 @@ async function loadUsage() {
     const balance = document.createElement("p");
     const amount = (n) => Number(n).toLocaleString("zh-CN");
     balance.textContent =
-      "云文本（Luna / 嵌入） · " +
+      "云文本（GPT / 嵌入） · " +
       luna.month +
       " · 月额度 " +
       amount(luna.monthly_tokens) +

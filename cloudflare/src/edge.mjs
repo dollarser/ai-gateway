@@ -18,7 +18,8 @@ import {
 import { compressedDuration } from "./audio-duration.mjs";
 import { Store, Denied } from "./store.mjs";
 import { digest, token, now } from "./crypto.mjs";
-import { LUNA_MODEL, lunaCatalogForUser, proxyLuna } from "./luna.mjs";
+import { lunaCatalogForUser, proxyLuna } from "./luna.mjs";
+import { CLOUD_TEXT_MODELS, CLOUD_TEXT_PATHS } from "./cloud-text-models.mjs";
 import {
   ASR_MODEL,
   TTS_MODEL,
@@ -730,11 +731,11 @@ export async function edgeAPI(request, env, ctx) {
         String(payload.model ?? "").startsWith("text-embedding-")
       ) {
         throw new Denied(422, "未开放的 OpenAI 嵌入模型");
-      } else if (payload.model === LUNA_MODEL) {
+      } else if (CLOUD_TEXT_MODELS.has(payload.model)) {
         trace.provider = "openai";
         trace.protocol = payload.stream ? "sse" : "http";
-        if (!["/v1/chat/completions", "/v1/responses"].includes(path))
-          throw new Denied(422, "Luna 使用 Chat Completions 或 Responses");
+        if (!CLOUD_TEXT_PATHS.includes(path))
+          throw new Denied(422, "云文本模型使用 Chat Completions 或 Responses");
         await requirePublicModel(store, payload.model, path);
         response = await proxyLuna(
           internalRequest(request, lease, JSON.stringify(payload)),
@@ -747,7 +748,7 @@ export async function edgeAPI(request, env, ctx) {
         );
       } else {
         if (path === "/v1/responses")
-          throw new Denied(422, "Responses 当前仅支持 gpt-6-luna");
+          throw new Denied(422, "Responses 当前仅支持已接入的 GPT-6 系列模型");
         await requirePublicModel(store, payload.model, path);
         trace.provider = "local";
         if (["/v1/chat/completions", "/v1/completions"].includes(path))

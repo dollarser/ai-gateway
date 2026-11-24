@@ -1,12 +1,13 @@
 import { Denied, day } from "./store.mjs";
-export const PRICE = { input: 100, cached: 10, write: 125, output: 500 };
-export function lunaCost(usage) {
-  return (
-    Math.max(0, usage.input - usage.cached - usage.writes) * PRICE.input +
-    usage.cached * PRICE.cached +
-    usage.writes * PRICE.write +
-    usage.output * PRICE.output
-  );
+import { CLOUD_TEXT_MODELS, LUNA_MODEL } from "./cloud-text-models.mjs";
+export function lunaCost(usage, model = LUNA_MODEL) {
+  const price = CLOUD_TEXT_MODELS.get(model).price;
+  const input =
+    Math.max(0, usage.input - usage.cached - usage.writes) * price.input +
+    usage.cached * price.cached +
+    usage.writes * price.write;
+  const output = usage.output * price.output;
+  return input + output;
 }
 export function budgetError(error) {
   const text = String(error);

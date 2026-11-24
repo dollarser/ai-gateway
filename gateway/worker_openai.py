@@ -5,6 +5,15 @@ import httpx
 from gateway.errors import Denied
 
 LUNA_MODEL = "gpt-6-luna"
+CLOUD_TEXT_MODELS = {
+    LUNA_MODEL,
+    "gpt-6-sol",
+    "gpt-6-astra",
+    "gpt-6.1-sol",
+    "gpt-6.1-terra",
+    "gpt-6.2-sol",
+    "gpt-6.2-astra",
+}
 LUNA_MODEL_ENTRY = {
     "id": LUNA_MODEL,
     "object": "model",
@@ -43,7 +52,7 @@ async def catalog(app, lease, include_services=False):
         data = response.json()["data"]
         if not isinstance(data, list) or any(
             item.get("id")
-            not in {LUNA_MODEL, "gpt-transcribe", "gpt-realtime-2.1-mini"}
+            not in CLOUD_TEXT_MODELS | {"gpt-transcribe", "gpt-realtime-2.1-mini"}
             for item in data
         ):
             raise ValueError("Invalid Luna catalog")
