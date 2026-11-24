@@ -376,12 +376,9 @@
   }
   function setupSettings(u, request) {
     const form = $("edit-form"),
-      settings = $("user-settings"),
       list = $("user-model-list");
-    const policy = form.elements.model_policy;
     form.elements.id.value = u.id;
     const allowed = u.allowed_model_ids ?? null;
-    policy.value = allowed === null ? "inherit" : "allowlist";
     list.querySelectorAll("label").forEach((label) => label.remove());
     list.hidden = true;
     for (const k of quotaFields) form.elements[k].value = u[k];
@@ -391,10 +388,7 @@
     let ready = false;
     form.dataset.modelsReady = "false";
     let loading = false;
-    function syncPolicy() {
-      list.hidden = policy.value !== "allowlist" || !ready;
-      save.disabled = policy.value === "allowlist" && !ready;
-    }
+    save.disabled = true;
     async function loadModels() {
       if (ready || loading || request.signal.aborted) return;
       loading = true;
@@ -413,14 +407,16 @@
           box.type = "checkbox";
           box.name = "allowed_models";
           box.value = model.id;
-          box.checked = allowed?.includes(model.id) ?? false;
+          box.checked = allowed?.includes(model.id) ?? model.enabled;
+          box.defaultChecked = box.checked;
           option.append(box, model.name + (model.enabled ? "" : " · 全站关闭"));
           list.append(option);
         }
         ready = true;
         form.dataset.modelsReady = "true";
         panelStatus("user-model-status", "");
-        syncPolicy();
+        list.hidden = false;
+        save.disabled = false;
       } catch (error) {
         if (!request.signal.aborted)
           panelStatus("user-model-status", error.message, loadModels);
@@ -428,13 +424,7 @@
         loading = false;
       }
     }
-    function update() {
-      syncPolicy();
-      if (policy.value === "allowlist" && settings.open) void loadModels();
-    }
-    settings.ontoggle = update;
-    policy.onchange = update;
-    update();
+    void loadModels();
   }
   function setupKeys(u) {
     keyTarget = u.id;
@@ -502,7 +492,7 @@
       u.must_change ? "待修改初始密码" : "",
       u.created ? "创建于 " + date(u.created) : "",
       u.allowed_model_ids == null
-        ? "模型继承全站"
+        ? "使用全站默认模型"
         : "模型白名单 " + u.allowed_model_ids.length + " 项",
     ]
       .filter(Boolean)

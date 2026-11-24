@@ -83,7 +83,7 @@ async function syncAdminRoute() {
   heading.tabIndex = -1;
   heading.focus();
   if (userId) {
-    $("user-settings").open = false;
+    $("user-settings").open = true;
     $("user-keys").open = false;
     await window.adminUI.details(Number(userId));
   } else if (name === "admin") await window.adminUI.load({ reuse: true });
@@ -300,21 +300,19 @@ $("edit-form").addEventListener(
   run(async (e) => {
     const f = e.target;
     const id = Number(f.elements.id.value);
-    if (
-      f.elements.model_policy.value === "allowlist" &&
-      f.dataset.modelsReady !== "true"
-    )
-      return;
-    const selectedModels = [
-      ...f.querySelectorAll("[name=allowed_models]:checked"),
-    ].map((box) => box.value);
+    if (f.dataset.modelsReady !== "true") return;
+    const boxes = [...f.querySelectorAll("[name=allowed_models]")];
+    const changed = boxes.some((box) => box.checked !== box.defaultChecked);
     await api("/admin/users/" + id, "PATCH", {
       services: selected(f),
       rpm: Number(f.elements.rpm.value),
       daily_requests: Number(f.elements.daily_requests.value),
       concurrency: Number(f.elements.concurrency.value),
-      allowed_model_ids:
-        f.elements.model_policy.value === "inherit" ? null : selectedModels,
+      ...(changed && {
+        allowed_model_ids: boxes
+          .filter((box) => box.checked)
+          .map((box) => box.value),
+      }),
       ...lunaFields(f),
     });
     await window.adminUI.reloadUser(id);

@@ -562,9 +562,10 @@ with sync_playwright() as p:
     page.locator("#user-keys > summary").click()
     page.locator("#keys-list").get_by_text("暂无 API Key").wait_for()
     page.locator("#user-keys > summary").click()
-    page.locator("#user-settings > summary").click()
-    page.locator("#edit-form [name=model_policy]").select_option("allowlist")
-    page.locator('#user-model-list input[value="gpt-6-luna"]').check()
+    luna_checkbox = page.locator('#user-model-list input[value="gpt-6-luna"]')
+    luna_checkbox.wait_for(state="visible")
+    assert not luna_checkbox.is_checked()
+    luna_checkbox.check()
     page.locator("#edit-form [name=openai_tts_daily_characters]").fill("250000")
     page.locator(
         "#edit-form button[type=submit],#edit-form button:not([type])"
