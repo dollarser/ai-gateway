@@ -124,16 +124,16 @@ test("Provider errors separate region, authentication, billing, throttling and p
 });
 test("Luna costs use input, cached input, cache writes and output prices separately", () => {
   assert.equal(
-    lunaCost({ input: 1000000, output: 0, cached: 0, writes: 0 }),
-    100000000,
+    lunaCost({ input: 100000, output: 0, cached: 0, writes: 0 }),
+    10000000,
   );
   assert.equal(
     lunaCost({
-      input: 1000000,
-      output: 1000000,
-      cached: 500000,
-      writes: 100000,
+      input: 100000,
+      output: 100000,
+      cached: 50000,
+      writes: 10000,
     }),
-    557500000,
+    55750000,
   );
 });

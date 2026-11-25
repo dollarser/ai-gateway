@@ -1,5 +1,9 @@
 import { Denied, day } from "./store.mjs";
-import { CLOUD_TEXT_MODELS, LUNA_MODEL } from "./cloud-text-models.mjs";
+import {
+  CLOUD_TEXT_MODELS,
+  LONG_CONTEXT_THRESHOLD,
+  LUNA_MODEL,
+} from "./cloud-text-models.mjs";
 export function lunaCost(usage, model = LUNA_MODEL) {
   const price = CLOUD_TEXT_MODELS.get(model).price;
   const input =
@@ -7,7 +11,9 @@ export function lunaCost(usage, model = LUNA_MODEL) {
     usage.cached * price.cached +
     usage.writes * price.write;
   const output = usage.output * price.output;
-  return input + output;
+  return usage.input > LONG_CONTEXT_THRESHOLD
+    ? input * 2 + output * 1.5
+    : input + output;
 }
 export function budgetError(error) {
   const text = String(error);

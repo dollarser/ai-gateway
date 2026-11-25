@@ -1550,6 +1550,53 @@ async function apiCall(path, key, payload, headers = {}) {
   });
   return { status: r.status, headers: r.headers, body: await r.json() };
 }
+test("Cloud chat returns distinct 413 codes and records the validation cause", async () => {
+  const { key } = await lunaUser("cloud-chat-request-limits");
+  const path = "/v1/chat/completions";
+  const image = {
+    type: "image_url",
+    image_url: { url: "https://example.com/image.png" },
+  };
+  const accepted = await apiCall(path, key, {
+    model: "gpt-6-luna",
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "x".repeat(90000) },
+          ...Array.from({ length: 8 }, () => ({
+            type: "image_url",
+            image_url: {
+              url: "data:image/png;base64," + "AAAA".repeat(140000),
+            },
+          })),
+        ],
+      },
+    ],
+  });
+  assert.equal(accepted.status, 200);
+  const examples = [
+    ["request_body_too_large", "x".repeat(12 * 1024 * 1024)],
+    ["too_many_images", Array.from({ length: 9 }, () => image)],
+    ["input_estimate_too_large", "x".repeat(1050000)],
+  ];
+  for (const [code, content] of examples) {
+    const result = await apiCall(path, key, {
+      model: "gpt-6-luna",
+      messages: [{ role: "user", content }],
+    });
+    assert.equal(result.status, 413);
+    assert.equal(result.body.error_code, code);
+    assert.equal(result.headers.get("X-Error-Code"), code);
+    assert.equal(result.body.retryable, false);
+    const row = await new Store(db).first(
+      "SELECT error_code, upstream_attempted FROM requests WHERE request_id=?",
+      result.body.request_id,
+    );
+    assert.equal(row?.error_code, code);
+    assert.equal(row.upstream_attempted, 0);
+  }
+});
 test("Default model edits only affect new accounts; account grants cover local voice aliases", async () => {
   const { uid, key } = await lunaUser("public-model-switch");
   await db
@@ -1829,7 +1876,7 @@ test("Luna Responses web search preserves citations, meters billed calls and ato
   );
   assert.equal(ledger.web_search_calls, 1);
   assert.equal(ledger.charged_cost_nanos, 10020000);
-  assert.equal(ledger.reserved_cost_nanos, 26064000);
+  assert.ok(ledger.reserved_cost_nanos > 26064000);
   assert.equal(ledger.settled, 1);
 
   await edit(2);

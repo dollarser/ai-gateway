@@ -33,7 +33,26 @@ OpenAI 出站支持部署时切换 Worker 直连或本机转发，当前默认�
 
 `user.must_change` 为真时先修改初始密码，再重新登录；当前JSON通常使用0/1，客户端不要强制将它仅解析为布尔类型。令牌保存在系统安全存储或受控会话中，不写日志、URL、剪贴板历史或普通配置文件。
 
-## 3. 新注册与历史邮箱绑定
+## 3. 邮箱验证码与人机验证
+
+| 流程 | Turnstile `action` | 手动发送验证码 | 提交邮件验证码 |
+|---|---|---|---|
+| 注册 | `registration_code` | `POST /auth/registration-code` | `POST /auth/register` |
+| 找回密码 | `password_reset_code` | `POST /auth/password-reset/code` | `POST /auth/password-reset` |
+| 历史绑定 | `email_binding_code` | `POST /account/email/code` | `POST /account/email/bind` |
+| 更换邮箱 | `email_change_code` | `POST /account/email/change/code` | `POST /account/email/change` |
+
+发码请求携带 `captcha_token`。最终提交邮件验证码时按各接口要求提交字段。桥接配置与错误码见[人机验证接入](human-verification.md)。
+
+### 共用人机验证流程
+
+`/auth/captcha?action=...` 首次进入自动启动一次 Turnstile 挑战，原生客户端需在加载前注册可信来源的 `HelixCaptcha` 消息桥。失败、过期或超时后可主动点击“重新验证”；取消会结束本次流程，用户可回到原表单重新发起；挑战成功只返回一次性 proof，不自动发送邮件。客户端返回原流程后，由用户手动发送注册、找回密码或绑定邮箱的验证码。
+
+proof 仅保存在内存，过期、取消、改邮箱、切换用途、离页或任何发送尝试后均清除，不能跨请求复用。服务端继续校验用途、域名、有效性和防重放；不会放宽验证要求。窄屏验证弹窗根据实际内容宽度使用 compact/flexible，字体放大时可纵向滚动。
+
+网页账号中心现已与安卓统一为“完成人机验证 → 手动发送验证码”。验证成功不自动发码；发送按钮只有当前邮箱、用途及账号对应的内存 proof 有效时可用。修改邮箱、切换流程、离开/隐藏页面、过期或任何发送尝试后清除 proof，失败后也必须重新验证；发送冷却结束不代表凭据恢复有效。
+
+安卓托管验证页现采用单张透明宿主卡片：加载、挑战、失败与重试均在同一 dialog 中。成功仍发送 `captcha-completed`；用户点击取消或触发网页 Escape 时发送 `{"type":"captcha-cancelled","action":"本次用途"}`，本次流程结束，客户端关闭验证窗口且丢弃凭据。接收端须按可信来源、主框架和本次用途校验，忽略已结束流程的迟到消息。网页自行处理可视视口 resize/scroll、键盘遮挡及滚动，不要求原生计算卡片高度；普通账号网页验证弹窗保持原模式。
 
 ### 新注册
 
@@ -61,6 +80,8 @@ OpenAI 出站支持部署时切换 Worker 直连或本机转发，当前默认�
 
 完整目录：`GET https://api.hilex.me/v1/models?output_modalities=all`。默认不带参数仅展示文本输出模型，不包含独立识别/合成用途。按 `architecture.output_modalities`、`endpoints` 和 `audio` 能力分组，不把语音模型混入聊天选择器，也不硬编码只有 Qwen。
 
+以下是目录条目示例。
+
 | 模型 ID | 用途 | API 域名下的接口 |
 |---|---|---|
 | `gpt-6-luna` | 文本、图片输入与自定义工具 | `POST /v1/chat/completions`、`POST /v1/responses` |
@@ -73,6 +94,10 @@ OpenAI 出站支持部署时切换 Worker 直连或本机转发，当前默认�
 
 安卓建议在登录成功、切换账号/Key、进入模型选择器或从后台回来时按需更新。可合并并发目录读取、提示用户手动刷新，并在 `403 model_not_allowed` 时使目录缓存失效及重新查询。用新列表替换该凭据的旧列表，更新已选模型的可用状态；不要自动换模型并重放原请求。目录请求不占推理并发、不扣日请求数。自建后端的短时目录缓存独立于账号授权；若看见 `X-Model-Catalog-Partial: local_unavailable`，仍可使用本次返回的模型。[模型发现](model-discovery.md)
 
+管理员授予 GPT‑6.2 Sol 后，客户端刷新目录即可看到可用的 Sol 条目。撤销授权后，刷新会移除该条目；若仍选中它，应提示用户重新选择。若客户端继续提交原模型 ID，收到 `403 model_not_allowed` 时使目录缓存失效，再查询该账号的目录。
+
+通过 `output_modalities=embeddings` 或 `all` 发现嵌入模型。付费云嵌入模型为 text-embedding-3-small；POST /v1/embeddings、input 字段、默认1536维/可选dimensions，账号token+ClientID或API Key鉴权不变，沿用qwen权限。Luna与small共享云文本月token额度及全站预算，small按自己的价格结算。完整限制和实例见[嵌入与模型发现](openai-embeddings.md)。
+
 ## 5. Luna 文本与工具调用
 
 普通文本使用标准 Chat Completions 或 Responses 请求，model 精确为 `gpt-6-luna`。示例：
@@ -84,6 +109,8 @@ OpenAI 出站支持部署时切换 Worker 直连或本机转发，当前默认�
 Chat 带工具时客户端使用 `reasoning_effort:"none"`，网关也会做兼容处理；需要推理加工具时使用 Responses。两种接口的消息、工具及推理字段不同，不直接复用同一请求对象。客户端必须提交完整上下文，不能假设服务端保存对话或支持隐藏状态引用。
 
 保存 `X-Request-ID` 和可选 `X-Inference-Compatibility`。不要因 medium/none 的工具兼容问题反复提交同一调用。完整支持范围和工具回传格式见 [Luna 协议](luna-allowance.md)。
+
+Luna 已开放标准 Chat image_url 和 Responses input_image，模型发现声明 text、image 输入；图片来源、大小及预留额度详见 [Luna 图片输入](luna-allowance.md#图片输入)。云聊天和 Responses 每请求最多 8 张图（含历史），完整 JSON 上限为 12 MiB。输入预估与输出预留合计最多 1,050,000 tokens，启用搜索时还需在同一上限内预留搜索上下文。
 
 ### 安卓接入 Luna 网页搜索
 
@@ -203,6 +230,9 @@ Chat 带工具时客户端使用 `reasoning_effort:"none"`，网关也会做兼�
 |---|---|
 | 本人账号401 | 合并令牌刷新；失败转登录，不递归刷新 |
 | `403 model_not_allowed` | 模型权限已变更，刷新模型列表并提示重新选择；不清令牌、不重发原请求 |
+| `413 request_body_too_large` | 缩小完整 JSON，优先压缩内联图片，或改用可访问的 HTTPS 图片 URL |
+| `413 too_many_images` | 减少随请求携带的历史图片或拆分图片任务 |
+| `413 input_estimate_too_large` | 精简历史、减少图片或降低请求的最大输出量 |
 | `429 web_search_daily_limit` | 显示搜索额度限制及正文 `resets_at`；不触发令牌刷新，也不自动重试 |
 | 403、password_change_required | 展示封禁、权限或先改密提示，不自动重试 |
 | email_verification_required / email_verification_invalid | 输入六位码或重新获取，保留用户输入的邮箱 |
@@ -233,6 +263,42 @@ Chat 带工具时客户端使用 `reasoning_effort:"none"`，网关也会做兼�
 
 常规日志不记录聊天正文、音频、验证码、密码或完整令牌。设备ID仅用于诊断，不参与认证和额度。诊断包范围见 [网络诊断](network-diagnostics.md)。
 
+账号并发在对话、ASR、TTS 间共享。HTTP 429 的 `error_code=account_concurrency_limited` 表示同时进行的请求过多，不代表日额度耗尽；响应包含同值 `X-Error-Code`、`request_id` / `X-Request-ID`、`retryable:true` 和 `Retry-After:1`。Retry-After 只是最短重试间隔，不保证 1 秒后有空位。客户端应保留错误码，取消不再使用的对话请求，并按需提示重试，避免无上限自动重试。
+
+收到完整 JSON usage，或 SSE 的完成标记与 usage 后，服务端即释放名额；客户端取消也释放名额。未知的提供方费用仍占用额度预留，与并发名额独立。
+
+### 客户端解析样例
+
+以下是脱敏样例，省略与该测试无关的字段。
+
+```http
+HTTP/1.1 429 Too Many Requests
+Content-Type: application/json
+
+{"error_code":"web_search_daily_limit","resets_at":"2026-11-24T16:00:00.000Z"}
+```
+
+```http
+HTTP/1.1 429 Too Many Requests
+Content-Type: application/json
+X-Error-Code: account_concurrency_limited
+X-Request-ID: example-request
+Retry-After: 1
+
+{"error_code":"account_concurrency_limited","detail":"账号并发已满","retryable":true,"request_id":"example-request"}
+```
+
+Responses 已输出部分内容，随后收到错误事件：
+
+```text
+data: {"type":"response.output_text.delta","delta":"部分文本"}
+
+data: {"type":"error","error":{"code":"provider_stream_interrupted","message":"模型响应未完整结束，已保留待核对额度","retryable":false}}
+
+```
+
+直接断流时可能收不到错误事件，仍要检查 `response.completed`。PCM 回归可模拟 HTTP 200 后先返回一段有效音频，再抛出读取异常。预期停止播放、标记中断并保留请求 ID；正常 EOF 按音频流结束处理。
+
 ## 11. 资源策略与兼容边界
 
 应节省重复数据库查询、计费请求、重复刷新和无效重连；不要过度限制必要的手动操作或降低PCM质量。HTML、哈希JS/CSS由免费静态托管提供，按HTTP缓存头使用，不自行改写资源URL或禁用缓存。客户端无需感知索引、数据库触发器或请求写入合并，也不要直连D1。
@@ -240,6 +306,15 @@ Chat 带工具时客户端使用 `reasoning_effort:"none"`，网关也会做兼�
 服务端仍实时校验认证、封禁、权限、并发和预算，本地缓存不替代这些检查。通知采用每天一次自动检查；模型缓存与用量按需刷新，不把所有资源一律降为一天一次。云语音继续HTTP，自建协议独立；特殊识别格式可能需要源站，详见上述语音章节。[服务端资源策略与保留表](resource-efficiency.md)。
 
 ## 12. 客户端验收清单
+
+每轮验收记录服务端提交、安卓提交或构建号、环境、日期和结果链接。
+
+| 验收范围 | 证据 |
+|---|---|
+| Worker 协议 | 仓库 `cloudflare/tests/accounts.test.mjs` 的额度和并发断言、`cloudflare/tests/stream-safety.test.mjs` 的流式检查 |
+| 托管验证页 | 仓库 `tests/browser_captcha.py` 检查页面交互与消息桥 |
+| 安卓 Release | 对应提交、制品和测试结果。本次文档修订未运行 |
+| 真机 Turnstile 和真实邮件闭环 | 设备、系统版本、服务端版本及脱敏结果。本次文档修订未运行 |
 
 - 账号令牌和Key两种方式均能发现获授权模型；无效/撤销凭据不绕过鉴权。
 - 注册验证码保留前导零；注册、找回、邮箱绑定和更换邮箱都先完成人机验证，再手动发码。旧账号允许稍后绑定，绑定后的邮箱用于登录。
@@ -256,17 +331,9 @@ Chat 带工具时客户端使用 `reasoning_effort:"none"`，网关也会做兼�
 
 排查新出现的模型参数错误时，服务端Worker日志可按X-Request-ID查看脱敏的上游错误分类及指定工具的Schema结构摘要；客户端无需为此上传整段聊天、音频或凭据。历史请求不能补录未保存的Schema。服务端日志不改变错误响应契约，客户端仍按上述错误码及流式完成规则处理；内部账号错误也可能返回request_id供关联排查。
 
-## 图片与并发错误更新
-
-Luna 已开放标准 Chat image_url 和 Responses input_image，模型发现声明 text、image 输入；图片来源、大小及预留额度详见 [Luna 图片输入](luna-allowance.md#图片输入)。最多 2 张图（含历史）、JSON 请求体 4 MiB。
-
-账号并发在对话、ASR、TTS 间共享。HTTP 429 的 `error_code=account_concurrency_limited` 表示同时进行的请求过多，不代表日额度耗尽；响应包含同值 `X-Error-Code`、`request_id` / `X-Request-ID`、`retryable:true` 和 `Retry-After:1`。Retry-After 只是最短重试间隔，不保证 1 秒后有空位。客户端应保留错误码，取消不再使用的对话请求，并按需提示重试，避免无上限自动重试。
-
-收到完整 JSON usage，或 SSE 的完成标记与 usage 后，服务端即释放名额；客户端取消也释放名额。未知的提供方费用仍占用额度预留，与并发名额独立。
-
 ## 安卓客户端：邮箱自助找回密码
 
-安卓可以直接使用已上线的 HTTP 接口实现原生“忘记密码”页面，无需打开网页、接收深链或读取短信。**只能使用已验证并绑定的邮箱**；新密码为 6–128 字符，原登录名不变。联系邮箱不是自动增加的登录别名，用户名账号绑定邮箱后仍使用原用户名登录。
+安卓可以直接使用已上线的 HTTP 接口实现原生“忘记密码”页面，无需打开网页、接收深链或读取短信。**只能使用已验证并绑定的邮箱**；新密码为 6–128 字符，重置后使用该邮箱和新密码登录。
 
 ### 入口和页面流程
 
@@ -320,7 +387,7 @@ Content-Type: application/json
 {
   "ok": true,
   "api_keys_revoked": false,
-  "message": "密码已重置，原登录会话均已退出，请使用原登录名和新密码重新登录。API Key 保持有效。"
+  "message": "密码已重置，原登录会话均已退出，请使用登录邮箱和新密码重新登录。API Key 保持有效。"
 }
 ```
 
@@ -378,13 +445,13 @@ Response 非成功时读取 errorBody 并按服务端 error_code 分支，不能
 | 429 email_rate_limited | 遵守 Retry-After，显示重发倒计时；与模型并发/日额度的 429 分开处理 |
 | 503 email_delivery_unavailable | 提示找回服务暂不可用，稍后手动重试；不得绕过验证码 |
 
-请求超时或连接中断不自动重放发送邮件或重置密码：上次操作可能已完成。重置结果不明确时，可提示用户尝试用原登录名和刚设置的新密码正常登录；若失败，再按需获取新验证码。不要在后台自动提交旧验证码。
+请求超时或连接中断不自动重放发送邮件或重置密码：上次操作可能已完成。重置结果不明确时，可提示用户尝试用登录邮箱和刚设置的新密码正常登录；若失败，再按需获取新验证码。不要在后台自动提交旧验证码。
 
 ### 重置成功后的本地状态
 
 - 服务端已撤销被重置账号的全部网页会话和 access/refresh 令牌族；清除本机该账号的 access_token、refresh_token、持久化认证信息与内存会话，取消其进行中的刷新/自动重连任务。
 - 防止重置前已启动的 refresh 请求迟到后重新写入旧令牌：沿用账号级互斥或会话版本号，清理时增加版本，只允许当前版本写入。已有多账号客户端仅清理目标账号，不误删其他账号登录。
-- 返回登录页，可预填已知的原登录名；不要把绑定邮箱强行覆盖成登录名。不保存新密码用于自动登录。
+- 返回登录页，可预填已知的登录邮箱。不保存新密码用于自动登录。
 - API Key 默认保持有效。api_keys_revoked=true 时清除或标记失效该账号本机保存的 Key；不要从普通找回页面申请新 Key，重新创建仍由管理员完成。
 - 密码和验证码只在本次表单内存中使用，离页或成功后清空，不写入磁盘、持久化页面状态、日志、埋点或诊断包。不要记录完整请求/响应中的凭据。
 
@@ -393,38 +460,20 @@ Response 非成功时读取 errorBody 并按服务端 error_code 分支，不能
 - 未登录可打开找回页并请求验证码；不携带模型鉴权头，不触发 token refresh。
 - "012345" 保留前导零；两次密码不一致、少于六字符均阻止提交；发送/提交按钮能防重复点击。
 - 重发倒计时在切后台、回前台和页面重建后正确；429 依据 Retry-After 展示，不循环重发。
-- 使用真实测试账号验证重置后旧密码、旧 access/refresh 均失效，新密码可通过原登录名正常登录。
+- 使用真实测试账号验证重置后旧密码、旧 access/refresh 均失效，新密码可通过登录邮箱正常登录。
 - 默认重置后原 Key 仍能调用；主动选择停用后原 Key 返回认证失败，其他账号 Key 不受影响。
 - 过期、重放及注册/绑定用途的验证码均不能重置密码；未知邮箱的发送提示保持通用。
 - 重置成功后重启应用仍处于退出状态；迟到的 refresh 不恢复旧登录，表单与日志不残留密码/验证码。
 
 更完整的服务端事务、通知和审计边界见[邮箱找回文档](password-recovery.md)。
 
-## Turnstile 人机验证更新（安卓必须接入）
-
-注册、绑定邮箱、找回密码的发送验证码接口新增必需 captcha_token。原生安卓通过 `https://accounts.hilex.me/auth/captcha?action=password_reset_code` 完成 WebView 验证，经受可信来源限制的 HelixCaptcha WebMessage 桥回传 token，随后使用原生 HTTP 提交；不能直接调用发送接口而省略 proof。注册 action=registration_code，绑定 action=email_binding_code。最终提交邮件验证码的接口不新增 proof 字段。
-
-详细的 WebView 配置、安全桥接示例、一次性 token 生命周期、错误码及验收边界见[人机验证接入](human-verification.md)。旧客户端未接入时发送邮件将返回 captcha_required；不要自动退回无验证发送。
-
-## 本地模型、OpenAI small 嵌入与旧密码改密更新
-
-本地模型已开启目录发现，首次查询即可返回；目录不占推理并发。默认 /v1/models 只列文本输出，嵌入模型需要 ?output_modalities=embeddings 或 all。新增的付费云嵌入仅为 text-embedding-3-small；POST /v1/embeddings、input 字段、默认1536维/可选dimensions，账号token+ClientID或API Key鉴权不变，沿用qwen权限。Luna与small共享云文本月token额度及全站预算，small按自己的价格结算。完整限制和实例见[嵌入与模型发现](openai-embeddings.md)。
+## 记得旧密码时改密
 
 记得旧密码时，匿名 `POST https://accounts.hilex.me/auth/password`，提交 email/current_password/new_password 即可修改，无需邮箱验证码、账号token或ClientID。新密码至少6字符，账号 ID 和显示名不变；成功后清除该账号旧access/refresh并返回登录，不自动登录；API Key保留。该接口的401表示邮箱/旧密码校验失败，不能触发刷新令牌。详细流程见[旧密码改密](password-recovery.md#记得旧密码使用邮箱和旧密码改密)。
 
 ## 网页个人账号与管理控制台
 
 个人账号页为 https://accounts.hilex.me/ ，管理控制台为 https://accounts.hilex.me/admin 。普通用户没有管理入口，管理员在个人页可进入控制台。管理页面使用同一登录会话并独立校验管理员角色。安卓等客户端继续使用原账号与模型 API，无需修改认证或模型调用路径；客户端的个人通知仍使用 `/account/notices`，不访问管理页面或 `/admin/*`。
-
-## 托管人机验证页自动启动
-
-`/auth/captcha?action=...` 首次进入自动启动一次 Turnstile 挑战，原生客户端需在加载前注册可信来源的 `HelixCaptcha` 消息桥。失败、取消、过期或超时后仅提供“重新验证”，不会自动重试；挑战成功只返回一次性 proof，不自动发送邮件。客户端返回原流程后，由用户手动发送注册、找回密码或绑定邮箱的验证码。
-
-proof 仅保存在内存，过期、取消、改邮箱、切换用途、离页或任何发送尝试后均清除，不能跨请求复用。服务端继续校验用途、域名、有效性和防重放；不会放宽验证要求。窄屏验证弹窗根据实际内容宽度使用 compact/flexible，字体放大时可纵向滚动。本次服务端静态构建和模拟浏览器测试不等同于安卓 Release 构建、真实设备 Turnstile 验证或真实邮件闭环验收。
-
-网页账号中心现已与安卓统一为“完成人机验证 → 手动发送验证码”。验证成功不自动发码；发送按钮只有当前邮箱、用途及账号对应的内存 proof 有效时可用。修改邮箱、切换流程、离开/隐藏页面、过期或任何发送尝试后清除 proof，失败后也必须重新验证；发送冷却结束不代表凭据恢复有效。
-
-安卓托管验证页现采用单张透明宿主卡片：加载、挑战、失败与重试均在同一 dialog 中。成功仍发送 `captcha-completed`；用户点击取消或触发网页 Escape 时发送 `{"type":"captcha-cancelled","action":"本次用途"}`，本次流程结束，客户端关闭验证窗口且丢弃凭据。安卓已对接取消事件；接收端仍须按可信来源、主框架和本次用途校验，忽略已结束流程的迟到消息。网页自行处理可视视口 resize/scroll、键盘遮挡及滚动，不要求原生计算卡片高度；普通账号网页验证弹窗保持原模式。
 
 ## 邮箱登录与可重复显示名
 

@@ -1,5 +1,9 @@
 // Standard short-context rates in USD nanos per token. Requests use 30-minute cache writes.
 export const LUNA_MODEL = "gpt-6-luna";
+export const CLOUD_TEXT_BODY_LIMIT = 12 * 1024 * 1024;
+export const CLOUD_TEXT_CONTEXT_WINDOW = 1050000;
+export const CLOUD_TEXT_MAX_IMAGES = 8;
+export const LONG_CONTEXT_THRESHOLD = 272000;
 export const CLOUD_TEXT_PATHS = ["/v1/chat/completions", "/v1/responses"];
 function model(name, input, cached, write, output, reasoningNone = true) {
   return { name, reasoningNone, price: { input, cached, write, output } };

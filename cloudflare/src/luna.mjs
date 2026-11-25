@@ -7,6 +7,7 @@ import { providerFailure } from "./provider-errors.mjs";
 import { Denied, day } from "./store.mjs";
 
 import {
+  CLOUD_TEXT_CONTEXT_WINDOW,
   CLOUD_TEXT_MODELS,
   CLOUD_TEXT_PATHS,
   LUNA_MODEL,
@@ -331,13 +332,16 @@ export function preparePayload(payload, responses) {
         : 1
       : payload.messages.length) *
       64;
-  const inputLimit = webSearch ? webSearchContextTokens : 250000;
+  const inputLimit =
+    CLOUD_TEXT_CONTEXT_WINDOW - max - (webSearch ? webSearchContextTokens : 0);
   if (suppliedInputBound > inputLimit)
     throw new Denied(
       413,
       "输入预留超过 " + inputLimit + " tokens，请缩短上下文或减少图片",
+      "input_estimate_too_large",
     );
-  const inputBound = webSearch ? webSearchContextTokens : suppliedInputBound;
+  const inputBound =
+    suppliedInputBound + (webSearch ? webSearchContextTokens : 0);
   // Reserve an upper bound for input plus the full requested output limit.
   return {
     payload: result,

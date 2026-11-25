@@ -1,4 +1,7 @@
-import { CLOUD_TEXT_MODELS } from "./cloud-text-models.mjs";
+import {
+  CLOUD_TEXT_BODY_LIMIT,
+  CLOUD_TEXT_MODELS,
+} from "./cloud-text-models.mjs";
 import {
   discoverableModels,
   requirePublicModel,
@@ -107,7 +110,11 @@ function quotas(b, defaults = false) {
 }
 async function body(request, limit = 16384) {
   if (Number(request.headers.get("Content-Length") || 0) > limit)
-    fail(413, "请求体过大");
+    throw new Denied(
+      413,
+      "请求体过大，上限 " + limit + " 字节",
+      "request_body_too_large",
+    );
   const reader = request.body?.getReader();
   let n = 0;
   const chunks = [];
@@ -118,7 +125,11 @@ async function body(request, limit = 16384) {
       n += value.length;
       if (n > limit) {
         await reader.cancel();
-        fail(413, "请求体过大");
+        throw new Denied(
+          413,
+          "请求体过大，上限 " + limit + " 字节",
+          "request_body_too_large",
+        );
       }
       chunks.push(value);
     }
@@ -177,7 +188,7 @@ async function internal(request, env, store, path, ctx) {
     ].includes(path)
   ) {
     const responses = path.endsWith("/responses");
-    const payload = await body(request, 4 * 1024 * 1024);
+    const payload = await body(request, CLOUD_TEXT_BODY_LIMIT);
     const authorizedLease = CLOUD_TEXT_MODELS.has(payload?.model)
       ? await requirePublicModel(
           store,

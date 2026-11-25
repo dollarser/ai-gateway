@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { lunaCost } from "../src/budgets.mjs";
 import { preparePayload, lunaCatalogForUser } from "../src/luna.mjs";
 const url = "https://example.com/image.png";
 function payload(responses, parts) {
@@ -31,13 +32,24 @@ for (const responses of [false, true]) {
       responses,
     );
     assert.ok(r.inputBound > 200000 && r.inputBound < 210000);
+    const eight = preparePayload(
+      payload(
+        responses,
+        Array.from({ length: 8 }, () => part(responses)),
+      ),
+      responses,
+    );
+    assert.ok(eight.inputBound > 800000);
     assert.throws(
       () =>
         preparePayload(
-          payload(responses, Array(3).fill(part(responses))),
+          payload(
+            responses,
+            Array.from({ length: 9 }, () => part(responses)),
+          ),
           responses,
         ),
-      /2 张/,
+      { status: 413, code: "too_many_images" },
     );
   });
   test(`Vision ${responses} rejects malformed images and unsupported sources`, () => {
@@ -77,12 +89,15 @@ for (const responses of [false, true]) {
       () =>
         preparePayload(
           payload(responses, [
-            { type: "text", text: "x".repeat(250000) },
+            {
+              type: responses ? "input_text" : "text",
+              text: "x".repeat(1000000),
+            },
             part(responses),
           ]),
           responses,
         ),
-      /250000/,
+      { status: 413, code: "input_estimate_too_large" },
     );
   });
 }
@@ -93,4 +108,13 @@ test("Luna catalog advertises image input and text output", () => {
   ).data[0];
   assert.deepEqual(model.architecture.input_modalities, ["text", "image"]);
   assert.deepEqual(model.architecture.output_modalities, ["text"]);
+});
+
+test("Long context rates apply to the entire request above the threshold", () => {
+  const usage = { input: 272000, output: 1000, cached: 1000, writes: 1000 };
+  assert.equal(lunaCost(usage), 27000000 + 10000 + 125000 + 500000);
+  assert.equal(
+    lunaCost({ ...usage, input: 272001 }),
+    (27000100 + 10000 + 125000) * 2 + 750000,
+  );
 });

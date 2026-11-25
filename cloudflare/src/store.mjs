@@ -1,8 +1,9 @@
 import { digest, token, now, passwordHash, checkPassword } from "./crypto.mjs";
 export class Denied extends Error {
-  constructor(status, detail) {
+  constructor(status, detail, code) {
     super(detail);
     this.status = status;
+    if (code !== undefined) this.code = code;
   }
 }
 export function normalizeDisplayName(value) {

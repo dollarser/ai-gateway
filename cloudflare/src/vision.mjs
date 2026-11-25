@@ -1,3 +1,4 @@
+import { CLOUD_TEXT_MAX_IMAGES } from "./cloud-text-models.mjs";
 import { Denied } from "./store.mjs";
 
 // The provider alone fetches remote images. Never fetch user URLs in the gateway.
@@ -50,8 +51,12 @@ export function visionInput(responses) {
         )
           throw new Denied(422, "图片地址须为不含凭据的 HTTPS URL");
       }
-      if (++count > 2)
-        throw new Denied(413, "每次请求最多包含 2 张图片（含历史消息）");
+      if (++count > CLOUD_TEXT_MAX_IMAGES)
+        throw new Denied(
+          413,
+          "每次请求最多包含 " + CLOUD_TEXT_MAX_IMAGES + " 张图片（含历史消息）",
+          "too_many_images",
+        );
       parts.add(v);
       return true;
     },

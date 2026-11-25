@@ -20,7 +20,11 @@ import { compressedDuration } from "./audio-duration.mjs";
 import { Store, Denied } from "./store.mjs";
 import { digest, token, now } from "./crypto.mjs";
 import { lunaCatalogForUser, proxyLuna } from "./luna.mjs";
-import { CLOUD_TEXT_MODELS, CLOUD_TEXT_PATHS } from "./cloud-text-models.mjs";
+import {
+  CLOUD_TEXT_BODY_LIMIT,
+  CLOUD_TEXT_MODELS,
+  CLOUD_TEXT_PATHS,
+} from "./cloud-text-models.mjs";
 import {
   ASR_MODEL,
   TTS_MODEL,
@@ -40,7 +44,11 @@ const json = (body, status = 200, headers = {}) =>
   });
 export async function readBytes(request, limit) {
   if (Number(request.headers.get("Content-Length")) > limit)
-    throw new Denied(413, "请求体过大");
+    throw new Denied(
+      413,
+      "请求体过大，上限 " + limit / (1024 * 1024) + " MiB",
+      "request_body_too_large",
+    );
   const reader = request.body?.getReader(),
     chunks = [];
   let size = 0;
@@ -71,7 +79,11 @@ export async function readBytes(request, limit) {
       size += r.value.length;
       if (size > limit) {
         await reader.cancel();
-        throw new Denied(413, "请求体过大");
+        throw new Denied(
+          413,
+          "请求体过大，上限 " + limit / (1024 * 1024) + " MiB",
+          "request_body_too_large",
+        );
       }
       chunks.push(r.value);
     }
@@ -585,7 +597,11 @@ export async function edgeAPI(request, env, ctx) {
       request.method === "POST"
         ? await readBytes(
             request,
-            service === "asr" ? 22 * 1024 * 1024 : 4 * 1024 * 1024,
+            service === "asr"
+              ? 22 * 1024 * 1024
+              : CLOUD_TEXT_PATHS.includes(path)
+                ? CLOUD_TEXT_BODY_LIMIT
+                : 4 * 1024 * 1024,
           )
         : null;
     const local = request.headers.get("X-Inference-Provider") === "local";
