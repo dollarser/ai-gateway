@@ -132,7 +132,7 @@ Luna 已开放标准 Chat image_url 和 Responses input_image，模型发现声�
 - SSE 复用 Responses 的文本和完成事件处理，保留最终 `response.completed.response` 中的来源与计量。搜索事件可用来更新「正在搜索」状态；收到搜索中间事件或 URL 不能当作响应已完成。内置搜索在服务端执行，安卓不要为 `web_search_call` 再执行本地搜索或回传 function 结果。
 - 实际计费次数可读取最终响应的 `tool_usage.web_search.num_requests`，字段可能为空或缺失。余额以账号快照为准，不根据工具事件个数、引用数或本地计数推导。缺少最终计量、取消或断流可能保留预留，不能自动重放。
 
-默认每账号每天 30 次，登录与名下 API Key 共用；管理员可调整，0 表示关闭。每日北京时间 00:00 重置。搜索仍受云文本月额度和全站预算限制。安卓用 `web_search_daily_limit` 与 `resets_at` 显示上限提示；账号搜索上限为 0 时提示联系管理员开启。[搜索参数和计费](luna-allowance.md#luna-内置网页搜索)
+默认每账号每天 30 次，登录与名下 API Key 共用；管理员可调整，0 表示关闭。每日北京时间 00:00 重置。搜索仍受云文本月额度和全站预算限制。安卓用 `error.code=web_search_daily_limit` 与 `X-Helix-Resets-At` 显示上限提示；账号搜索上限为 0 时提示联系管理员开启。[搜索参数和计费](luna-allowance.md#luna-内置网页搜索)
 
 ## 6. 云语音协议
 
@@ -224,7 +224,9 @@ Luna 已开放标准 Chat image_url 和 Responses input_image，模型发现声�
 
 ## 10. 错误处理与诊断
 
-解析HTTP状态、JSON的 `error_code` / `detail` / `retryable` 和响应头 `Retry-After` / `X-Request-ID`；未知字段或非JSON错误用通用提示兜底。请求ID有时只在响应头，不假定正文一定包含。流式开始后还须解析错误事件。
+OpenAI 兼容推理接口统一使用 OpenAI 的 `{"error":{"message":"…","type":"…","param":null,"code":"…"}}`。客户端在官方 API 和 Helix 上使用同一解析器，并以 HTTP 状态及 `error.message` 兜底。账号接口仍使用顶层 `error_code` 和 `detail`。
+
+`X-Request-ID` 用于关联当前入口；网关收到上游请求 ID 时会在错误响应附上 `X-OpenAI-Request-ID`。网关自身拒绝可通过 `X-Helix-Error-Code` 区分。有 `Retry-After` 时遵循响应头。流式开始后继续检查错误事件和完成事件。上游有标准 JSON 错误时保留 HTTP 状态和标准字段；与网关自身上游凭据有关的拒绝使用服务错误响应。
 
 | 错误类型/代码 | 客户端动作 |
 |---|---|
@@ -233,7 +235,7 @@ Luna 已开放标准 Chat image_url 和 Responses input_image，模型发现声�
 | `413 request_body_too_large` | 缩小完整 JSON，优先压缩内联图片，或改用可访问的 HTTPS 图片 URL |
 | `413 too_many_images` | 减少随请求携带的历史图片或拆分图片任务 |
 | `413 input_estimate_too_large` | 精简历史、减少图片或降低请求的最大输出量 |
-| `429 web_search_daily_limit` | 显示搜索额度限制及正文 `resets_at`；不触发令牌刷新，也不自动重试 |
+| `429 web_search_daily_limit` | 显示搜索额度限制及响应头 `X-Helix-Resets-At`；不触发令牌刷新，也不自动重试 |
 | 403、password_change_required | 展示封禁、权限或先改密提示，不自动重试 |
 | email_verification_required / email_verification_invalid | 输入六位码或重新获取，保留用户输入的邮箱 |
 | email_rate_limited | 至少遵守Retry-After，不自动循环发信 |
@@ -263,9 +265,11 @@ Luna 已开放标准 Chat image_url 和 Responses input_image，模型发现声�
 
 常规日志不记录聊天正文、音频、验证码、密码或完整令牌。设备ID仅用于诊断，不参与认证和额度。诊断包范围见 [网络诊断](network-diagnostics.md)。
 
-账号并发在对话、ASR、TTS 间共享。HTTP 429 的 `error_code=account_concurrency_limited` 表示同时进行的请求过多，不代表日额度耗尽；响应包含同值 `X-Error-Code`、`request_id` / `X-Request-ID`、`retryable:true` 和 `Retry-After:1`。Retry-After 只是最短重试间隔，不保证 1 秒后有空位。客户端应保留错误码，取消不再使用的对话请求，并按需提示重试，避免无上限自动重试。
+账号并发在对话、ASR、TTS 间共享。HTTP 429 的 `error.code=account_concurrency_limited` 表示同时进行的请求过多，不代表日额度耗尽；响应包含`X-Request-ID` 和 `Retry-After: 1`。Retry-After 只是最短重试间隔，不保证 1 秒后有空位。客户端应保留错误码，取消不再使用的对话请求，并按需提示重试，避免无上限自动重试。
 
 收到完整 JSON usage，或 SSE 的完成标记与 usage 后，服务端即释放名额；客户端取消也释放名额。未知的提供方费用仍占用额度预留，与并发名额独立。
+
+Anthropic Messages 尚未配置上游。`/v1/messages` 返回 Anthropic 格式的 404，响应头 `X-Helix-Error-Code: anthropic_not_configured` 表明请求由网关结束。
 
 ### 客户端解析样例
 
@@ -274,8 +278,9 @@ Luna 已开放标准 Chat image_url 和 Responses input_image，模型发现声�
 ```http
 HTTP/1.1 429 Too Many Requests
 Content-Type: application/json
+X-Helix-Resets-At: 2026-11-24T16:00:00.000Z
 
-{"error_code":"web_search_daily_limit","resets_at":"2026-11-24T16:00:00.000Z"}
+{"error":{"message":"网页搜索日额度已用完","type":"rate_limit_error","param":null,"code":"web_search_daily_limit"}}
 ```
 
 ```http
@@ -285,7 +290,7 @@ X-Error-Code: account_concurrency_limited
 X-Request-ID: example-request
 Retry-After: 1
 
-{"error_code":"account_concurrency_limited","detail":"账号并发已满","retryable":true,"request_id":"example-request"}
+{"error":{"message":"账号并发已满","type":"rate_limit_error","param":null,"code":"account_concurrency_limited"}}
 ```
 
 Responses 已输出部分内容，随后收到错误事件：
@@ -293,7 +298,7 @@ Responses 已输出部分内容，随后收到错误事件：
 ```text
 data: {"type":"response.output_text.delta","delta":"部分文本"}
 
-data: {"type":"error","error":{"code":"provider_stream_interrupted","message":"模型响应未完整结束，已保留待核对额度","retryable":false}}
+data: {"type":"error","sequence_number":1,"code":"provider_stream_interrupted","message":"模型响应未完整结束，已保留待核对额度","param":null}
 
 ```
 

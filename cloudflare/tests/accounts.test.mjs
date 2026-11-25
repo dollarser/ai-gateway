@@ -164,7 +164,8 @@ async function provider(request) {
         error: {
           code: "unsupported_value",
           param: "reasoning_effort",
-          message: "private tool contents",
+          message: "Unsupported reasoning effort.",
+          type: "invalid_request_error",
         },
       },
       { status: 400, headers: { "x-request-id": "req_tools_test" } },
@@ -1586,16 +1587,34 @@ test("Cloud chat returns distinct 413 codes and records the validation cause", a
       messages: [{ role: "user", content }],
     });
     assert.equal(result.status, 413);
-    assert.equal(result.body.error_code, code);
+    assert.equal(result.body.error.code, code);
     assert.equal(result.headers.get("X-Error-Code"), code);
-    assert.equal(result.body.retryable, false);
+    assert.equal(result.headers.get("X-Helix-Error-Code"), code);
+    assert.deepEqual(Object.keys(result.body), ["error"]);
+    assert.equal(result.body.error.type, "invalid_request_error");
     const row = await new Store(db).first(
       "SELECT error_code, upstream_attempted FROM requests WHERE request_id=?",
-      result.body.request_id,
+      result.headers.get("X-Request-ID"),
     );
     assert.equal(row?.error_code, code);
     assert.equal(row.upstream_attempted, 0);
   }
+});
+test("Unconfigured Anthropic Messages returns a native Anthropic error", async () => {
+  const response = await apiCall("/v1/messages", "unused", {});
+  assert.equal(response.status, 404);
+  assert.deepEqual(response.body, {
+    type: "error",
+    error: {
+      type: "not_found_error",
+      message: "Anthropic Messages is not configured.",
+    },
+    request_id: response.headers.get("request-id"),
+  });
+  assert.equal(
+    response.headers.get("X-Helix-Error-Code"),
+    "anthropic_not_configured",
+  );
 });
 test("Default model edits only affect new accounts; account grants cover local voice aliases", async () => {
   const { uid, key } = await lunaUser("public-model-switch");
@@ -1642,10 +1661,12 @@ test("Default model edits only affect new accounts; account grants cover local v
     const ws = await apiCall("/ws/tts", key, undefined, {
       Upgrade: "websocket",
     });
-    for (const response of [chat, speech, ws]) {
+    for (const response of [chat, speech]) {
       assert.equal(response.status, 403);
-      assert.equal(response.body.error_code, "model_not_allowed");
+      assert.equal(response.body.error.code, "model_not_allowed");
     }
+    assert.equal(ws.status, 403);
+    assert.equal(ws.body.error_code, "model_not_allowed");
     assert.deepEqual({ providerCalls, originCalls }, before);
     assert.equal((await update("gpt-6-luna", true)).status, 200);
     assert.deepEqual((await apiCall("/v1/models", key)).body.data, []);
@@ -1715,11 +1736,11 @@ test("User allowlists bound to the account filter model discovery and account-to
       );
     const before = providerCalls;
     assert.equal(
-      (await chat(a.key, astra)).body.error_code,
+      (await chat(a.key, astra)).body.error.code,
       "model_not_allowed",
     );
     assert.equal(
-      (await chat(login.body.access_token, astra, client)).body.error_code,
+      (await chat(login.body.access_token, astra, client)).body.error.code,
       "model_not_allowed",
     );
     assert.equal(providerCalls, before);
@@ -1792,7 +1813,7 @@ test("Each new cloud language model is closed by default and can be independentl
     const payload = { model: id, messages: [{ role: "user", content: "hi" }] };
     const endpoint = "/v1/chat/completions";
     const blocked = await apiCall(endpoint, key, payload);
-    assert.equal(blocked.body.error_code, "model_not_allowed");
+    assert.equal(blocked.body.error.code, "model_not_allowed");
     try {
       assert.equal((await update([id])).status, 200);
       const list = await apiCall("/v1/models", key);
@@ -1868,8 +1889,10 @@ test("Luna Responses web search preserves citations, meters billed calls and ato
     "url_citation",
   );
   const blocked = calls.find((result) => result.status === 429);
-  assert.equal(blocked.body.error_code, "web_search_daily_limit");
-  assert.ok(blocked.body.resets_at.endsWith("T16:00:00.000Z"));
+  assert.equal(blocked.body.error.code, "web_search_daily_limit");
+  assert.ok(
+    blocked.headers.get("X-Helix-Resets-At").endsWith("T16:00:00.000Z"),
+  );
   const ledger = await store.first(
     "SELECT * FROM luna_usage WHERE user_id=?",
     uid,
@@ -1906,7 +1929,7 @@ test("Luna Responses web search preserves citations, meters billed calls and ato
     assert.equal(pending.web_search_calls, 1);
     assert.equal(pending.charged_cost_nanos, pending.reserved_cost_nanos);
     assert.equal(
-      (await apiCall("/v1/responses", key, search)).body.error_code,
+      (await apiCall("/v1/responses", key, search)).body.error.code,
       "web_search_daily_limit",
     );
     const details = await call(
@@ -2192,7 +2215,7 @@ test("edge TTS defaults to PCM, supports streaming, rejects other formats before
       for (const stream of [false, true]) {
         const r = await run({ response_format: fmt, stream });
         assert.equal(r.status, 422);
-        assert.equal((await r.json()).error_code, "unsupported_audio_format");
+        assert.equal((await r.json()).error.code, "unsupported_audio_format");
       }
     await Promise.all(jobs);
     assert.equal(originCalls, before);
@@ -2254,13 +2277,21 @@ test("Edge Luna tools normalize arguments and retain safe provider diagnostics w
   try {
     const r = await apiCall("/v1/chat/completions", key, payload);
     assert.equal(r.status, 400);
-    assert.equal(r.body.upstream_error_param, "reasoning_effort");
-    assert.ok(!JSON.stringify(r.body).includes("private tool contents"));
+    assert.deepEqual(r.body, {
+      error: {
+        message: "Unsupported reasoning effort.",
+        type: "invalid_request_error",
+        param: "reasoning_effort",
+        code: "unsupported_value",
+      },
+    });
+    assert.equal(r.headers.get("X-OpenAI-Request-ID"), "req_tools_test");
+    assert.equal(r.headers.get("X-Helix-Error-Code"), null);
     const row = await db
       .prepare(
         "SELECT r.*,l.charged_tokens,l.settled FROM requests r JOIN luna_usage l ON l.lease=r.id WHERE r.request_id=?",
       )
-      .bind(r.body.request_id)
+      .bind(r.headers.get("X-Request-ID"))
       .first();
     assert.equal(row.upstream_error_code, "unsupported_value");
     assert.equal(row.upstream_error_param, "reasoning_effort");
@@ -2284,7 +2315,14 @@ test("OpenAI 403 records reference probe and provider identifiers without changi
       return Response.json({ ip: "203.0.113.42" });
     }
     return Response.json(
-      { error: { code: "unsupported_country_region_territory" } },
+      {
+        error: {
+          code: "unsupported_country_region_territory",
+          type: "permission_error",
+          message: "Unsupported country, region or territory",
+          param: null,
+        },
+      },
       {
         status: 403,
         headers: { "x-request-id": "req_geo", "cf-ray": "abc-NRT" },
@@ -2312,19 +2350,16 @@ test("OpenAI 403 records reference probe and provider identifiers without changi
       { DB: db, OPENAI_API_KEY: "test-key" },
       { waitUntil: (p) => jobs.push(p) },
     );
-    assert.equal(r.status, 502);
+    assert.equal(r.status, 403);
     const error = await r.json();
     await Promise.all(jobs);
-    assert.equal(
-      error.upstream_error_code,
-      "unsupported_country_region_territory",
-    );
+    assert.equal(error.error.code, "unsupported_country_region_territory");
     assert.equal(error.egress_probe_ip, undefined);
     const row = await db
       .prepare(
         "SELECT r.*,l.charged_tokens,l.settled FROM requests r JOIN luna_usage l ON l.lease=r.id WHERE r.request_id=?",
       )
-      .bind(error.request_id)
+      .bind(r.headers.get("X-Request-ID"))
       .first();
     assert.equal(row.ingress_colo, "NRT");
     assert.equal(row.client_country, "JP");
@@ -2423,8 +2458,8 @@ test("Global budget controls are admin-only, atomic across accounts, and zero pr
       messages: [{ role: "user", content: "hi" }],
     });
     assert.equal(r.status, 429);
-    assert.equal(r.body.error_code, "global_budget_exhausted");
-    assert.equal(r.body.retryable, false);
+    assert.equal(r.body.error.code, "global_budget_exhausted");
+    assert.equal(r.headers.get("Retry-After"), null);
     assert.equal(providerCalls, before);
     await call(
       "/admin/global-limits",
@@ -4121,15 +4156,14 @@ test("Audio 429 distinguishes shared account concurrency from daily quota and re
     input: "hello",
   });
   assert.equal(denied.status, 429);
-  assert.equal(denied.body.error_code, "account_concurrency_limited");
-  assert.match(denied.body.detail, /并发/);
-  assert.equal(denied.body.retryable, true);
+  assert.equal(denied.body.error.code, "account_concurrency_limited");
+  assert.match(denied.body.error.message, /并发/);
   assert.equal(
     denied.headers.get("X-Error-Code"),
     "account_concurrency_limited",
   );
   assert.equal(denied.headers.get("Retry-After"), "1");
-  assert.equal(denied.headers.get("X-Request-ID"), denied.body.request_id);
+  assert.ok(denied.headers.get("X-Request-ID"));
   assert.equal(providerCalls, before);
   // Model discovery must remain usable even while the two inference slots are held.
   assert.equal((await apiCall("/v1/models", key)).status, 200);
@@ -5378,7 +5412,7 @@ test("Concurrent cloud requests cannot overspend a one-token personal balance", 
   );
   assert.deepEqual(replies.map((r) => r.status).sort(), [200, 429, 429, 429]);
   for (const r of replies.filter((r) => r.status === 429))
-    assert.equal(r.body.error_code, "account_luna_budget_exhausted");
+    assert.equal(r.body.error.code, "account_luna_budget_exhausted");
   const row = await db
     .prepare(
       "SELECT used_tokens,reserved_tokens,requests FROM luna_user_month_totals WHERE user_id=?",

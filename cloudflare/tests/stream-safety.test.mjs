@@ -27,7 +27,7 @@ const req = () =>
   new Request("https://worker/internal/openai/chat-completions", {
     headers: { "X-Gateway-Lease": "lease" },
   });
-test("Premature SSE EOF and explicit provider failures reject the stream and retain reservation", async () => {
+test("Premature SSE EOF reports interruption; explicit provider failures pass through with reservation retained", async () => {
   for (const data of [
     'data: {"choices":[]}\n\n',
     'data: {"error":{"code":"server_error"}}\n\n',
@@ -42,7 +42,9 @@ test("Premature SSE EOF and explicit provider failures reject the stream and ret
       false,
       async () => new Response(data),
     );
-    assert.match(await r.text(), /provider_stream_interrupted/);
+    const actual = await r.text();
+    if (data.includes("server_error")) assert.equal(actual, data);
+    else assert.match(actual, /provider_stream_interrupted/);
     assert.equal(db.writes.length, 1);
   }
 });

@@ -46,7 +46,9 @@ def require_success(response):
         data = {}
     finally:
         response.close()
-    code = data.get("error_code", "request_failed")
+    native = data.get("error")
+    native = native if isinstance(native, dict) else {}
+    code = native.get("code", data.get("error_code", "request_failed"))
     if not isinstance(code, str) or len(code) > 128:
         code = "request_failed"
     message = MESSAGES.get(
@@ -55,6 +57,8 @@ def require_success(response):
         if response.status_code == 401
         else "网关请求失败，请根据请求 ID 联系管理员。",
     )
+    if code not in MESSAGES and isinstance(native.get("message"), str):
+        message = native["message"]
     request_id = response.headers.get("X-Request-ID")
     if request_id and (
         len(request_id) > 128 or not all(c.isalnum() or c in "_.:-" for c in request_id)
@@ -66,6 +70,6 @@ def require_success(response):
         message,
         response.status_code,
         request_id,
-        data.get("retryable") is True,
+        data.get("retryable") is True or bool(retry),
         int(retry) if retry.isdigit() and len(retry) < 6 else None,
     )

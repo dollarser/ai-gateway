@@ -45,7 +45,7 @@
 
 ### 搜索用量与核对
 
-个人用量和管理员账号详情返回 `web_search` 对象，包含 `day`、`timezone`、`limit`、`used`、`reserved`、`remaining`、`resets_at`。网页搜索日额拒绝返回 `429 web_search_daily_limit` 和 ISO 8601 格式的 `resets_at`。已用是已结算次数，剩余额度同时扣除预留次数。
+个人用量和管理员账号详情返回 `web_search` 对象，包含 `day`、`timezone`、`limit`、`used`、`reserved`、`remaining`、`resets_at`。网页搜索日额拒绝返回 HTTP 429，`error.code=web_search_daily_limit`，并在 `X-Helix-Resets-At` 头提供 ISO 8601 重置时间。已用是已结算次数，剩余额度同时扣除预留次数。
 
 核对涉及搜索的请求时，必须同时提交 `web_search_calls`、`expected_web_search_calls`、实际和原金额及 token 用量。搜索次数、token、金额与审计记录在同一事务内更新。确认未调用时将实际搜索次数填 0，可释放当日预留。
 

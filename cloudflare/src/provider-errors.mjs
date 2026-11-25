@@ -54,27 +54,52 @@ export function providerEventError(value, status = 502, kind = "request") {
   });
   return e;
 }
-export async function providerFailure(response, kind) {
-  let value = null;
+export async function readErrorBody(response) {
   try {
     const reader = response.body?.getReader();
-    let text = "",
-      n = 0;
-    if (reader)
-      try {
-        while (true) {
-          const r = await reader.read();
-          if (r.done) break;
-          n += r.value.length;
-          if (n > 16384) break;
-          text += new TextDecoder().decode(r.value);
-        }
-      } finally {
-        await reader.cancel();
+    if (!reader) return null;
+    const decoder = new TextDecoder();
+    let text = "";
+    let size = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) return JSON.parse(text + decoder.decode());
+        size += value.length;
+        if (size > 65536) return null;
+        text += decoder.decode(value, { stream: true });
       }
-    value = JSON.parse(text)?.error;
-  } catch {}
+    } finally {
+      await reader.cancel().catch(() => {});
+    }
+  } catch {
+    return null;
+  }
+}
+
+export function nativeError(value) {
+  if (typeof value?.message !== "string" || typeof value.type !== "string")
+    return null;
+  const { message, type, code = null, param = null } = value;
+  if (
+    ![code, param].every((field) => field === null || typeof field === "string")
+  )
+    return null;
+  return { message, type, param, code };
+}
+
+export async function providerFailure(response, kind) {
+  const value = (await readErrorBody(response))?.error;
   const e = providerEventError(value, response.status, kind);
+  // The upstream credential belongs to the gateway and may be echoed by the provider.
+  if (
+    e.code !== "provider_auth_failed" &&
+    (response.status !== 403 || e.code === "provider_region_restricted")
+  ) {
+    e.native_error = nativeError(value);
+    if (e.native_error)
+      e.native_retry_after = response.headers.get("retry-after");
+  }
   e.validation_hint = schemaValidationHint(value?.message);
   e.upstream_request_id = safe(
     response.headers?.get("x-openai-request-id") ??

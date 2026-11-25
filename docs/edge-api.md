@@ -72,7 +72,7 @@ Worker Route 的 fetch 到相同路由域名进入原源站，不再次运行此
 
 ## 合成仅输出 PCM
 
-`POST /v1/audio/speech` 的 `response_format` 缺省或设为 `pcm`，`stream` 缺省为 false，设为 true 时边生成边返回。显式请求 mp3/wav/opus/flac 等格式返回 422、error_code=unsupported_audio_format，在上游调用前拒绝，不预留或扣减模型额度。
+`POST /v1/audio/speech` 的 `response_format` 缺省或设为 `pcm`，`stream` 缺省为 false，设为 true 时边生成边返回。显式请求 mp3/wav/opus/flac 等格式返回 422、`error.code=unsupported_audio_format`，在上游调用前拒绝，不预留或扣减模型额度。
 
 响应 `Content-Type: audio/pcm`、`X-Audio-Sample-Rate: 24000`；数据为 24kHz、signed 16-bit little-endian、单声道原始 PCM，没有 WAV 文件头，也不是 SSE/JSON。HTTP chunk 不保证对齐样本，客户端应缓存偶数个字节后播放。若需 WAV，在客户端添加文件头；若需压缩存储，在客户端编码。合成全程 Worker → OpenAI，不调用本机编码器，旧私有 encode/stream-encode 路由已删除。
 

@@ -11,6 +11,7 @@ import {
   EMBEDDING_MODELS,
   proxyEmbedding,
 } from "./embeddings.mjs";
+import { nativeError, readErrorBody } from "./provider-errors.mjs";
 import { logInferenceFailure } from "./worker-logs.mjs";
 import {
   ingressDiagnostics,
@@ -42,6 +43,22 @@ const json = (body, status = 200, headers = {}) =>
       ...headers,
     },
   });
+function inferenceError(status, message, code) {
+  const type =
+    status === 401
+      ? "authentication_error"
+      : status === 403
+        ? "permission_error"
+        : status === 404
+          ? "not_found_error"
+          : status === 429
+            ? "rate_limit_error"
+            : status >= 500
+              ? "server_error"
+              : "invalid_request_error";
+  return { error: { message, type, param: null, code } };
+}
+
 export async function readBytes(request, limit) {
   if (Number(request.headers.get("Content-Length")) > limit)
     throw new Denied(
@@ -230,6 +247,27 @@ async function track(response, store, lease, trace, ctx, start) {
     trace.error_code =
       response.headers.get("X-Error-Code") ?? "upstream_rejected";
   }
+  if (response.status >= 400 && trace.path.startsWith("/v1/")) {
+    const value = await readErrorBody(response);
+    const body = nativeError(value?.error);
+    const headers = new Headers(response.headers);
+    headers.delete("Content-Length");
+    headers.delete("Content-Encoding");
+    headers.set("Content-Type", "application/json; charset=utf-8");
+    response = json(
+      body
+        ? { error: body }
+        : inferenceError(
+            response.status,
+            typeof value?.detail === "string"
+              ? value.detail
+              : "推理服务无法处理请求",
+            trace.error_code,
+          ),
+      response.status,
+      headers,
+    );
+  }
   const headers = new Headers(response.headers);
   for (const k of [...headers.keys()])
     if (k.toLowerCase().startsWith("x-edge-")) headers.delete(k);
@@ -258,7 +296,10 @@ async function track(response, store, lease, trace, ctx, start) {
     ),
     isJSON = (headers.get("Content-Type") ?? "").includes("application/json");
   const accept = (obj) => {
-    if (obj?.error || obj?.type === "error") {
+    if (
+      obj?.error ||
+      ["error", "response.failed", "response.incomplete"].includes(obj?.type)
+    ) {
       trace.stream_failed = true;
       trace.failure_stage = "response_stream";
       trace.error_code = "provider_stream_interrupted";
@@ -431,6 +472,19 @@ export async function edgeAPI(request, env, ctx) {
     failure_stage: "authentication",
   };
   try {
+    if (path === "/v1/messages" || path === "/v1/messages/count_tokens")
+      return json(
+        {
+          type: "error",
+          error: {
+            type: "not_found_error",
+            message: "Anthropic Messages is not configured.",
+          },
+          request_id: id,
+        },
+        404,
+        { "request-id": id, "X-Helix-Error-Code": "anthropic_not_configured" },
+      );
     if (path === "/healthz" && request.method === "GET") {
       await store.first("SELECT 1");
       return json(
@@ -871,47 +925,61 @@ export async function edgeAPI(request, env, ctx) {
         : status < 500
           ? "request_rejected"
           : "edge_unavailable");
+    const isNativeAPI = path.startsWith("/v1/");
+    const original = isNativeAPI ? e.native_error : null;
+    if (original) status = e.upstream_status;
     trace.duration_ms = Math.round(performance.now() - start);
     logInferenceFailure(trace, e, status);
     if (lease) await store.finish({ lease, status, size: 0, trace });
     if (lease) logInferenceTiming(trace, status, start);
+    const message = quota
+      ? quotaMessages[quota]
+      : e instanceof Denied
+        ? e.message
+        : status === 429
+          ? "账号请求或模型额度已用尽"
+          : status === 403
+            ? "账号或密钥权限已变更"
+            : "服务暂不可用";
     return json(
-      {
-        detail: quota
-          ? quotaMessages[quota]
-          : e instanceof Denied
-            ? e.message
-            : status === 429
-              ? "账号请求或模型额度已用尽"
-              : status === 403
-                ? "账号或密钥权限已变更"
-                : "服务暂不可用",
-        request_id: id,
-        error_code: trace.error_code,
-        retryable: e.retryable === true,
-        ...(e.resets_at && { resets_at: e.resets_at }),
-        ...(trace.upstream_error_code
-          ? { upstream_error_code: trace.upstream_error_code }
-          : {}),
-        ...(trace.upstream_error_param
-          ? { upstream_error_param: trace.upstream_error_param }
-          : {}),
-      },
+      isNativeAPI
+        ? original
+          ? { error: original }
+          : inferenceError(status, message, trace.error_code)
+        : {
+            detail: message,
+            request_id: id,
+            error_code: trace.error_code,
+            retryable: e.retryable === true,
+          },
       status,
       {
         "X-Request-ID": id,
         "X-Inference-Execution": "edge",
-        "X-Error-Code": trace.error_code,
+        "X-Error-Code": original?.code ?? trace.error_code,
+        ...(isNativeAPI && !original
+          ? { "X-Helix-Error-Code": trace.error_code }
+          : {}),
+        ...(isNativeAPI && e.resets_at
+          ? { "X-Helix-Resets-At": e.resets_at }
+          : {}),
+        ...(isNativeAPI && e.upstream_request_id
+          ? { "X-OpenAI-Request-ID": e.upstream_request_id }
+          : {}),
         ...(trace.compatibility
           ? { "X-Inference-Compatibility": trace.compatibility }
           : {}),
-        ...(status === 429 && e.retryable !== false
-          ? {
-              "Retry-After": String(
-                e.retry_after ?? (quota === "quota_concurrency" ? 1 : 60),
-              ),
-            }
-          : {}),
+        ...(original
+          ? e.native_retry_after
+            ? { "Retry-After": e.native_retry_after }
+            : {}
+          : status === 429 && e.retryable !== false
+            ? {
+                "Retry-After": String(
+                  e.retry_after ?? (quota === "quota_concurrency" ? 1 : 60),
+                ),
+              }
+            : {}),
       },
     );
   }

@@ -521,7 +521,9 @@ export async function proxyLuna(
     cost = null,
     id = null,
     terminal = false,
-    done = false;
+    done = false,
+    providerFailed = false,
+    sequence = -1;
   function accept(line) {
     if (!line.startsWith("data:")) return;
     const raw = line.slice(5).trim();
@@ -535,11 +537,13 @@ export async function proxyLuna(
     } catch {
       return;
     }
+    if (Number.isSafeInteger(event.sequence_number))
+      sequence = Math.max(sequence, event.sequence_number);
     if (
       event.error ||
       ["error", "response.failed", "response.incomplete"].includes(event.type)
     )
-      throw new Error("Provider stream failed");
+      providerFailed = true;
     const value = responses ? event.response : event;
     if (value?.id) id = value.id;
     const parsed = responseCost(value);
@@ -558,10 +562,10 @@ export async function proxyLuna(
         const r = await reader.read();
         if (r.done) {
           if (pending.trim()) accept(pending);
-          if (!terminal || (!cost && !p.webSearch))
+          if (!providerFailed && (!terminal || (!cost && !p.webSearch)))
             throw new Error("Provider stream ended before completion");
           done = true;
-          await settle(cost, id);
+          await settle(providerFailed && !terminal ? null : cost, id);
           controller.close();
           return;
         }
@@ -578,10 +582,16 @@ export async function proxyLuna(
         try {
           await settle(terminal ? cost : null, id);
         } finally {
+          const fields = {
+            code: "provider_stream_interrupted",
+            message: "模型响应未完整结束，已保留待核对额度",
+            param: null,
+          };
+          const event = responses
+            ? { type: "error", sequence_number: sequence + 1, ...fields }
+            : { error: { ...fields, type: "server_error" } };
           controller.enqueue(
-            new TextEncoder().encode(
-              'data: {"type":"error","error":{"code":"provider_stream_interrupted","message":"模型响应未完整结束，已保留待核对额度","retryable":false}}\n\n',
-            ),
+            new TextEncoder().encode("data: " + JSON.stringify(event) + "\n\n"),
           );
           controller.close();
         }
