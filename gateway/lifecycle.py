@@ -1,6 +1,5 @@
-"""Own inference HTTP clients and either a local store or Worker account adapter."""
+"""Own inference HTTP clients and the Worker account adapter."""
 
-import fcntl
 import json
 import os
 import threading
@@ -14,29 +13,10 @@ async def lifespan(app):
     settings = app.state.settings
     os.umask(0o077)
     with ExitStack() as stack:
-        if settings.accounts_worker_url:
-            store = RemoteStore(
-                settings.accounts_worker_url, settings.accounts_worker_secret
-            )
-            stack.callback(store.close)
-        else:
-            from legacy.accounts.store import Store
-
-            settings.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-            lock = stack.enter_context((settings.data_dir / "instance.lock").open("a"))
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            store = Store(settings.data_dir / "accounts.db")
-            stack.callback(store.db.close)
-            if not store.users():
-                bootstrap = json.loads(
-                    (settings.data_dir / "bootstrap-admin.json").read_text()
-                )
-                store.create_user(
-                    bootstrap["username"],
-                    bootstrap["password"],
-                    role="admin",
-                    must_change=True,
-                )
+        store = RemoteStore(
+            settings.accounts_worker_url, settings.accounts_worker_secret
+        )
+        stack.callback(store.close)
         app.state.store = store
         app.state.llm_slots = threading.BoundedSemaphore(settings.llm_concurrency)
         app.state.llm_model_max_len = 0

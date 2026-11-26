@@ -58,22 +58,9 @@ npm run deploy
 
 内部密钥至少 32 字符。若用不同账号或域名，确认该域名属于对应账号；已有冲突 DNS 记录需先处理。API 域名的隧道路由另外配置，见 [隧道文档](tunnels.md)。
 
-## 从 SQLite 导入新空库
+## 账号数据库
 
-暂停旧账号与 API 网关写入，等待请求结束。导出文件包含敏感凭证摘要，独占创建、权限 600，仅导入没有用户流量的新库：
-
-```bash
-cd /home/lingzhang/workspace/ai-gateway
-.venv-accounts/bin/python -m scripts.migrations.export_d1 \
-  --source accounts/data/accounts.db \
-  --output cloudflare/hilex-accounts.migration.sql
-cd cloudflare
-npx wrangler d1 execute DB --remote --file hilex-accounts.migration.sql
-```
-
-本次上述文件已存在且已导入，不重复执行。迁移保留用户 ID、scrypt 密码哈希、API Key、登录凭证和用量；快照中未完成的请求结算为 503。导入期间重建配额 trigger，避免历史请求被当前配额拦截。
-
-本机 SQLite 现只作为迁移前快照。运行 `scripts/ops/accounts-admin.py` 修改的是本地旧库，不会修改 D1；线上账号通过 Worker 管理界面操作。回滚必须先处理 D1 在切换后的新写入，不能直接恢复过期 SQLite。
+生产账号直接使用 D1。发布前使用部署流程生成私有备份并校验恢复，线上账号在 Worker 控制台管理。
 
 ## 本机网关配置
 

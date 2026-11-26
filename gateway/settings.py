@@ -24,11 +24,6 @@ def upstream(name, default):
 
 @dataclass(frozen=True)
 class Settings:
-    data_dir: Path = field(
-        default_factory=lambda: Path(
-            os.environ.get("ACCOUNTS_DATA", ROOT / "accounts/data")
-        )
-    )
     client_ids_file: Path = field(
         default_factory=lambda: Path(
             os.environ.get("GATEWAY_CLIENT_IDS_FILE", ROOT / "deploy/client_ids.json")

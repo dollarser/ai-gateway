@@ -4,7 +4,7 @@
 
 ## 1. 确认数据源
 
-生产账号使用 D1。本机 `accounts/data/accounts.db` 是离线兼容或迁移用 SQLite，不代表当前生产状态。先确认授权账号、数据库和绑定：
+生产账号使用 D1。先确认授权账号、数据库和绑定：
 
 ```bash
 cd /home/lingzhang/workspace/ai-gateway/cloudflare

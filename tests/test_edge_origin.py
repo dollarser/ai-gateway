@@ -3,18 +3,12 @@
 import asyncio
 from dataclasses import replace
 import httpx
-import test_accounts
+from gateway_http_fixture import GatewayHTTPFixture
 import unittest
 from test_gateway_audio import wav_bytes
 
 
-class EdgeOriginTests(unittest.TestCase):
-    setUp = test_accounts.HTTPTests.setUp
-    tearDown = test_accounts.HTTPTests.tearDown
-    login = test_accounts.HTTPTests.login
-    key = test_accounts.HTTPTests.key
-    post = test_accounts.HTTPTests.post
-
+class EdgeOriginTests(GatewayHTTPFixture, unittest.TestCase):
     def set_edge(self):
         self.app.state.settings = replace(
             self.app.state.settings,
@@ -56,9 +50,7 @@ class EdgeOriginTests(unittest.TestCase):
         r = self.call("/v1/models", headers)
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.headers["x-request-id"], "edge-test-request")
-        self.assertEqual(
-            self.db.db.execute("SELECT count(*) FROM requests").fetchone()[0], 0
-        )
+        self.assertEqual(len(self.requests), 0)
 
     def test_codec_is_private_and_decodes_without_provider_or_auth_rpc(self):
         self.set_edge()
@@ -72,9 +64,7 @@ class EdgeOriginTests(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.content[:4], b"RIFF")
-        self.assertEqual(
-            self.db.db.execute("SELECT count(*) FROM requests").fetchone()[0], 0
-        )
+        self.assertEqual(len(self.requests), 0)
 
     def test_removed_encoder_routes_return_not_found(self):
         self.set_edge()

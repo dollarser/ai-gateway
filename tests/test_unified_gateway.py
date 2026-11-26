@@ -2,19 +2,12 @@ import asyncio
 import json
 import unittest
 import httpx
-from legacy.accounts.store import Denied
 from gateway.auth import is_local_listener
 from gateway.usage import UsageTracker
-import test_accounts as baseline
+from gateway_http_fixture import GatewayHTTPFixture
 
 
-class UnifiedGatewayTests(unittest.TestCase):
-    setUp = baseline.HTTPTests.setUp
-    tearDown = baseline.HTTPTests.tearDown
-    login = baseline.HTTPTests.login
-    key = baseline.HTTPTests.key
-    post = baseline.HTTPTests.post
-
+class UnifiedGatewayTests(GatewayHTTPFixture, unittest.TestCase):
     def test_api_key_header_alone_and_conflicting_credentials(self):
         key = self.key(["qwen"])["key"]
         url = "https://api.hilex.me/v1/models"
@@ -53,7 +46,7 @@ class UnifiedGatewayTests(unittest.TestCase):
                     (await c.get("http://127.0.0.1:18901/v1/models")).status_code, 200
                 )
                 self.assertEqual(
-                    (await c.get("http://127.0.0.1:18901/admin/users")).status_code, 401
+                    (await c.get("http://127.0.0.1:18901/admin/users")).status_code, 404
                 )
                 self.assertEqual(
                     (
@@ -74,9 +67,7 @@ class UnifiedGatewayTests(unittest.TestCase):
                 self.assertNotEqual(r.status_code, 200)
 
         asyncio.run(run())
-        self.assertEqual(
-            self.db.db.execute("SELECT count(*) FROM requests").fetchone()[0], 0
-        )
+        self.assertEqual(len(self.requests), 0)
 
     def test_local_peer_must_be_loopback(self):
         self.assertFalse(
@@ -159,7 +150,7 @@ class UnifiedGatewayTests(unittest.TestCase):
             )
             self.assertEqual(seen[0]["max_tokens"], 8192)
             self.assertEqual(seen[1]["max_tokens"], 680)
-            row = self.db.usage(self.tokens["user"]["id"])["requests"][0]
+            row = next(iter(self.requests.values()))
             self.assertEqual((row["prompt_tokens"], row["completion_tokens"]), (10, 3))
             self.assertTrue(self.app.state.llm_slots.acquire(blocking=False))
             self.app.state.llm_slots.release()
@@ -192,24 +183,12 @@ class UnifiedGatewayTests(unittest.TestCase):
             )
             self.assertEqual(r.status_code, 200)
             self.assertIn("[DONE]", r.text)
-            row = self.db.usage(self.tokens["user"]["id"])["requests"][0]
+            row = next(iter(self.requests.values()))
             self.assertEqual((row["prompt_tokens"], row["completion_tokens"]), (7, 2))
             self.assertEqual(row["auth_type"], "api_key")
         finally:
             self.client.portal.call(mock.aclose)
             self.app.state.client = self.mock
-
-    def test_legacy_token_budget_and_finish_idempotence(self):
-        key = self.key(["qwen"])
-        kid = key["id"]
-        self.db.db.execute("UPDATE keys SET legacy_daily_tokens=10 WHERE id=?", (kid,))
-        lease = self.db.acquire(key["key"], "qwen", "/v1/chat/completions")
-        self.assertEqual(self.db.token_remaining(lease), 10)
-        self.db.finish(lease, 200, 12, prompt_tokens=7, completion_tokens=3)
-        self.db.finish(lease, 200, 12, prompt_tokens=1, completion_tokens=1)
-        with self.assertRaises(Denied) as exc:
-            self.db.acquire(key["key"], "qwen", "/v1/chat/completions")
-        self.assertEqual(exc.exception.status, 429)
 
 
 class UsageTests(unittest.TestCase):

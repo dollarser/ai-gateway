@@ -13,7 +13,7 @@
 
 账号部署到 Worker 不等于 GPU 推理部署到 Worker。账号域名直接绑定 Worker Custom Domain，不再需要账号隧道；本机 API 网关仍需要一个对外访问通道。
 
-当前 `.env` 中启用了 `ACCOUNTS_WORKER_URL`。此时本地账号路由关闭，不再使用 SQLite；`accounts/data/accounts.db` 只是迁移前快照。通过本地 `accounts-admin.py` 改旧库不会改变线上账号，不能用它判断生产数据是否已清理。
+网关使用 `ACCOUNTS_WORKER_URL` 接入 Worker。检查生产账号与用量请以 D1 记录为准。
 
 模型 Client ID 是网关到后端的内部服务凭据，与用户 access_token、API Key、Worker 内部 Secret 不同。拆分时要保留这个服务边界，不能把账号数据带进模型项目。
 

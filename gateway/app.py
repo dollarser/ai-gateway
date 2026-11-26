@@ -45,10 +45,6 @@ def create_app(config: Settings = settings) -> FastAPI:
             "auth_modes": ["access_token + X-Client-ID", "API Key only"],
         }
 
-    if not config.accounts_worker_url:
-        from legacy.accounts.router import router as accounts_router
-
-        app.include_router(accounts_router)
     app.include_router(openai_relay_router)
     app.include_router(codec_router)
     app.include_router(diagnostic_router)

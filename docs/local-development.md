@@ -1,44 +1,13 @@
-# 本地开发与迁移工具
+# 本地开发
 
-生产账号只使用 Worker/D1。本地 SQLite 实现保留用于隔离测试、离线兼容和旧数据迁移，不用于线上用户管理。
-
-## 显式启用本地账号
+账号、认证与额度使用 Worker/D1。本机只运行推理网关和后端服务。
 
 ```bash
-bash scripts/setup/setup.sh --local-accounts
-```
-
-该选项才会创建本地初始管理员凭证文件。默认 setup 只安装网关依赖和准备内部 Client ID，不初始化账号。
-
-本地 `.env` 中设置：
-
-```dotenv
-GATEWAY_ACCOUNT_MODE=local
-ACCOUNTS_DATA=/absolute/path/to/isolated-dev-data
-```
-
-如果使用自定义数据目录，应在初始化时也通过环境变量传入同一 `ACCOUNTS_DATA`，确保 bootstrap 凭证生成在该目录。不要把开发配置写进生产机器正在使用的 `.env`。本地模式会取消 Worker 连接环境变量，并显式传入 `--local-accounts`；直接运行 gateway.run 时也需要这个开关。
-
-```bash
+bash scripts/setup/setup.sh
 bash scripts/start.sh
 ```
 
-默认网关入口没有配置 Worker 时会拒绝启动，防止误用历史 SQLite。
-
-## 本地账号 CLI
-
-```bash
-.venv-accounts/bin/python scripts/ops/accounts-admin.py bootstrap --local-only
-```
-
-所有子命令都要求 `--local-only`。它操作本地 accounts/data，不修改生产 D1；线上账号在 Worker 管理界面处理。
-
-## 离线迁移
-
-- `scripts/migrations/export_d1.py`：从显式 `--source` SQLite 快照导出，写入新的私有文件，目标是新空 D1；不会读取生产 D1。
-- `scripts/migrations/migrate_legacy_gateway.py`：经过回归测试的旧 SQLite Key/用量基线迁移工具，需要显式 `--source`、`--target` 离线库和应用选项；不是日常生产管理命令。
-
-这些工具保留是为了兼容原密码哈希、迁移 Key 和额度基线；不能在日常发布时重新导入旧快照。
+启动网关前配置 `ACCOUNTS_WORKER_URL` 和 `ACCOUNTS_WORKER_SECRET`。隔离开发可使用本地 Wrangler 和测试 D1；网关允许账号 Worker 使用 localhost HTTP。账号管理及邮箱流程以 Worker 接口为准。
 
 ## 客户端示例的可选依赖
 
@@ -50,10 +19,6 @@ bash scripts/start.sh
 
 使用 API Key 时不需要后端私有 Client ID 文件。使用登录令牌时通过 `SPEECH_CLIENT_ID` 提供服务约定的 Client ID。
 
-Worker/D1 的现行邮箱身份结构见 [邮箱身份迁移](client-migration-email-identity.md)。历史 SQLite 工具继续只用于隔离测试和旧数据导出，不承载本次生产账号契约；不要将生产静态账号门户指向历史 SQLite 登录接口。
 
-## 历史实现隔离
-
-旧 Python 账号实现已移入 `legacy/accounts/`；数据目录仍是私有 `accounts/data`，未搬迁或重新导入。显式本地模式只提供旧 API，不挂载 `/`、`/admin` 或门户静态资源。现行邮箱登录、注册、人机验证及换邮箱均以 Worker/D1 为准，不应使用本地旧 API 验收客户端。
 
 完整浏览器门禁：`.venv-dev/bin/python -m scripts.ops.check_browsers`。与 CI 使用同一入口，覆盖管理员隔离、找回密码、人机验证和换邮箱；测试拦截邮件及账号请求，不向真实用户发信。

@@ -4,11 +4,11 @@ import asyncio
 from dataclasses import replace
 import unittest
 import httpx
-from legacy.accounts.store import Denied
+from gateway.errors import Denied
 from gateway.catalog import build_catalog, discover_models, parse_output_modalities
 from gateway.deployments import MODEL_DEPLOYMENTS
 from gateway.routes import HTTP_ROUTES
-import test_accounts as baseline
+from gateway_http_fixture import GatewayHTTPFixture
 
 
 class CatalogTests(unittest.TestCase):
@@ -152,12 +152,7 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(raised.exception.status, 502)
 
 
-class CatalogHTTPTests(unittest.TestCase):
-    setUp = baseline.HTTPTests.setUp
-    tearDown = baseline.HTTPTests.tearDown
-    login = baseline.HTTPTests.login
-    key = baseline.HTTPTests.key
-
+class CatalogHTTPTests(GatewayHTTPFixture, unittest.TestCase):
     def test_default_text_all_embedding_and_csv_filters(self):
         key = self.key(["qwen"])["key"]
         for suffix, outputs in [
@@ -192,6 +187,8 @@ class CatalogHTTPTests(unittest.TestCase):
         key = self.key(["qwen"])["key"]
 
         async def backend(request):
+            if request.url.path == "/internal/openai-models":
+                return httpx.Response(200, json={"data": []})
             if request.url.port == 18771:
                 return httpx.Response(503, text="private backend detail")
             return httpx.Response(200, json={"data": [{"id": "chat"}]})
@@ -210,10 +207,7 @@ class CatalogHTTPTests(unittest.TestCase):
             )
             self.assertNotIn("private backend detail", response.text)
             self.assertNotIn("18771", response.text)
-            row = self.db.db.execute(
-                "SELECT ended,status FROM requests ORDER BY started DESC LIMIT 1"
-            ).fetchone()
-            self.assertIsNotNone(row["ended"])
+            row = next(iter(self.requests.values()))
             self.assertEqual(row["status"], 200)
         finally:
             self.client.portal.call(mock.aclose)

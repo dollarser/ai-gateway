@@ -7,8 +7,8 @@ import unittest
 import wave
 from dataclasses import replace
 import httpx
-import test_accounts as baseline
-from legacy.accounts.store import Denied
+from gateway_http_fixture import GatewayHTTPFixture
+from gateway.errors import Denied
 from gateway.audio import transcode
 from gateway.auth import inference_metadata
 
@@ -70,13 +70,7 @@ class AudioDecodeTests(unittest.TestCase):
         )
 
 
-class AudioGatewayTests(unittest.TestCase):
-    setUp = baseline.HTTPTests.setUp
-    tearDown = baseline.HTTPTests.tearDown
-    login = baseline.HTTPTests.login
-    key = baseline.HTTPTests.key
-    post = baseline.HTTPTests.post
-
+class AudioGatewayTests(GatewayHTTPFixture, unittest.TestCase):
     def configure(self, backend):
         self.app.state.settings = replace(
             self.app.state.settings,

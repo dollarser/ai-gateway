@@ -30,7 +30,7 @@ async def inference(path: str, request: Request):
     local = is_local_listener(request.scope)
     edge = trusted_edge(request.app, request.headers, request.scope)
     if not edge:
-        # Offline/legacy cloud bridge only; production edge requests never enter it.
+        # The direct gateway can delegate cloud inference to the account Worker.
         from gateway import worker_openai as openai_proxy
         from gateway import audio as audio_proxy
     path = "/" + path

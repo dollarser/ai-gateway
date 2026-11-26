@@ -1,6 +1,5 @@
 """Composition, public health privacy and failed startup recovery."""
 
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,15 +17,16 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(set(response.json()), {"ready", "service", "auth_modes"})
 
-    def test_failed_initialization_releases_lock_and_can_restart(self):
+    def test_failed_initialization_can_restart(self):
         with tempfile.TemporaryDirectory() as folder:
             data = Path(folder)
-            (data / "bootstrap-admin.json").write_text(
-                json.dumps({"username": "admin", "password": "test-password"})
-            )
             ids = data / "ids.json"
             ids.write_text("[]")
-            config = Settings(data_dir=data, client_ids_file=ids)
+            config = Settings(
+                client_ids_file=ids,
+                accounts_worker_url="https://accounts.example.com",
+                accounts_worker_secret="x" * 40,
+            )
             with self.assertRaisesRegex(ValueError, "Client ID allowlist"):
                 with TestClient(create_app(config)):
                     pass

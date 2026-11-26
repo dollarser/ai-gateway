@@ -2,9 +2,10 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import httpx
 from fastapi.testclient import TestClient
-from legacy.accounts.store import Denied
+from gateway.errors import Denied
 from gateway.remote_store import RemoteStore
 from gateway.settings import Settings
 from gateway.app import create_app
@@ -48,15 +49,15 @@ class WorkerStoreTests(unittest.TestCase):
             ids = Path(name) / "ids.json"
             ids.write_text('["test-client"]')
             config = Settings(
-                data_dir=data,
                 client_ids_file=ids,
                 accounts_worker_url="https://accounts.example.com",
                 accounts_worker_secret="x" * 40,
             )
             app = create_app(config)
             self.assertNotIn("/auth/login", [r.path for r in app.routes])
-            with TestClient(app):
-                self.assertIsInstance(app.state.store, RemoteStore)
+            with patch.dict("os.environ", {"ACCOUNTS_DATA": str(data)}):
+                with TestClient(app):
+                    self.assertIsInstance(app.state.store, RemoteStore)
             self.assertFalse(data.exists())
 
     def test_plain_http_remote_origins_are_rejected(self):

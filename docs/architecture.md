@@ -10,7 +10,7 @@
                                       └─> Tunnel ─> 私有本机源站 ─> 自建模型 / 识别解码
 ```
 
-历史 SQLite 实现在 `legacy/accounts/`，仅显式本地模式和隔离测试加载；不提供生产门户静态页面。`accounts/static/` 是 Worker 托管的现行门户，生产凭据提取位于 `gateway/credentials.py`。生产环境中 Worker 统一执行网页、账号、API 认证、请求占用及模型额度结算。本机以 GATEWAY_EDGE_ONLY=1 接受受保护的边缘回源，不重复执行用户鉴权。
+`accounts/static/` 是 Worker 托管的现行门户，生产凭据提取位于 `gateway/credentials.py`。生产环境中 Worker 统一执行网页、账号、API 认证、请求占用及模型额度结算。本机以 GATEWAY_EDGE_ONLY=1 接受受保护的边缘回源，不重复执行用户鉴权。
 
 GPT-6 Luna 通过受内部密钥保护的 Worker 代理调用 OpenAI；提供方密钥持久保存在 Worker Secrets；local 模式下经受保护的隧道随请求传给本机，只在内存用于 OpenAI 鉴权，不写入本机配置。D1 的独立月额度账本在调用前预留、完成后按提供方 usage 结算，详见 [Luna 额度](luna-allowance.md)。
 

@@ -21,7 +21,6 @@
 - `~/.config/.wrangler/`：当前 Linux 的 Wrangler OAuth 授权配置，可在新设备重新登录，授权过期时备份不能代替重新授权。
 - `.runtime/releases/` 和 `.runtime/backups/`：多个时间点的 D1 恢复快照。迁移前再导出一份最新生产库，旧发布备份不代表实时状态。
 - `.runtime/audits/`：维护记录；必要时保留 `diagnostics/` 中仍需核对的问题。
-- 如需离线账号兼容或历史追溯，保存 `accounts/data/`。其中 SQLite 是本机历史数据，不是当前生产 D1；旧管理员恢复材料也是敏感数据。不要将旧库重新导入生产覆盖新数据。
 - 自行修改过的 `~/.config/systemd/user/ai-gateway*` 单元及 drop-in；标准单元已经在 `deploy/systemd/` 中。迁移后仍需重新安装、启用服务和 linger。
 - 如需复用 Git SSH 访问权限，安全迁移相应私钥或在新设备创建新密钥并重新授权。
 

@@ -4,18 +4,12 @@ import json
 import unittest
 from dataclasses import replace
 import httpx
-import test_accounts as baseline
+from gateway_http_fixture import GatewayHTTPFixture
 from gateway.usage import UsageTracker
 from gateway.worker_openai import LUNA_MODEL_ENTRY
 
 
-class LunaGatewayTests(unittest.TestCase):
-    setUp = baseline.HTTPTests.setUp
-    tearDown = baseline.HTTPTests.tearDown
-    login = baseline.HTTPTests.login
-    key = baseline.HTTPTests.key
-    post = baseline.HTTPTests.post
-
+class LunaGatewayTests(GatewayHTTPFixture, unittest.TestCase):
     def configure(self, backend):
         self.app.state.settings = replace(
             self.app.state.settings,
@@ -82,7 +76,7 @@ class LunaGatewayTests(unittest.TestCase):
         self.assertEqual(
             seen, ["/internal/openai/chat-completions", "/internal/openai/responses"]
         )
-        rows = self.db.usage(self.tokens["user"]["id"])["requests"]
+        rows = self.requests.values()
         self.assertEqual(
             sorted((r["prompt_tokens"], r["completion_tokens"]) for r in rows),
             [(10, 2), (11, 3)],

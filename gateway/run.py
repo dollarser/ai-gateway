@@ -9,18 +9,9 @@ from gateway.settings import settings
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=settings.public_port)
-    parser.add_argument(
-        "--local-accounts",
-        action="store_true",
-        help="Explicitly enable the offline/local SQLite account mode",
-    )
     args = parser.parse_args()
-    if not settings.accounts_worker_url and not args.local_accounts:
-        parser.error(
-            "Configure ACCOUNTS_WORKER_URL and ACCOUNTS_WORKER_SECRET; local SQLite requires --local-accounts"
-        )
-    if settings.accounts_worker_url and args.local_accounts:
-        parser.error("Choose Worker accounts or local SQLite, not both")
+    if not settings.accounts_worker_url or not settings.accounts_worker_secret:
+        parser.error("Configure ACCOUNTS_WORKER_URL and ACCOUNTS_WORKER_SECRET")
     if args.port != settings.public_port:
         parser.error("Public listener must remain 18900; local listener is 18901")
     sockets = []

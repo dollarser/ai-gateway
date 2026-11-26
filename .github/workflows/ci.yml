@@ -18,7 +18,7 @@ jobs:
       - run: .venv-accounts/bin/python -m scripts.setup.create_client_id
       - run: .venv-accounts/bin/python -m tests.run
       - run: .venv-accounts/bin/pip install ruff==0.17.5
-      - run: .venv-accounts/bin/ruff check gateway scripts accounts legacy tests
+      - run: .venv-accounts/bin/ruff check gateway scripts accounts tests
       - run: git diff --check
   worker:
     runs-on: ubuntu-latest

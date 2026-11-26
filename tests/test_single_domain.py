@@ -1,16 +1,10 @@
 import unittest
-import test_accounts as baseline
-from legacy.accounts.store import Denied
+from gateway_http_fixture import GatewayHTTPFixture
+from gateway.errors import Denied
 from gateway.routes import http_route, ws_service
 
 
-class SingleDomainTests(unittest.TestCase):
-    setUp = baseline.HTTPTests.setUp
-    tearDown = baseline.HTTPTests.tearDown
-    login = baseline.HTTPTests.login
-    key = baseline.HTTPTests.key
-    post = baseline.HTTPTests.post
-
+class SingleDomainTests(GatewayHTTPFixture, unittest.TestCase):
     def test_removed_hosts_and_account_domain_cannot_serve_inference(self):
         headers = {
             "Authorization": "Bearer " + self.tokens["access_token"],
@@ -67,9 +61,7 @@ class SingleDomainTests(unittest.TestCase):
 
     def test_only_supported_routes_are_exposed(self):
         self.assertEqual(
-            http_route(
-                "api.hilex.me", "/v1/audio/transcriptions", "POST"
-            ).service,
+            http_route("api.hilex.me", "/v1/audio/transcriptions", "POST").service,
             "asr",
         )
         self.assertEqual(
@@ -81,9 +73,7 @@ class SingleDomainTests(unittest.TestCase):
         )
         self.assertEqual(ws_service("api.hilex.me", "/ws/tts"), "tts")
         with self.assertRaises(Denied):
-            http_route(
-                "api.hilex.me", "/v1/audio/transcriptions/vibevoice", "POST"
-            )
+            http_route("api.hilex.me", "/v1/audio/transcriptions/vibevoice", "POST")
         self.assertEqual(
             http_route(
                 "127.0.0.1", "/v1/audio/transcriptions/vibevoice", "POST", local=True

@@ -10,7 +10,6 @@ from pathlib import Path
 import platform
 import secrets
 import shutil
-import sqlite3
 import subprocess
 import tarfile
 from scripts.ops.restore_device import file_hmac
@@ -72,15 +71,6 @@ def main():
             )
         verify_backup(d1)
         print("Fresh D1 export and restore integrity check passed", flush=True)
-        local_db = ROOT / "accounts/data/accounts.db"
-        snapshot = work / "accounts.db"
-        if local_db.exists():
-            with (
-                sqlite3.connect(str(local_db)) as source,
-                sqlite3.connect(str(snapshot)) as dest,
-            ):
-                source.backup(dest)
-                assert dest.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         state = {
             "schema": "project-device-backup-v1",
             "created_utc": stamp,
@@ -123,10 +113,6 @@ def main():
             tar.add(ROOT.resolve(), arcname="projects/ai-gateway", filter=filtered)
             tar.add(models.resolve(), arcname="projects/model-serving", filter=filtered)
             tar.add(d1, arcname="database/d1-latest.sql")
-            if snapshot.exists():
-                tar.add(
-                    snapshot, arcname="projects/ai-gateway/accounts/data/accounts.db"
-                )
             for relative in [
                 ".cloudflared",
                 ".config/.wrangler",
@@ -242,8 +228,6 @@ def main():
     (work / "backup-receipt.json").write_text(json.dumps(receipt, indent=2))
     archive.unlink()
     d1.unlink()
-    if snapshot.exists():
-        snapshot.unlink()
     print(
         json.dumps(
             {"backup_directory": str(output), "recovery_key": str(key), **receipt}
