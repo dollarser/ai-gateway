@@ -2730,6 +2730,29 @@ test("Old Worker inserts and in-flight settlements cannot bypass the new global 
   );
 });
 
+test("Explicit Luna long-context cost survives settlement and reaches the spending ledger", async () => {
+  const { uid, key } = await lunaUser("long-context-settlement");
+  const lease = await lunaLease(key);
+  const store = new Store(db);
+  await store.run(
+    "INSERT INTO luna_usage(lease,user_id,month,reserved_tokens,charged_tokens,reserved_cost_nanos,charged_cost_nanos) VALUES(?,?,?,900000,900000,220000000,220000000)",
+    lease,
+    uid,
+    "2026-11",
+  );
+  await store.run(
+    "UPDATE luna_usage SET charged_tokens=489502,settled=1,prompt_tokens=489498,completion_tokens=4,cache_write_tokens=489495,charged_cost_nanos=122377350 WHERE lease=?",
+    lease,
+  );
+  assert.deepEqual(
+    await store.first(
+      "SELECT l.charged_cost_nanos,s.cost_nanos FROM luna_usage l JOIN luna_spend s USING(lease) WHERE l.lease=?",
+      lease,
+    ),
+    { charged_cost_nanos: 122377350, cost_nanos: 122377350 },
+  );
+});
+
 test("Optional global audio limits survive account usage deletion", async () => {
   const store = new Store(db),
     saved = JSON.parse(

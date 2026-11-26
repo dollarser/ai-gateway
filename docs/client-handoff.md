@@ -224,7 +224,15 @@ Luna 已开放标准 Chat image_url 和 Responses input_image，模型发现声�
 
 ## 10. 错误处理与诊断
 
-OpenAI 兼容推理接口统一使用 OpenAI 的 `{"error":{"message":"…","type":"…","param":null,"code":"…"}}`。客户端在官方 API 和 Helix 上使用同一解析器，并以 HTTP 状态及 `error.message` 兜底。账号接口仍使用顶层 `error_code` 和 `detail`。
+客户端按所选接口协议解析错误。同一协议下，直连和走网关可以复用解析器。
+
+| 接口 | HTTP 错误正文 | 请求 ID |
+|---|---|---|
+| OpenAI Chat Completions、Responses 等推理接口 | `error.message`、`error.type`，可空的 `error.code`、`error.param` | `X-Request-ID` |
+| Anthropic Messages | 顶层 `type: "error"`，正文 `error.type`、`error.message`；具体错误原因可由网关头补充 | `request-id`，或正文 `request_id` |
+| Helix 账号接口 | 顶层 `error_code` 和 `detail` | `X-Request-ID`，或正文 `request_id` |
+
+已有 Helix 客户端应将推理接口的顶层 `error_code`、`detail` 分别改读 `error.code`、`error.message`，从响应头获取请求 ID 和退避时间。对于空错误码、未知错误码或非 JSON 响应，按 HTTP 状态给出提示；有 `error.message` 时可展示该消息。仅 Helix 账号令牌失效时触发 Helix 登录刷新。
 
 `X-Request-ID` 用于关联当前入口；网关收到上游请求 ID 时会在错误响应附上 `X-OpenAI-Request-ID`。网关自身拒绝可通过 `X-Helix-Error-Code` 区分。有 `Retry-After` 时遵循响应头。流式开始后继续检查错误事件和完成事件。上游有标准 JSON 错误时保留 HTTP 状态和标准字段；与网关自身上游凭据有关的拒绝使用服务错误响应。
 
@@ -269,7 +277,7 @@ OpenAI 兼容推理接口统一使用 OpenAI 的 `{"error":{"message":"…","typ
 
 收到完整 JSON usage，或 SSE 的完成标记与 usage 后，服务端即释放名额；客户端取消也释放名额。未知的提供方费用仍占用额度预留，与并发名额独立。
 
-Anthropic Messages 尚未配置上游。`/v1/messages` 返回 Anthropic 格式的 404，响应头 `X-Helix-Error-Code: anthropic_not_configured` 表明请求由网关结束。
+截至 2026-11-25，公网 `/v1/messages` 和 `/v1/messages/count_tokens` 尚未连接推理上游，返回 Anthropic 格式的 404 和 `X-Helix-Error-Code: anthropic_not_configured`。本机 SGLang 源码支持这两个接口，仍需接入后验证真实工具调用、普通响应、SSE 和 token 计数。SGLang 接入方案可使用本地模型，客户端继续使用 Anthropic Messages 协议。
 
 ### 客户端解析样例
 
@@ -286,12 +294,25 @@ X-Helix-Resets-At: 2026-11-24T16:00:00.000Z
 ```http
 HTTP/1.1 429 Too Many Requests
 Content-Type: application/json
-X-Error-Code: account_concurrency_limited
+X-Helix-Error-Code: account_concurrency_limited
 X-Request-ID: example-request
 Retry-After: 1
 
 {"error":{"message":"账号并发已满","type":"rate_limit_error","param":null,"code":"account_concurrency_limited"}}
 ```
+
+Anthropic Messages 尚未配置时的网关响应：
+
+```http
+HTTP/1.1 404 Not Found
+Content-Type: application/json
+request-id: example-request
+X-Helix-Error-Code: anthropic_not_configured
+
+{"type":"error","error":{"type":"not_found_error","message":"Anthropic Messages is not configured."},"request_id":"example-request"}
+```
+
+流式错误按协议解析。Chat Completions 可在 SSE 的 `data` 内收到嵌套的 `error` 对象，Responses 的 `type: "error"` 事件在顶层携带 `code` 和 `message`。Messages 接入后，按 Anthropic SSE 的 `event: error` 处理，正常结束检查 `message_stop`。
 
 Responses 已输出部分内容，随后收到错误事件：
 
@@ -322,6 +343,7 @@ data: {"type":"error","sequence_number":1,"code":"provider_stream_interrupted","
 | 真机 Turnstile 和真实邮件闭环 | 设备、系统版本、服务端版本及脱敏结果。本次文档修订未运行 |
 
 - 账号令牌和Key两种方式均能发现获授权模型；无效/撤销凭据不绕过鉴权。
+- OpenAI 直连和 Helix 共用错误解析器，覆盖上游标准错误、网关 413、空错误码及非 JSON 响应；Anthropic 路径当前验收其 404 结构，真实推理验收在上游接通后执行。
 - 注册验证码保留前导零；注册、找回、邮箱绑定和更换邮箱都先完成人机验证，再手动发码。旧账号允许稍后绑定，绑定后的邮箱用于登录。
 - 多个请求同时401只刷新一次，并原子替换令牌对；提供方密钥异常不触发用户重新登录。
 - 语音模型按HTTP调用；PCM可跨奇数长度块拼接，取消生成/播放能取消读取。

@@ -365,7 +365,7 @@ export function usageTokens(usage) {
   if (
     ![input, output, cached, writes].every(integer) ||
     cached + writes > input ||
-    input > 1000000 ||
+    input + output > CLOUD_TEXT_CONTEXT_WINDOW ||
     output > 128000
   )
     return null;
