@@ -358,6 +358,12 @@ data: {"type":"error","sequence_number":1,"code":"provider_stream_interrupted","
 
 排查新出现的模型参数错误时，服务端Worker日志可按X-Request-ID查看脱敏的上游错误分类及指定工具的Schema结构摘要；客户端无需为此上传整段聊天、音频或凭据。历史请求不能补录未保存的Schema。服务端日志不改变错误响应契约，客户端仍按上述错误码及流式完成规则处理；内部账号错误也可能返回request_id供关联排查。
 
+### 2026-11-26 生产与客户端验收
+
+- 通过公网网关和本机中继向 OpenAI 发送 8 张内联 PNG，JSON 为 7.04 MiB。Chat Completions SSE 返回 HTTP 200、最终 usage 和 `[DONE]`。另一次纯文本长上下文请求返回 HTTP 200，实际输入 489,498 tokens；迁移 0030 已修正该请求在 D1 中的费用记录。
+- 公网分别验证三种 HTTP 413。每种响应均带对应的 `error.code`，D1 记录均显示未尝试请求上游。
+- 客户端提交 `de44597` 的 `provider:api`、`provider:openai-chat` 和 `provider:openai-responses` 共 360 项 JVM 测试通过。本次未执行 Android Release、真机或 Android 官方直连端到端验收。
+
 ## 安卓客户端：邮箱自助找回密码
 
 安卓可以直接使用已上线的 HTTP 接口实现原生“忘记密码”页面，无需打开网页、接收深链或读取短信。**只能使用已验证并绑定的邮箱**；新密码为 6–128 字符，重置后使用该邮箱和新密码登录。
